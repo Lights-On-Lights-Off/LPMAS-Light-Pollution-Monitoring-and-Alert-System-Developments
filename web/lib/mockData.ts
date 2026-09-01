@@ -2,7 +2,6 @@
 // greenhouse each one is installed in. Only "sensor1" (Greenhouse 3 / ICS Lab)
 // has a real physical device today — sensor2/3 are simulated ahead of rollout.
 export const GREENHOUSE_BY_SENSOR: Record<string, string> = {
-  sensor1: "Greenhouse 3",
   sensor2: "Greenhouse 1",
   sensor3: "Greenhouse 2"
 };
