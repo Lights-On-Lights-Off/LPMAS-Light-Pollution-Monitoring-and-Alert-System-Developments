@@ -7,9 +7,8 @@ import { statusDistribution, latestBySensor, STATUS_COLORS } from "@/lib/chartDa
 import { GREENHOUSE_BY_SENSOR } from "@/lib/mockData";
 import { Card, Badge } from "@/components/ui";
 
-const SENSOR_IDS = ["sensor1", "sensor2", "sensor3"];
-const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d"];
-const LIVE_POINTS = 60;
+const SENSOR_IDS = ["sensor1", "sensor2"];
+const LINE_COLORS = ["#d9a441", "#7fb3d5"];
 
 export function Monitor() {
   const { data } = useDashboardData();
