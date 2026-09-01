@@ -9,13 +9,19 @@ export function useDashboardData() {
 
   useEffect(() => {
     let active = true;
+
     const refresh = () => getDashboardSummary()
       .then(v => { if (active) { setData(v); setDemo(false); } })
       .catch(() => { if (active) setDemo(true); });
 
     refresh();
-    const interval = setInterval(refresh, 10_000);
-    return () => { active = false; clearInterval(interval); };
+
+    const interval = setInterval(refresh, 5_000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
   return { data, demo };

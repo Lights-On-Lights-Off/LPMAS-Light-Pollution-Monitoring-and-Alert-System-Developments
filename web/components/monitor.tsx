@@ -9,8 +9,8 @@ import { pivotReadingsBySensor, statusDistribution, latestBySensor, STATUS_COLOR
 import { GREENHOUSE_BY_SENSOR } from "@/lib/mockData";
 import { Card, Badge } from "@/components/ui";
 
-const SENSOR_IDS = ["sensor1", "sensor2", "sensor3"];
-const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d"];
+const SENSOR_IDS = ["sensor1", "sensor2"];
+const LINE_COLORS = ["#d9a441", "#7fb3d5"];
 
 export function Monitor() {
   const { data, demo } = useDashboardData();
