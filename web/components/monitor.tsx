@@ -40,29 +40,21 @@ export function Monitor() {
     ];
   }, [latest, mounted, now]);
 
-  const liveChart = useMemo(() => {
-    const merged = new Map<string, any>();
+const liveChart = useMemo(() => {
+  const merged = new Map<string, any>();
 
-    for (const reading of data.readings) {
-      const timestamp = new Date(reading.recorded_at).getTime();
-      const second = Math.floor(timestamp / 1_000) * 1_000;
-      const key = String(second);
-      const point = merged.get(key) ?? {
-        timestamp: second,
-        time: new Date(second).toLocaleTimeString("en-PH", {
-          timeZone: "Asia/Manila",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit"
-        })
-      };
+  data.readings.forEach((reading) => {
+    const timestamp = new Date(reading.recorded_at).getTime();
+    const key = new Date(reading.recorded_at).toISOString().slice(0, 19);
 
-      point[GREENHOUSE_BY_SENSOR[reading.sensor_id] ?? reading.sensor_id] = reading.lux;
-      merged.set(key, point);
-    }
+    const point = merged.get(key) ?? { timestamp };
 
-    return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp).slice(-LIVE_POINTS);
-  }, [data.readings]);
+    point[GREENHOUSE_BY_SENSOR[reading.sensor_id] ?? reading.sensor_id] = reading.lux;
+    merged.set(key, point);
+  });
+
+  return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp).slice(-20);
+}, [data.readings]);
 
   const onlineCount = sensorDistribution[0].value;
   const openIncidents = data.incidents.filter(i => i.status !== "resolved").length;
