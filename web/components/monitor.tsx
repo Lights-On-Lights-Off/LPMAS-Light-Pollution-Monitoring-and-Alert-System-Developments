@@ -1,222 +1,129 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ArrowLeft } from "lucide-react";
 import { useDashboardData } from "@/lib/useDashboardData";
-import { statusDistribution, latestBySensor, STATUS_COLORS } from "@/lib/chartData";
-import { GREENHOUSE_BY_SENSOR } from "@/lib/mockData";
+import type { Reading } from "@/lib/api";
 import { Card, Badge } from "@/components/ui";
 
-const SENSOR_IDS = ["sensor1", "sensor2"];
-const LINE_COLORS = ["#d9a441", "#7fb3d5"];
+const GREENHOUSES = [{ id: "greenhouse1", name: "Greenhouse 1", sensors: [{ id: "sensor1", name: "Sensor 1" }, { id: "sensor2", name: "Sensor 2" }] }];
+const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d", "#7bd389", "#b18cff"];
+const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d" } as const;
+const ONLINE_WINDOW = 60_000;
 
 export function Monitor() {
-  const { data } = useDashboardData();
-  const [mounted, setMounted] = useState(false);
-  const [now, setNow] = useState(0);
+  const { data, loading, error } = useDashboardData();
+  const [selectedGreenhouse, setSelectedGreenhouse] = useState(GREENHOUSES[0].id);
+  const [selectedSensor, setSelectedSensor] = useState("all");
 
-  useEffect(() => {
-    setMounted(true);
-    setNow(Date.now());
-    const interval = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(interval);
-  }, []);
+  const greenhouse = GREENHOUSES.find(g => g.id === selectedGreenhouse) ?? GREENHOUSES[0];
+  const sensors = greenhouse.sensors;
+  const sensorIds = selectedSensor === "all" ? sensors.map(s => s.id) : sensors.filter(s => s.id === selectedSensor).map(s => s.id);
 
-  const latest = useMemo(() => latestBySensor(data.readings), [data.readings]);
-  const distribution = useMemo(() => statusDistribution(data.readings), [data.readings]);
-
-  const sensorDistribution = useMemo(() => {
-    if (!mounted) return [
-      { name: "Online", value: 0, color: "#3fae64" },
-      { name: "Offline", value: SENSOR_IDS.length, color: "#6f7278" }
-    ];
-
-    let online = 0;
-    for (const r of latest.values()) if (now - new Date(r.recorded_at).getTime() < 60_000) online++;
-
-    return [
-      { name: "Online", value: online, color: "#3fae64" },
-      { name: "Offline", value: SENSOR_IDS.length - online, color: "#6f7278" }
-    ];
-  }, [latest, mounted, now]);
-
-  const liveChart = useMemo(() => {
-    const merged = new Map<string, any>();
-
-    for (const reading of data.readings) {
-      const timestamp = new Date(reading.recorded_at).getTime();
-      const second = Math.floor(timestamp / 1_000) * 1_000;
-      const key = String(second);
-      const point = merged.get(key) ?? {
-        timestamp: second,
-        time: new Date(second).toLocaleTimeString("en-PH", {
-          timeZone: "Asia/Manila",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit"
-        })
-      };
-
-      point[GREENHOUSE_BY_SENSOR[reading.sensor_id] ?? reading.sensor_id] = reading.lux;
-      merged.set(key, point);
+  const latest = useMemo(() => {
+    const map = new Map<string, Reading>();
+    for (const reading of data.readings) if (sensorIds.includes(reading.sensor_id)) {
+      const current = map.get(reading.sensor_id);
+      if (!current || new Date(reading.recorded_at).getTime() > new Date(current.recorded_at).getTime()) map.set(reading.sensor_id, reading);
     }
+    return map;
+  }, [data.readings, sensorIds.join(",")]);
 
-    return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp).slice(-LIVE_POINTS);
-  }, [data.readings]);
+  const chart = useMemo(() => {
+    const rows = data.readings.filter(r => sensorIds.includes(r.sensor_id)).sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()).slice(-30);
+    const map = new Map<string, Record<string, string | number>>();
+    for (const reading of rows) {
+      const key = new Date(reading.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const row = map.get(key) ?? { time: key };
+      row[reading.sensor_id] = reading.lux;
+      map.set(key, row);
+    }
+    return Array.from(map.values());
+  }, [data.readings, sensorIds.join(",")]);
 
-  const onlineCount = sensorDistribution[0].value;
-  const openIncidents = data.incidents.filter(i => i.status !== "resolved").length;
+  const distribution = useMemo(() => {
+    const counts = { safe: 0, warning: 0, violation: 0 };
+    for (const reading of latest.values()) counts[reading.classification]++;
+    return Object.entries(counts).filter(([, value]) => value > 0).map(([name, value]) => ({ name, value }));
+  }, [latest]);
 
-  return <main className="min-h-screen bg-ink font-sans text-metal-100 antialiased">
+  const onlineCount = useMemo(() => Array.from(latest.values()).filter(r => Date.now() - new Date(r.recorded_at).getTime() < ONLINE_WINDOW).length, [latest]);
+  const offlineCount = sensors.length - onlineCount;
+  const incidentCount = data.incidents.filter(i => i.status !== "resolved" && sensorIds.includes(i.sensor_id)).length;
 
-    <header className="sticky top-0 z-30 border-b border-metal-700 bg-ink/80 backdrop-blur-xl">
-      <nav className="mx-auto flex min-h-[72px] max-w-6xl flex-wrap items-center justify-between gap-4 px-5 py-3">
+  const selectedReadings = useMemo(() => data.readings.filter(r => sensorIds.includes(r.sensor_id)).sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime()).slice(0, 3), [data.readings, sensorIds.join(",")]);
 
-        <Link href="/" className="flex items-center gap-3">
-          <span className="h-3 w-3 rounded-full bg-leaf-500 shadow-glow" />
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-metal-50">LPMAS Live Monitor</h1>
-            <p className="text-xs text-metal-400">Light Pollution Monitoring & Alert System</p>
-          </div>
-        </Link>
+  const phase = latest.values().next().value?.phase_type ?? data.phase?.phase_type ?? null;
+  const phaseLabel = phase === "illumination" ? "Illumination" : phase === "dark" ? "Dark" : phase ?? "—";
+  const phaseWindow = data.phase?.window_start && data.phase?.window_end ? `${data.phase.window_start} - ${data.phase.window_end}` : "—";
+  const target = data.phase?.lux_min != null || data.phase?.lux_max != null ? `${data.phase.lux_min ?? "—"} - ${data.phase.lux_max ?? "—"} lux` : "—";
+  const status = latest.size === 0 ? "Waiting for data" : onlineCount > 0 ? "Online" : "Offline";
 
-        <div className="flex flex-wrap items-center justify-end gap-5 text-sm text-metal-300">
-          <Link href="/about#features" className="transition hover:text-metal-50">Features</Link>
-          <Link href="/about#how-it-works" className="transition hover:text-metal-50">How it works</Link>
-          <Link href="/about" className="transition hover:text-metal-50">About</Link>
-          <Link href="/" className="font-semibold text-metal-50">Live monitor</Link>
-          <Link href="/login" className="rounded-full bg-leaf-500 px-5 py-2 font-semibold text-ink transition hover:bg-leaf-100">Sign In</Link>
-        </div>
+  const handleGreenhouseChange = (value: string) => {
+    setSelectedGreenhouse(value);
+    setSelectedSensor("all");
+  };
 
-      </nav>
+  return <main className="min-h-screen bg-ink font-sans text-metal-100">
+    <header className="flex flex-wrap items-center justify-between gap-4 border-b border-metal-700 bg-metal-800/60 px-5 py-4 md:px-8">
+      <div className="flex items-center gap-3">
+        <span className={`h-2.5 w-2.5 rounded-full ${status === "Online" ? "bg-leaf-500 shadow-glow" : status === "Offline" ? "bg-red-400" : "bg-metal-500"}`} />
+        <div><h1 className="font-bold text-metal-50">LPMAS Live Monitor</h1><p className="text-xs text-metal-400">Smart light pollution monitoring</p></div>
+      </div>
+      <div className="flex items-center gap-4 text-sm"><span className="hidden text-metal-400 sm:inline">System Status: {status}</span><Link href="/login" className="rounded-full bg-leaf-500 px-4 py-2 text-xs font-semibold text-ink hover:bg-leaf-100">Staff sign in</Link></div>
     </header>
 
-    <div className="mx-auto max-w-[1800px] space-y-5 p-4 md:p-6">
+    <div className="p-5 md:p-8">
+      {error && <div className="mb-5 rounded-2xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">Unable to load live sensor data. Waiting for a real sensor connection.</div>}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(340px,.85fr)]">
-
-        <Card className="h-[440px]">
-          <div className="mb-3 flex items-start justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="font-bold text-metal-50">Light Intensity</h2>
-                <span className="rounded-full bg-leaf-500/10 px-2 py-0.5 text-[10px] font-semibold text-leaf-500">LIVE</span>
-              </div>
-              <p className="mt-1 text-xs text-metal-400">Live BH1750 telemetry · latest 60 readings</p>
-            </div>
-
-            <div className="text-right">
-              <p className="text-[10px] uppercase tracking-wide text-metal-500">Refresh</p>
-              <p className="font-mono text-xs text-metal-300">1s</p>
+      <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
+        <Card className="h-full min-h-[34rem]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div><h2 className="font-bold text-metal-50">Lux Intensity Trend</h2><p className="mt-1 text-sm text-metal-400">Real sensor readings from the selected greenhouse</p></div>
+            <div className="flex flex-wrap gap-2">
+              <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">{GREENHOUSES.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
+              <select value={selectedSensor} onChange={e => setSelectedSensor(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100"><option value="all">All Sensors</option>{sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}</select>
             </div>
           </div>
 
-          <div className="h-[355px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={liveChart}>
-                <defs>
-                  {Object.values(GREENHOUSE_BY_SENSOR).map((label, i) => <linearGradient key={label} id={`g-${i}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0.25} />
-                    <stop offset="95%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0} />
-                  </linearGradient>)}
-                </defs>
-
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" />
-                <XAxis dataKey="time" tick={{ fontSize: 10, fill: "#6f7278" }} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 10, fill: "#6f7278" }} width={35} />
-                <Tooltip contentStyle={{ borderRadius: 10, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} />
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-
-                {Object.values(GREENHOUSE_BY_SENSOR).map((label, i) => <Area key={label} type="monotone" dataKey={label} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill={`url(#g-${i})`} dot={false} isAnimationActive={false} connectNulls />)}
-              </AreaChart>
-            </ResponsiveContainer>
+          <div className="mt-6 h-[26rem]">
+            {loading && !data.readings.length ? <div className="grid h-full place-items-center text-sm text-metal-400">Waiting for sensor data...</div> : !chart.length ? <div className="grid h-full place-items-center text-sm text-metal-400">No sensor data available</div> : <ResponsiveContainer width="100%" height="100%"><AreaChart data={chart}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" /><XAxis dataKey="time" tick={{ fontSize: 11, fill: "#6f7278" }} interval="preserveStartEnd" /><YAxis tick={{ fontSize: 11, fill: "#6f7278" }} width={40} /><Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} /><Legend wrapperStyle={{ fontSize: 12 }} />{sensors.filter(sensor => sensorIds.includes(sensor.id)).map((sensor, i) => <Area key={sensor.id} type="monotone" dataKey={sensor.id} name={sensor.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill="none" />)}</AreaChart></ResponsiveContainer>}
           </div>
         </Card>
 
-        <div className="space-y-5">
-
-          <Card className="h-[135px] p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-metal-50">Sensor KPIs</h2>
-              <span className="text-[10px] uppercase tracking-wide text-metal-500">Live</span>
-            </div>
-
-            <div className="grid grid-cols-4 gap-2">
-              <Kpi label="Sensors" value={SENSOR_IDS.length} />
-              <Kpi label="Online" value={onlineCount} />
-              <Kpi label="Offline" value={SENSOR_IDS.length - onlineCount} />
-              <Kpi label="Incidents" value={openIncidents} tone={openIncidents ? "red" : undefined} />
-            </div>
+        <div className="grid h-full grid-rows-[auto_1fr] gap-5">
+          <Card>
+            <h2 className="mb-3 font-bold text-metal-50">Sensor KPI</h2>
+            <div className="grid grid-cols-2 gap-3"><Kpi label="Total sensors" value={sensors.length} /><Kpi label="Online" value={onlineCount} /><Kpi label="Incidents" value={incidentCount} tone={incidentCount ? "red" : undefined} /><Kpi label="Offline" value={offlineCount} /></div>
           </Card>
 
-          <Card className="h-[280px]">
-            <h2 className="text-sm font-bold text-metal-50">Network distribution</h2>
-            <p className="mt-1 text-xs text-metal-400">Current status and sensor availability</p>
-
-            <div className="grid h-[215px] grid-cols-2 gap-2">
-              <DistributionPanel title="Status" data={distribution.map(d => ({ name: d.name, value: d.value, color: STATUS_COLORS[d.key] }))} />
-              <DistributionPanel title="Sensors" data={sensorDistribution} />
+          <Card className="min-h-0">
+            <h2 className="font-bold text-metal-50">Status Distribution</h2>
+            <div className="mt-4 grid min-h-0 grid-cols-[minmax(130px,0.8fr)_1fr] items-center gap-4">
+              <div className="h-40 min-w-0">{distribution.length ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={distribution} dataKey="value" nameKey="name" innerRadius={34} outerRadius={56} paddingAngle={2}>{distribution.map(d => <Cell key={d.name} fill={STATUS_COLORS[d.name as keyof typeof STATUS_COLORS]} />)}</Pie><Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} /></PieChart></ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No status data</div>}</div>
+              <div className="space-y-3 text-sm"><InfoRow label="Phase" value={phaseLabel} /><InfoRow label="Target" value={target} /><InfoRow label="Window" value={phaseWindow} /><InfoRow label="Sensor" value={selectedSensor === "all" ? "All Sensors" : sensors.find(s => s.id === selectedSensor)?.name ?? "—"} /></div>
             </div>
+            <div className="mt-5 flex flex-wrap gap-3 border-t border-metal-700 pt-4 text-xs text-metal-400">{(["safe", "warning", "violation"] as const).map(key => <span key={key} className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLORS[key] }} />{key}</span>)}</div>
+            <div className="mt-4 flex flex-wrap gap-2"><select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">{GREENHOUSES.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select><select value={selectedSensor} onChange={e => setSelectedSensor(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100"><option value="all">All Sensors</option>{sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}</select></div>
           </Card>
-
         </div>
       </div>
 
-      <Card>
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h2 className="font-bold text-metal-50">Monitoring log</h2>
-            <p className="mt-1 text-xs text-metal-400">Latest sensor readings</p>
-          </div>
-          <span className="text-[10px] uppercase tracking-wide text-metal-500">Live</span>
-        </div>
-
-        <div className="max-h-[156px] overflow-y-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 z-10 border-b border-metal-700 bg-metal-800 text-metal-400">
-              <tr><th className="p-3">Greenhouse</th><th className="p-3">Status</th><th className="p-3">Lux</th><th className="p-3">Recorded</th></tr>
-            </thead>
-
-            <tbody>
-              {data.readings.map(r => <tr key={r.id} className="border-b border-metal-700 last:border-0">
-                <td className="p-3 text-metal-100">{GREENHOUSE_BY_SENSOR[r.sensor_id] ?? r.sensor_id}</td>
-                <td className="p-3"><Badge tone={r.classification === "violation" ? "red" : r.classification === "warning" ? "amber" : "green"}>{r.classification}</Badge></td>
-                <td className="p-3 font-mono text-metal-100">{r.lux.toFixed(2)}</td>
-                <td className="p-3 text-metal-400">{new Date(r.recorded_at).toLocaleString("en-PH", { timeZone: "Asia/Manila" })}</td>
-              </tr>)}
-            </tbody>
-          </table>
-        </div>
+      <Card className="mt-5">
+        <div className="flex items-center justify-between gap-3"><h2 className="font-bold text-metal-50">Monitoring Log</h2><span className="text-xs text-metal-500">Latest 3 readings</span></div>
+        <div className="mt-3 max-h-56 overflow-y-auto overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="sticky top-0 border-b border-metal-700 bg-metal-800 text-metal-400"><tr><th className="p-3">Greenhouse</th><th className="p-3">Sensor</th><th className="p-3">Status</th><th className="p-3">Lux</th><th className="p-3">Phase</th><th className="p-3">Recorded</th></tr></thead><tbody>{selectedReadings.length ? selectedReadings.map(r => <tr key={r.id} className="border-b border-metal-700 last:border-0"><td className="p-3 text-metal-100">{greenhouse.name}</td><td className="p-3 text-metal-400">{sensors.find(s => s.id === r.sensor_id)?.name ?? r.sensor_id}</td><td className="p-3"><Badge tone={r.classification === "violation" ? "red" : r.classification === "warning" ? "amber" : "green"}>{r.classification}</Badge></td><td className="p-3 font-mono text-metal-100">{r.lux.toFixed(2)}</td><td className="p-3 text-metal-400">{r.phase_type}</td><td className="p-3 text-metal-400">{new Date(r.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={6} className="p-8 text-center text-sm text-metal-500">No sensor readings available</td></tr>}</tbody></table></div>
       </Card>
-
     </div>
+
+    <footer className="border-t border-metal-700 px-5 py-6 md:px-8"><Link href="/" className="inline-flex items-center gap-2 text-sm text-metal-400 hover:text-metal-100"><ArrowLeft size={15} /> Back to home</Link></footer>
   </main>;
 }
 
 function Kpi({ label, value, tone }: { label: string; value: number; tone?: "red" }) {
-  return <div className="rounded-lg border border-metal-700 bg-white/[0.02] px-2 py-2">
-    <p className="text-[9px] uppercase tracking-wide text-metal-500">{label}</p>
-    <p className={`mt-0.5 font-mono text-lg font-bold ${tone === "red" ? "text-red-400" : "text-metal-50"}`}>{value}</p>
-  </div>;
+  return <div className="rounded-xl border border-metal-700 bg-white/[0.02] p-3"><p className="text-xs text-metal-400">{label}</p><p className={`mt-1 font-mono text-xl font-bold ${tone === "red" ? "text-red-400" : "text-metal-50"}`}>{value}</p></div>;
 }
 
-function DistributionPanel({ title, data }: { title: string; data: { name: string; value: number; color: string }[] }) {
-  return <div className="flex min-w-0 flex-col rounded-xl border border-metal-700 bg-white/[0.015] p-2">
-    <h3 className="px-1 text-[11px] font-semibold text-metal-300">{title}</h3>
-
-    <div className="min-h-0 flex-1">
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Pie data={data} dataKey="value" nameKey="name" innerRadius="52%" outerRadius="72%" paddingAngle={2}>
-            {data.map(item => <Cell key={item.name} fill={item.color} />)}
-          </Pie>
-          <Tooltip contentStyle={{ borderRadius: 10, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} />
-        </PieChart>
-      </ResponsiveContainer>
-    </div>
-
-    <div className="flex flex-wrap justify-center gap-x-2 gap-y-1 pb-1">
-      {data.map(item => <span key={item.name} className="flex items-center gap-1 text-[9px] text-metal-400"><span className="h-1.5 w-1.5 rounded-full" style={{ background: item.color }} />{item.name}</span>)}
-    </div>
-  </div>;
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return <div className="flex items-start justify-between gap-3 border-b border-metal-700 pb-2 last:border-0"><span className="text-metal-500">{label}</span><span className="text-right font-medium text-metal-100">{value}</span></div>;
 }
