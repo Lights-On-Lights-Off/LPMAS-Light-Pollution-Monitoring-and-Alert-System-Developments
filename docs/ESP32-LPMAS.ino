@@ -3,11 +3,11 @@
 TwoWire I2C_1 = TwoWire(0);
 TwoWire I2C_2 = TwoWire(1);
 
-#define SDA1_PIN 21
-#define SCL1_PIN 22
+#define SDA1_PIN 18
+#define SCL1_PIN 19
 
-#define SDA2_PIN 18
-#define SCL2_PIN 19
+#define SDA2_PIN 21
+#define SCL2_PIN 22
 
 #define BH1750_ADDRESS 0x23
 
