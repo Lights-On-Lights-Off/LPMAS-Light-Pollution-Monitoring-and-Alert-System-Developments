@@ -13,7 +13,7 @@ const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d
 const ONLINE_WINDOW = 60_000;
 
 export function Monitor() {
-  const { data, loading, error } = useDashboardData();
+  const { data, loading } = useDashboardData();
   const [selectedGreenhouse, setSelectedGreenhouse] = useState(GREENHOUSES[0].id);
   const [selectedSensor, setSelectedSensor] = useState("all");
 
@@ -71,12 +71,18 @@ export function Monitor() {
         <span className={`h-2.5 w-2.5 rounded-full ${status === "Online" ? "bg-leaf-500 shadow-glow" : status === "Offline" ? "bg-red-400" : "bg-metal-500"}`} />
         <div><h1 className="font-bold text-metal-50">LPMAS Live Monitor</h1><p className="text-xs text-metal-400">Smart light pollution monitoring</p></div>
       </div>
-      <div className="flex items-center gap-4 text-sm"><span className="hidden text-metal-400 sm:inline">System Status: {status}</span><Link href="/login" className="rounded-full bg-leaf-500 px-4 py-2 text-xs font-semibold text-ink hover:bg-leaf-100">Staff sign in</Link></div>
+      <div className="flex items-center gap-5 text-sm">
+        <nav className="hidden items-center gap-5 sm:flex">
+          <Link href="/about" className="text-metal-400 transition hover:text-metal-50">About</Link>
+          <Link href="/about#features" className="text-metal-400 transition hover:text-metal-50">Features</Link>
+          <Link href="/about#how-it-works" className="text-metal-400 transition hover:text-metal-50">How it works</Link>
+          <Link href="/" className="text-metal-400 transition hover:text-metal-50">Home</Link>
+        </nav>
+        <Link href="/login" className="rounded-full bg-leaf-500 px-4 py-2 text-xs font-semibold text-ink hover:bg-leaf-100">Staff sign in</Link>
+      </div>
     </header>
 
     <div className="p-5 md:p-8">
-      {error && <div className="mb-5 rounded-2xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">Unable to load live sensor data. Waiting for a real sensor connection.</div>}
-
       <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
         <Card className="h-full min-h-[34rem]">
           <div className="flex flex-wrap items-start justify-between gap-4">

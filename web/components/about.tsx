@@ -63,6 +63,10 @@ function LuxGauge() {
 export function About() {
   const [menuOpen, setMenuOpen] = useState(false);
   const reduce = useReducedMotion();
+  const scrollToSection = (id: string) => {
+  const section = document.getElementById(id);
+    if (section) section.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  };
   const fade = reduce ? {} : {
     initial: { opacity: 0, y: 14 },
     whileInView: { opacity: 1, y: 0 },
@@ -70,34 +74,33 @@ export function About() {
     transition: { duration: 0.6, ease: "easeOut" as const }
   };
 
-  return <main className="w-full max-w-full overflow-x-hidden bg-ink font-sans text-metal-100 antialiased">
+  return <main className="w-full max-w-full overflow-x-clip bg-ink font-sans text-metal-100 antialiased">
 
-    <header className="sticky top-0 z-30 border-b border-metal-700 bg-ink/80 backdrop-blur-xl">
-      <nav className="mx-auto flex h-[72px] max-w-6xl items-center justify-between px-5">
-        <Link href="/" className="flex items-center gap-3">
-          <img src="/Hayag-logo.png" alt="Hayag logo" className="h-9 w-9 rounded-xl object-contain" />
-          <span className="text-sm font-bold tracking-tight">LPMAS</span>
-        </Link>
-
-        <div className="hidden items-center gap-8 text-sm text-metal-300 md:flex">
-          <Link href="/about#features" className="transition hover:text-metal-50">Features</Link>
-          <Link href="/about#how-it-works" className="transition hover:text-metal-50">How it works</Link>
-          <Link href="/about" className="font-semibold text-metal-50">About</Link>
-          <Link href="/" className="transition hover:text-metal-50">Live monitor</Link>
-          <Link href="/login" className="rounded-full bg-leaf-500 px-5 py-2 text-sm font-semibold text-ink transition hover:bg-leaf-100">Sign in</Link>
+    <header className="sticky top-0 z-30 border-b border-metal-700 bg-metal-800/60 px-5 py-4 backdrop-blur-xl md:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-metal-500" />
+          <div><h1 className="font-bold text-metal-50">LPMAS Live Monitor</h1><p className="text-xs text-metal-400">Smart light pollution monitoring</p></div>
         </div>
-
-        <button onClick={() => setMenuOpen(!menuOpen)} className="rounded-xl p-2 md:hidden" aria-label="Toggle menu">
-          {menuOpen ? <X /> : <Menu />}
-        </button>
-      </nav>
-
-      {menuOpen && <div className="space-y-1 border-t border-metal-700 px-5 py-4 md:hidden">
-        <Link href="/about#features" onClick={() => setMenuOpen(false)} className="block py-2">Features</Link>
-        <Link href="/about#how-it-works" onClick={() => setMenuOpen(false)} className="block py-2">How it works</Link>
-        <Link href="/about" onClick={() => setMenuOpen(false)} className="block py-2">About</Link>
-        <Link href="/" onClick={() => setMenuOpen(false)} className="block py-2">Live monitor</Link>
-        <Link href="/login" className="mt-2 block rounded-full bg-leaf-500 px-5 py-3 text-center font-semibold text-ink">Sign in</Link>
+        <div className="flex items-center gap-4 text-sm">
+          <nav className="hidden items-center gap-5 sm:flex">
+            <button onClick={() => scrollToSection("about")} className="text-metal-50 transition hover:text-metal-50">About</button>
+            <button onClick={() => scrollToSection("features")} className="text-metal-400 transition hover:text-metal-50">Features</button>
+            <button onClick={() => scrollToSection("how-it-works")} className="text-metal-400 transition hover:text-metal-50">How it works</button>
+            <Link href="/" className="text-metal-400 transition hover:text-metal-50">Home</Link>
+            <Link href="/login" className="rounded-full bg-leaf-500 px-4 py-2 text-xs font-semibold text-ink hover:bg-leaf-100">Staff sign in</Link>
+          </nav>
+          <button onClick={() => setMenuOpen(!menuOpen)} className="rounded-xl p-2 sm:hidden" aria-label="Toggle menu">
+            {menuOpen ? <X /> : <Menu />}
+          </button>
+        </div>
+      </div>
+        {menuOpen && <div className="mt-4 space-y-1 border-t border-metal-700 pt-4 sm:hidden">
+        <button onClick={() => { scrollToSection("about"); setMenuOpen(false); }} className="block w-full py-2 text-left">About</button>
+        <button onClick={() => { scrollToSection("features"); setMenuOpen(false); }} className="block w-full py-2 text-left">Features</button>
+        <button onClick={() => { scrollToSection("how-it-works"); setMenuOpen(false); }} className="block w-full py-2 text-left">How it works</button>
+        <Link href="/" onClick={() => setMenuOpen(false)} className="block py-2">Home</Link>
+        <Link href="/login" onClick={() => setMenuOpen(false)} className="mt-2 block rounded-full bg-leaf-500 px-5 py-3 text-center font-semibold text-ink">Staff sign in</Link>
       </div>}
     </header>
 
