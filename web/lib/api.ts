@@ -62,14 +62,15 @@ export type DashboardSummary = {
   generatedAt: string;
 };
 
-export const getDashboardSummary = async (): Promise<DashboardSummary> => {
-  const readings = await getReadings(undefined, 100);
-  return { phase: null, readings, incidents: [], generatedAt: new Date().toISOString() };
-};
+export const getDashboardSummary = () => api<DashboardSummary>("/dashboard");
 
 export const getReadings = (sensorId?: string, limit = 100) =>
   api<Reading[]>(`/readings?limit=${limit}${sensorId ? `&sensor_id=${encodeURIComponent(sensorId)}` : ""}`);
 
 export const getActivePhase = () => api<Phase | null>("/phase/active");
-export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/incidents${status ? `?status=${status}` : ""}`);
-export const acknowledgeIncident = (id: number) => api<{ status: string }>(`/incidents/${id}/acknowledge`, { method: "POST" });
+
+export const getIncidents = (status?: Incident["status"]) =>
+  api<Incident[]>(`/incidents${status ? `?status=${status}` : ""}`);
+
+export const acknowledgeIncident = (id: number) =>
+  api<{ status: string }>(`/incidents/${id}/acknowledge`, { method: "POST" });
