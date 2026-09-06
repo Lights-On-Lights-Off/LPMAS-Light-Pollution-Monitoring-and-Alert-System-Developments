@@ -1,11 +1,11 @@
 "use client";
+
 import { useMemo, useState } from "react";
-import Link from "next/link";
 import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowLeft } from "lucide-react";
 import { useDashboardData } from "@/lib/useDashboardData";
 import type { Reading } from "@/lib/api";
 import { Card, Badge } from "@/components/ui";
+import { PublicNavbar } from "@/components/public-navbar";
 
 const GREENHOUSES = [{ id: "greenhouse1", name: "Greenhouse 1", sensors: [{ id: "sensor1", name: "Sensor 1" }, { id: "sensor2", name: "Sensor 2" }] }];
 const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d", "#7bd389", "#b18cff"];
@@ -13,7 +13,7 @@ const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d
 const ONLINE_WINDOW = 60_000;
 
 export function Monitor() {
-  const { data, loading } = useDashboardData();
+  const { data, loading, error } = useDashboardData();
   const [selectedGreenhouse, setSelectedGreenhouse] = useState(GREENHOUSES[0].id);
   const [selectedSensor, setSelectedSensor] = useState("all");
 
@@ -66,21 +66,7 @@ export function Monitor() {
   };
 
   return <main className="min-h-screen bg-ink font-sans text-metal-100">
-    <header className="flex flex-wrap items-center justify-between gap-4 border-b border-metal-700 bg-metal-800/60 px-5 py-4 md:px-8">
-      <div className="flex items-center gap-3">
-        <span className={`h-2.5 w-2.5 rounded-full ${status === "Online" ? "bg-leaf-500 shadow-glow" : status === "Offline" ? "bg-red-400" : "bg-metal-500"}`} />
-        <div><h1 className="font-bold text-metal-50">LPMAS Live Monitor</h1><p className="text-xs text-metal-400">Smart light pollution monitoring</p></div>
-      </div>
-      <div className="flex items-center gap-5 text-sm">
-        <nav className="hidden items-center gap-5 sm:flex">
-          <Link href="/about" className="text-metal-400 transition hover:text-metal-50">About</Link>
-          <Link href="/about#features" className="text-metal-400 transition hover:text-metal-50">Features</Link>
-          <Link href="/about#how-it-works" className="text-metal-400 transition hover:text-metal-50">How it works</Link>
-          <Link href="/" className="text-metal-400 transition hover:text-metal-50">Home</Link>
-        </nav>
-        <Link href="/login" className="rounded-full bg-leaf-500 px-4 py-2 text-xs font-semibold text-ink hover:bg-leaf-100">Staff sign in</Link>
-      </div>
-    </header>
+    <PublicNavbar />
 
     <div className="p-5 md:p-8">
       <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
@@ -93,8 +79,8 @@ export function Monitor() {
             </div>
           </div>
 
-          <div className="mt-6 h-[26rem]">
-            {loading && !data.readings.length ? <div className="grid h-full place-items-center text-sm text-metal-400">Waiting for sensor data...</div> : !chart.length ? <div className="grid h-full place-items-center text-sm text-metal-400">No sensor data available</div> : <ResponsiveContainer width="100%" height="100%"><AreaChart data={chart}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" /><XAxis dataKey="time" tick={{ fontSize: 11, fill: "#6f7278" }} interval="preserveStartEnd" /><YAxis tick={{ fontSize: 11, fill: "#6f7278" }} width={40} /><Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} /><Legend wrapperStyle={{ fontSize: 12 }} />{sensors.filter(sensor => sensorIds.includes(sensor.id)).map((sensor, i) => <Area key={sensor.id} type="monotone" dataKey={sensor.id} name={sensor.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill="none" />)}</AreaChart></ResponsiveContainer>}
+          <div className="relative mt-6 h-[26rem]">
+            {loading && !data.readings.length ? <div className="grid h-full place-items-center text-sm text-metal-400">Waiting for sensor data...</div> : !chart.length ? <div className="grid h-full place-items-center text-center">{error ? <span className="rounded-full bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400">Unable to load live sensor data. Waiting for a real sensor connection.</span> : <span className="text-sm text-metal-400">No sensor data available</span>}</div> : <ResponsiveContainer width="100%" height="100%"><AreaChart data={chart}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" /><XAxis dataKey="time" tick={{ fontSize: 11, fill: "#6f7278" }} interval="preserveStartEnd" /><YAxis tick={{ fontSize: 11, fill: "#6f7278" }} width={40} /><Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} /><Legend wrapperStyle={{ fontSize: 12 }} />{sensors.filter(sensor => sensorIds.includes(sensor.id)).map((sensor, i) => <Area key={sensor.id} type="monotone" dataKey={sensor.id} name={sensor.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill="none" />)}</AreaChart></ResponsiveContainer>}
           </div>
         </Card>
 
@@ -121,8 +107,6 @@ export function Monitor() {
         <div className="mt-3 max-h-56 overflow-y-auto overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="sticky top-0 border-b border-metal-700 bg-metal-800 text-metal-400"><tr><th className="p-3">Greenhouse</th><th className="p-3">Sensor</th><th className="p-3">Status</th><th className="p-3">Lux</th><th className="p-3">Phase</th><th className="p-3">Recorded</th></tr></thead><tbody>{selectedReadings.length ? selectedReadings.map(r => <tr key={r.id} className="border-b border-metal-700 last:border-0"><td className="p-3 text-metal-100">{greenhouse.name}</td><td className="p-3 text-metal-400">{sensors.find(s => s.id === r.sensor_id)?.name ?? r.sensor_id}</td><td className="p-3"><Badge tone={r.classification === "violation" ? "red" : r.classification === "warning" ? "amber" : "green"}>{r.classification}</Badge></td><td className="p-3 font-mono text-metal-100">{r.lux.toFixed(2)}</td><td className="p-3 text-metal-400">{r.phase_type}</td><td className="p-3 text-metal-400">{new Date(r.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={6} className="p-8 text-center text-sm text-metal-500">No sensor readings available</td></tr>}</tbody></table></div>
       </Card>
     </div>
-
-    <footer className="border-t border-metal-700 px-5 py-6 md:px-8"><Link href="/" className="inline-flex items-center gap-2 text-sm text-metal-400 hover:text-metal-100"><ArrowLeft size={15} /> Back to home</Link></footer>
   </main>;
 }
 
