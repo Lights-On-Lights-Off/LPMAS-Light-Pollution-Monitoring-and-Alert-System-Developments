@@ -1,29 +1,31 @@
 "use client";
+
 import Link from "next/link";
 import { useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { ArrowRight, BellRing, CloudSun, Database, Menu, ShieldCheck, Sprout, X } from "lucide-react";
-import { PublicNavbar } from "./public-navbar";
+import {
+  ArrowRight, BellRing, CloudSun, Database, Menu, ShieldCheck, Sprout, X
+} from "lucide-react";
 
 const features = [
-  { icon: <CloudSun strokeWidth={1.75} />, title: "Continuous light monitoring", text: "BH1750FVI lux readings through the full crop cycle.", wide: true },
+  { icon: <CloudSun strokeWidth={1.75} />, title: "Continuous light monitoring", text: "BH1750FVI lux readings every five seconds through the full crop cycle.", wide: true },
   { icon: <Sprout strokeWidth={1.75} />, title: "Phase-aware detection", text: "One range check for illumination, one ceiling check for the dark period." },
-  { icon: <BellRing strokeWidth={1.75} />, title: "Instant alerts", text: "Staff notified when a reading breaches its phase." },
-  { icon: <ShieldCheck strokeWidth={1.75} />, title: "Role-based access", text: "Admins and managers are scoped to what they need." },
+  { icon: <BellRing strokeWidth={1.75} />, title: "Instant alerts", text: "Staff notified the moment a reading breaches its phase." },
+  { icon: <ShieldCheck strokeWidth={1.75} />, title: "Role-based access", text: "Admins, managers, technicians, each scoped to what they need." },
   { icon: <Database strokeWidth={1.75} />, title: "Full event history", text: "Every reading and incident kept for review." }
 ];
 
 const pipeline = [
-  { title: "Measure", text: "The ESP32 and BH1750FVI send a timestamped lux reading to the monitoring system." },
-  { title: "Evaluate", text: "LPMAS checks the active phase against its configured light requirements." },
-  { title: "Respond", text: "An incident opens, staff are alerted, and the resolution gets recorded." }
+  { title: "Measure", text: "The ESP32 and BH1750FVI send a timestamped lux reading every five seconds." },
+  { title: "Evaluate", text: "LPMAS checks the active phase, an illumination range or a dark ceiling, against it." },
+  { title: "Respond", text: "An incident opens, the technician is alerted, the resolution gets recorded." }
 ];
 
 const stats = [
   { value: "70-100", label: "Target lux range" },
   { value: "6:30-11", label: "Nightly window, PM" },
-  { value: "2", label: "Current sensors" },
-  { value: "10s", label: "Planned reporting interval" }
+  { value: "3", label: "Sensors online" },
+  { value: "5s", label: "Reporting interval" }
 ];
 
 function LuxGauge() {
@@ -39,7 +41,7 @@ function LuxGauge() {
       <span className="rounded-full bg-leaf-500/15 px-3 py-1 text-xs font-semibold text-leaf-500">In range</span>
     </div>
 
-    <div className="relative mt-8 h-2 rounded-full bg-theme-surface-hover">
+    <div className="relative mt-8 h-2 rounded-full bg-white/10">
       <div className="absolute top-0 h-2 rounded-full bg-leaf-500/25" style={{ left: `${pct(bandLow)}%`, width: `${pct(bandHigh) - pct(bandLow)}%` }} />
       <div className="absolute -top-1.5 h-5 w-1 rounded-full bg-leaf-500" style={{ left: `${pct(reading)}%` }} />
     </div>
@@ -68,20 +70,58 @@ export function About() {
     transition: { duration: 0.6, ease: "easeOut" as const }
   };
 
-  return <main className="theme-transition w-full max-w-full overflow-x-clip bg-ink font-sans text-metal-100 antialiased">
-    <PublicNavbar />
+  return <main className="w-full max-w-full overflow-x-hidden bg-ink font-sans text-metal-100 antialiased">
+
+    <header className="sticky top-0 z-30 border-b border-metal-700 bg-ink/80 backdrop-blur-xl">
+      <nav className="mx-auto flex h-[72px] max-w-6xl items-center justify-between px-5">
+        <Link href="/" className="flex items-center gap-3">
+          <img src="/Hayag-logo.png" alt="Hayag logo" className="h-9 w-9 rounded-xl object-contain" />
+          <span className="text-sm font-bold tracking-tight">LPMAS</span>
+        </Link>
+
+        <div className="hidden items-center gap-8 text-sm text-metal-300 md:flex">
+          <Link href="/about#features" className="transition hover:text-metal-50">Features</Link>
+          <Link href="/about#how-it-works" className="transition hover:text-metal-50">How it works</Link>
+          <Link href="/about" className="font-semibold text-metal-50">About</Link>
+          <Link href="/" className="transition hover:text-metal-50">Live monitor</Link>
+          <Link href="/login" className="rounded-full bg-leaf-500 px-5 py-2 text-sm font-semibold text-ink transition hover:bg-leaf-100">Sign in</Link>
+        </div>
+
+        <button onClick={() => setMenuOpen(!menuOpen)} className="rounded-xl p-2 md:hidden" aria-label="Toggle menu">
+          {menuOpen ? <X /> : <Menu />}
+        </button>
+      </nav>
+
+      {menuOpen && <div className="space-y-1 border-t border-metal-700 px-5 py-4 md:hidden">
+        <Link href="/about#features" onClick={() => setMenuOpen(false)} className="block py-2">Features</Link>
+        <Link href="/about#how-it-works" onClick={() => setMenuOpen(false)} className="block py-2">How it works</Link>
+        <Link href="/about" onClick={() => setMenuOpen(false)} className="block py-2">About</Link>
+        <Link href="/" onClick={() => setMenuOpen(false)} className="block py-2">Live monitor</Link>
+        <Link href="/login" className="mt-2 block rounded-full bg-leaf-500 px-5 py-3 text-center font-semibold text-ink">Sign in</Link>
+      </div>}
+    </header>
 
     <section className="relative px-5 pb-24 pt-16 md:pb-32 md:pt-24">
-      <div className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_15%_25%,var(--theme-accent-soft),transparent_40%)]" />
+      <div className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_15%_25%,rgba(247,183,51,0.08),transparent_40%)]" />
 
       <div className="relative mx-auto grid max-w-6xl items-center gap-14 lg:grid-cols-[1.05fr_.95fr]">
         <motion.div initial={reduce ? undefined : { opacity: 0, y: 16 }} animate={reduce ? undefined : { opacity: 1, y: 0 }} transition={{ duration: 0.7, ease: "easeOut" }}>
-          <h1 className="max-w-xl text-[clamp(2.5rem,5vw,4.25rem)] font-black leading-[1.05] tracking-tight">Keep every phase inside its light.</h1>
-          <p className="mt-6 max-w-lg text-lg leading-8 text-metal-300">LPMAS watches the illumination range and the dark ceiling for every greenhouse phase, and tells your team the moment either one drifts.</p>
+          <h1 className="max-w-xl text-[clamp(2.5rem,5vw,4.25rem)] font-black leading-[1.05] tracking-tight">
+            Keep every phase inside its light.
+          </h1>
+
+          <p className="mt-6 max-w-lg text-lg leading-8 text-metal-300">
+            LPMAS watches the illumination range and the dark ceiling for every greenhouse phase, and tells your team the moment either one drifts.
+          </p>
 
           <div className="mt-9 flex flex-wrap gap-3">
-            <Link href="/login" className="inline-flex items-center gap-2 rounded-full bg-leaf-500 px-7 py-3.5 font-semibold text-ink transition hover:bg-leaf-100 active:scale-[0.98]">Sign in <ArrowRight size={18} /></Link>
-            <Link href="/" className="rounded-full border border-metal-600 px-7 py-3.5 font-semibold transition hover:bg-theme-surface-hover active:scale-[0.98]">View live data</Link>
+            <Link href="/login" className="inline-flex items-center gap-2 rounded-full bg-leaf-500 px-7 py-3.5 font-semibold text-ink transition hover:bg-leaf-100 active:scale-[0.98]">
+              Sign in <ArrowRight size={18} />
+            </Link>
+
+            <Link href="/" className="rounded-full border border-metal-600 px-7 py-3.5 font-semibold transition hover:bg-white/5 active:scale-[0.98]">
+              View live data
+            </Link>
           </div>
         </motion.div>
 
@@ -131,14 +171,41 @@ export function About() {
       </div>
     </section>
 
+    <section className="mx-auto max-w-6xl px-5 py-24 md:py-32">
+      <div className="overflow-hidden rounded-3xl border border-metal-700 bg-gradient-to-br from-leaf-900 to-ink px-8 py-14 md:px-16">
+        <div className="grid items-center gap-10 md:grid-cols-[1fr_auto]">
+          <div>
+            <h2 className="text-3xl font-bold tracking-tight md:text-4xl">Ready for the next crop cycle.</h2>
+            <p className="mt-4 max-w-lg leading-7 text-metal-400">Piloting on one greenhouse now, ready to scale across all eighteen as devices are added.</p>
+          </div>
+
+          <Link href="/login" className="inline-flex items-center justify-center gap-2 rounded-full bg-leaf-500 px-7 py-3.5 font-semibold text-ink transition hover:bg-leaf-100 active:scale-[0.98]">
+            Sign in <ArrowRight size={18} />
+          </Link>
+        </div>
+      </div>
+    </section>
+
     <section id="about" className="border-t border-metal-700 px-5 py-24 md:py-32">
       <div className="mx-auto max-w-6xl">
         <div className="max-w-3xl">
           <p className="font-mono text-sm uppercase tracking-widest text-leaf-500">About LPMAS</p>
-          <h2 className="mt-3 text-3xl font-bold tracking-tight md:text-4xl">An IoT-based light pollution monitoring and alert system for controlled greenhouse floriculture.</h2>
-          <p className="mt-6 leading-8 text-metal-300">LPMAS is designed to help Flowerland monitor artificial light conditions throughout the greenhouse crop cycle. The system combines ESP32-based sensor nodes, BH1750FVI light sensors, real-time telemetry, phase-aware evaluation and incident logging into one monitoring platform.</p>
-          <p className="mt-5 leading-8 text-metal-400">During the illumination phase, the system checks whether measured light remains within the configured operating range. During the dark phase, the system watches for unwanted light intrusion and records conditions that require attention.</p>
-          <p className="mt-5 leading-8 text-metal-400">The purpose of the system is simple: give greenhouse staff a continuous digital view of conditions that would otherwise require manual inspection, while keeping a reliable record of readings and incidents for review.</p>
+
+          <h2 className="mt-3 text-3xl font-bold tracking-tight md:text-4xl">
+            An IoT-based light pollution monitoring and alert system for controlled greenhouse floriculture.
+          </h2>
+
+          <p className="mt-6 leading-8 text-metal-300">
+            LPMAS is designed to help Flowerland monitor artificial light conditions throughout the greenhouse crop cycle. The system combines ESP32-based sensor nodes, BH1750FVI light sensors, real-time telemetry, phase-aware evaluation and incident logging into one monitoring platform.
+          </p>
+
+          <p className="mt-5 leading-8 text-metal-400">
+            During the illumination phase, the system checks whether measured light remains within the configured operating range. During the dark phase, the system watches for unwanted light intrusion and records conditions that require attention.
+          </p>
+
+          <p className="mt-5 leading-8 text-metal-400">
+            The purpose of the system is simple: give greenhouse staff a continuous digital view of conditions that would otherwise require manual inspection, while keeping a reliable record of readings and incidents for review.
+          </p>
         </div>
 
         <div className="mt-12 grid gap-4 md:grid-cols-3">
@@ -165,7 +232,9 @@ export function About() {
 
     <footer className="border-t border-metal-700 px-5 py-8">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 text-sm text-metal-500">
-        <div className="flex items-center gap-2 font-semibold text-metal-50"><img src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS</div>
+        <div className="flex items-center gap-2 font-semibold text-metal-50">
+          <img src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS
+        </div>
         <p>Light Pollution Monitoring and Alert System</p>
       </div>
     </footer>

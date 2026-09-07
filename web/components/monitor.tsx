@@ -8,7 +8,6 @@ import { useDashboardData } from "@/lib/useDashboardData";
 import { latestBySensor, STATUS_COLORS } from "@/lib/chartData";
 import { GREENHOUSE_BY_SENSOR } from "@/lib/mockData";
 import { Card, Badge } from "@/components/ui";
-import { PublicNavbar } from "@/components/public-navbar";
 
 const SENSOR_IDS = ["sensor1", "sensor2"];
 const LINE_COLOR = "#d9a441";

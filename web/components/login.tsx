@@ -3,7 +3,6 @@
 import { FormEvent, useState } from "react";
 import { ArrowLeft, Eye, EyeOff, LockKeyhole, Mail } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { logActivity } from "@/lib/activityLog";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -40,15 +39,13 @@ export function Login() {
       .single();
 
     if (profileError || !profile) {
-      console.error("Profile query error:", profileError);
-      setMessage(`Profile error: ${profileError?.message || "No profile record returned"}`);
-      await supabase.auth.signOut();
-      setLoading(false);
-      return;
-    }
-
-    await logActivity("SIGN_IN", "authentication", undefined, { email, role: profile.role });
-
+  console.error("Profile query error:", profileError);
+  setMessage(
+    `Profile error: ${profileError?.message || "No profile record returned"}`
+  );
+  await supabase.auth.signOut();
+  return;
+}
     router.replace("/dashboard");
     router.refresh();
   }
