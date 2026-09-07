@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabase";
 
-export type Role = "admin" | "manager" | "technician";
+export type Role = "admin" | "manager";
 export type Profile = { id: string; full_name: string | null; role: Role; email: string | null };
 
 export function useProfile() {
@@ -47,7 +47,6 @@ export function useProfile() {
 // the public, no-login /monitor page instead of a dashboard section (see
 // app/dashboard/page.tsx, which redirects technician accounts there).
 export const NAV_BY_ROLE: Record<Role, string[]> = {
-  technician: [],
-  manager: ["Overview", "Greenhouses", "Recycle bin"],
+  manager: ["Overview", "Greenhouses", "Activity Logs", "Recycle bin"],
   admin: ["Overview", "Team", "System settings", "Activity Logs"],
 };
