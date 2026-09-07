@@ -1,17 +1,10 @@
 import { supabase } from "./supabase";
 
-const baseUrl = process.env.NEXT_PUBLIC_PI_API_URL ?? "http://192.168.100.142:5000";
+const baseUrl = process.env.NEXT_PUBLIC_PI_API_URL ?? "https://guides-hampshire-mens-font.trycloudflare.com";
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = (await supabase?.auth.getSession())?.data.session?.access_token;
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init?.headers
-    }
-  });
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers }, cache: "no-store" });
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -62,15 +55,12 @@ export type DashboardSummary = {
   generatedAt: string;
 };
 
-export const getDashboardSummary = () => api<DashboardSummary>("/dashboard");
+export const getDashboardSummary = async () => {
+  const readings = await api<Reading[]>("/readings?limit=100");
+  return { phase: null, readings, incidents: [], generatedAt: new Date().toISOString() };
+};
 
-export const getReadings = (sensorId?: string, limit = 100) =>
-  api<Reading[]>(`/readings?limit=${limit}${sensorId ? `&sensor_id=${encodeURIComponent(sensorId)}` : ""}`);
-
+export const getReadings = (sensorId?: string, limit = 100) => api<Reading[]>(`/readings?limit=${limit}${sensorId ? `&sensor_id=${sensorId}` : ""}`);
 export const getActivePhase = () => api<Phase | null>("/phase/active");
-
-export const getIncidents = (status?: Incident["status"]) =>
-  api<Incident[]>(`/incidents${status ? `?status=${status}` : ""}`);
-
-export const acknowledgeIncident = (id: number) =>
-  api<{ status: string }>(`/incidents/${id}/acknowledge`, { method: "POST" });
+export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/incidents${status ? `?status=${status}` : ""}`);
+export const acknowledgeIncident = (id: number) => api<{ status: string }>(`/incidents/${id}/acknowledge`, { method: "POST" });
