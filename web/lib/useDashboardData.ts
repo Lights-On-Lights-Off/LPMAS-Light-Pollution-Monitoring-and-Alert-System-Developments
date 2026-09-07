@@ -2,9 +2,10 @@
 import { useEffect, useState } from "react";
 import { getDashboardSummary, type DashboardSummary } from "./api";
 
+const EMPTY_DATA: DashboardSummary = { phase: null, readings: [], incidents: [], generatedAt: new Date(0).toISOString() };
+
 export function useDashboardData() {
-  const [data, setData] = useState<DashboardSummary>({ phase: null, readings: [], incidents: [], generatedAt: new Date().toISOString() });
-  const [demo, setDemo] = useState(false);
+  const [data, setData] = useState<DashboardSummary>(EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -12,20 +13,16 @@ export function useDashboardData() {
     let active = true;
 
     const refresh = () => getDashboardSummary()
-      .then(v => {
-        if (active) {
-          setData(v);
-          setDemo(false);
-          setError(null);
-          setLoading(false);
-        }
+      .then(value => {
+        if (!active) return;
+        setData(value);
+        setError(null);
+        setLoading(false);
       })
       .catch(err => {
-        if (active) {
-          setDemo(false);
-          setError(err instanceof Error ? err.message : "Unable to load live readings");
-          setLoading(false);
-        }
+        if (!active) return;
+        setError(err instanceof Error ? err.message : "Unable to load live sensor data");
+        setLoading(false);
       });
 
     refresh();
@@ -37,5 +34,5 @@ export function useDashboardData() {
     };
   }, []);
 
-  return { data, demo, loading, error };
+  return { data, loading, error };
 }
