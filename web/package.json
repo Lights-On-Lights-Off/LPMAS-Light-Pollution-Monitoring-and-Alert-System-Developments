@@ -20,6 +20,8 @@
     "datatables.net-react": "^1.0.2",
     "date-fns": "^4.1.0",
     "gsap": "^3.15.0",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^0.475.0",
     "motion": "^13.1.1",
     "next": "^15.1.7",
