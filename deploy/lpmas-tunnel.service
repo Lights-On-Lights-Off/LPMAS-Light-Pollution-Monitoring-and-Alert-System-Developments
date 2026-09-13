@@ -1,0 +1,16 @@
+[Unit]
+Description=LPMAS Cloudflare Quick Tunnel sync
+After=network-online.target lpmas-app.service
+Wants=network-online.target
+Requires=lpmas-app.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/lpmas/pi-server
+ExecStart=/usr/bin/python3 /home/pi/lpmas/pi-server/tunnel_sync.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
