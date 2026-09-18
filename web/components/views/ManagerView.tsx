@@ -1,12 +1,12 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, CircleAlert, Download, Gauge, Radio, Recycle, RefreshCw, Sprout, Wifi, X } from "lucide-react";
+import { Activity, AlertTriangle, CircleAlert, Download, Gauge, Radio, Recycle, RefreshCw, Sprout, Trash2, Wifi, X } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { Card, Badge } from "../ui";
 import { useDashboardData } from "@/lib/useDashboardData";
-import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, type Greenhouse, type MinuteAggregate } from "@/lib/api";
+import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, deleteGreenhouse, type Greenhouse, type MinuteAggregate, type Reading } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
 
@@ -85,11 +85,41 @@ function toLocalConfig(g: Greenhouse): GreenhouseConfig {
   };
 }
 
+// Sensor IDs seen by the system, live or not. Live Pi readings are preferred,
+// but sensors that have ever reported into Supabase remain visible/assignable
+// so the Overview and Greenhouses pages stay accurate while the Pi is quiet.
+async function knownSensorIds(): Promise<string[]> {
+  if (!supabase) return [];
+  const [aggregateResult, assignedResult] = await Promise.all([
+    supabase.from("sensor_minute_aggregates").select("sensor_id").order("bucket_start", { ascending: false }).limit(1000),
+    supabase.from("greenhouse_sensors").select("sensor_id")
+  ]);
+  const ids = new Set<string>();
+  if (!aggregateResult.error) (aggregateResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
+  if (!assignedResult.error) (assignedResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
+  return Array.from(ids);
+}
+
+function mergeSensorIds(live: string[], known: string[]) {
+  return Array.from(new Set([...live, ...known])).sort();
+}
+
 function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDashboardData>["data"]; loading: boolean; error: string | null }) {
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [greenhouseConfigs, setGreenhouseConfigs] = useState<GreenhouseConfig[]>([]);
   const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [history, setHistory] = useState<MinuteAggregate[]>([]);
+  const [knownSensors, setKnownSensors] = useState<string[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    knownSensorIds().then(ids => {
+      if (active) setKnownSensors(ids);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const readings = useMemo(
     () => [...data.readings].sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()),
@@ -108,7 +138,8 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
   }, [readings]);
 
   const sensors = Array.from(latestBySensor.values());
-  const availableSensors = Array.from(latestBySensor.keys()).filter(id => !greenhouseConfigs.some(g => g.sensorIds.includes(id)));
+  const allKnownSensorIds = useMemo(() => mergeSensorIds(Array.from(latestBySensor.keys()), knownSensors), [latestBySensor, knownSensors]);
+  const availableSensors = allKnownSensorIds.filter(id => !greenhouseConfigs.some(g => g.sensorIds.includes(id)));
   const selectedConfig = greenhouseConfigs.find(g => g.id === selectedGreenhouse);
   const assignedIds = selectedConfig?.sensorIds ?? [];
   const onlineSensorCount = assignedIds.filter(id => {
@@ -117,7 +148,6 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
   }).length;
   const openIncidents = data.incidents.filter(i => i.status !== "resolved" && (!selectedConfig || assignedIds.includes(i.sensor_id))).length;
   const warningReads = readings.filter(r => r.classification === "warning").length;
-  const systemOnline = !error && !loading;
   const recentActivities = [...readings].reverse().slice(0, 3);
   const warnings = [...readings].reverse().filter(r => r.classification === "warning").slice(0, 5);
 
@@ -176,6 +206,20 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
       .map(r => ({ time: new Date(r.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }), lux: r.lux }));
   }, [history, readings, selectedConfig, assignedIds.join(",")]);
 
+  // Newest timestamp behind whatever the chart is currently showing, so a
+  // stale Supabase fallback is never presented as if it were live.
+  const chartAsOf = useMemo(() => {
+    if (!selectedConfig) return null;
+    const source = history.length
+      ? history.map(row => row.bucket_start)
+      : readings.filter(r => assignedIds.includes(r.sensor_id)).map(r => r.recorded_at);
+    if (!source.length) return null;
+    return source.reduce((newest, value) => {
+      const time = new Date(value).getTime();
+      return time > newest ? time : newest;
+    }, 0);
+  }, [history, readings, selectedConfig, assignedIds.join(",")]);
+
   async function refreshReport() {
     setReportRefreshing(true);
     try {
@@ -193,10 +237,6 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
           <h1 className="text-2xl font-bold text-[var(--foreground)]">Monitor Overview</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Real-time greenhouse monitoring and system status.</p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-          <span className={`h-2.5 w-2.5 rounded-full ${systemOnline ? "bg-leaf-500 shadow-glow" : "bg-red-400"}`} />
-          {systemOnline ? "System online" : "System unavailable"}
-        </div>
       </div>
 
       <div className="grid gap-5 md:grid-cols-3">
@@ -209,7 +249,10 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
         <Card className="min-h-[340px]">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-bold text-[var(--foreground)]">Lux Intensity Trend</h2>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h2 className="font-bold text-[var(--foreground)]">Lux Intensity Trend</h2>
+                {chartAsOf && <span className="text-xs text-[var(--muted-foreground)]">as of {new Date(chartAsOf).toLocaleString()}</span>}
+              </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">Minute history from Supabase with live readings as fallback.</p>
             </div>
             <select
@@ -241,7 +284,7 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
               </ResponsiveContainer>
             ) : (
               <div className="grid h-full place-items-center text-sm text-[var(--muted-foreground)]">
-                {!greenhouseConfigs.length ? "No Greenhouse Configured" : loading ? "Waiting for live sensor data..." : "No sensor data available"}
+                {!greenhouseConfigs.length ? "No Greenhouse Configured" : "No readings recorded yet"}
               </div>
             )}
           </div>
@@ -360,19 +403,32 @@ function GreenhousesView() {
   const [sensorRefreshing, setSensorRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [defaultPhase, setDefaultPhase] = useState({ start: "", end: "" });
+
+  useEffect(() => {
+    fetch("/api/admin/settings", { cache: "no-store" })
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => {
+        if (body) setDefaultPhase({ start: body.default_illumination_start ?? "", end: body.default_illumination_end ?? "" });
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const load = async () => {
+      const live = Array.from(new Set(data.readings.map(r => r.sensor_id).filter(Boolean)));
+      const known = await knownSensorIds();
       try {
         const remote = await getGreenhouses();
         const configs = remote.map(toLocalConfig);
         setGreenhouses(configs);
-        setDetectedSensors(Array.from(new Set(data.readings.map(r => r.sensor_id).filter(Boolean))));
+        setDetectedSensors(mergeSensorIds(live, known));
         if (remote.length) localStorage.setItem(CONFIG_KEY, JSON.stringify(configs));
       } catch {
         const local = readLocalConfigs();
         setGreenhouses(local);
-        setDetectedSensors(Array.from(new Set(data.readings.map(r => r.sensor_id).filter(Boolean))));
+        setDetectedSensors(mergeSensorIds(live, known));
       }
     };
     load();
@@ -383,8 +439,8 @@ function GreenhousesView() {
   function openAddModal() {
     setEditingId(null);
     setName("");
-    setPhaseStart("");
-    setPhaseEnd("");
+    setPhaseStart(defaultPhase.start);
+    setPhaseEnd(defaultPhase.end);
     setWindowStart("18:30");
     setWindowEnd("23:00");
     setSelectedSensors([]);
@@ -428,8 +484,15 @@ function GreenhousesView() {
     if (sensorRefreshing) return;
     setSensorRefreshing(true);
     try {
-      const latest = await getDashboardSummary();
-      setDetectedSensors(Array.from(new Set(latest.readings.map(r => r.sensor_id).filter(Boolean))));
+      const known = await knownSensorIds();
+      let live: string[] = [];
+      try {
+        const latest = await getDashboardSummary();
+        live = Array.from(new Set(latest.readings.map(r => r.sensor_id).filter(Boolean)));
+      } catch {
+        // Pi unreachable: fall back to sensors Supabase already knows about.
+      }
+      setDetectedSensors(mergeSensorIds(live, known));
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to refresh sensors");
     } finally {
@@ -485,20 +548,28 @@ function GreenhousesView() {
     }
   }
 
-  function deleteGreenhouseLocal(id: string) {
+  async function handleDeleteGreenhouse(id: string) {
     const greenhouse = greenhouses.find(item => item.id === id);
-    if (!greenhouse) return;
+    if (!greenhouse || deletingId) return;
 
     const confirmed = window.confirm(
-      `Remove "${greenhouse.name}" from this browser's configured greenhouse list?\n\nThe current backend does not expose a DELETE greenhouse endpoint, so this does not delete the Raspberry Pi configuration.`
+      `Delete "${greenhouse.name}"? Its configuration will be moved to the Recycle Bin and its sensors freed for reassignment.`
     );
     if (!confirmed) return;
 
-    const next = greenhouses.filter(item => item.id !== id);
-    setGreenhouses(next);
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(next));
-    window.dispatchEvent(new Event("lpmas-greenhouse-config-updated"));
-    void logActivity("REMOVE_GREENHOUSE_FROM_LOCAL_LIST", "greenhouses", id, { name: greenhouse.name });
+    setDeletingId(id);
+    try {
+      await deleteGreenhouse(id);
+      const next = greenhouses.filter(item => item.id !== id);
+      setGreenhouses(next);
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(next));
+      window.dispatchEvent(new Event("lpmas-greenhouse-config-updated"));
+      await logActivity("DELETE_GREENHOUSE", "greenhouses", id, { name: greenhouse.name });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Unable to delete greenhouse");
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   return (
@@ -534,8 +605,8 @@ function GreenhousesView() {
                   <button onClick={() => openEditModal(g)} type="button" className="px-4 py-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-white/[0.04]">
                     EDIT
                   </button>
-                  <button onClick={() => deleteGreenhouseLocal(g.id)} type="button" className="border-l border-white/[0.07] px-4 py-3 text-sm font-semibold text-red-400 transition hover:bg-red-500/[0.05]">
-                    DELETE
+                  <button onClick={() => handleDeleteGreenhouse(g.id)} type="button" disabled={deletingId === g.id} className="border-l border-white/[0.07] px-4 py-3 text-sm font-semibold text-red-400 transition hover:bg-red-500/[0.05] disabled:opacity-50">
+                    {deletingId === g.id ? "DELETING..." : "DELETE"}
                   </button>
                 </div>
               </div>
@@ -620,7 +691,7 @@ function GreenhousesView() {
                           </label>
                         ))
                       ) : (
-                        <div className="px-3 py-4 text-sm text-[var(--muted-foreground)]">Sensor unavailable</div>
+                        <div className="px-3 py-4 text-sm text-[var(--muted-foreground)]">No sensors have reported to the system yet</div>
                       )}
                     </div>
                   </div>
@@ -647,18 +718,16 @@ function GreenhousesView() {
 }
 
 function ActivityLogsView() {
-  const { data, loading: hardwareLoading, error: hardwareError } = useDashboardData();
   const [userLogs, setUserLogs] = useState<ActivityLog[]>([]);
   const [userLoading, setUserLoading] = useState(true);
   const [userError, setUserError] = useState<string | null>(null);
   const [greenhouses, setGreenhouses] = useState<GreenhouseConfig[]>([]);
-  const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [range, setRange] = useState("24h");
-  const [hardwareLogs, setHardwareLogs] = useState(data.readings);
-  const [hardwareBusy, setHardwareBusy] = useState(false);
   const firstLoad = useRef(true);
 
-  const [aggregates, setAggregates] = useState<MinuteAggregate[]>([]);
+  const [rawLogs, setRawLogs] = useState<Reading[]>([]);
+  const [rawLoading, setRawLoading] = useState(true);
+  const [rawError, setRawError] = useState<string | null>(null);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportStart, setExportStart] = useState("");
@@ -672,14 +741,9 @@ function ActivityLogsView() {
       .then(rows => {
         const configs = rows.map(toLocalConfig);
         setGreenhouses(configs);
-        setSelectedGreenhouse(configs[0]?.id ?? "");
         localStorage.setItem(CONFIG_KEY, JSON.stringify(configs));
       })
-      .catch(() => {
-        const configs = readLocalConfigs();
-        setGreenhouses(configs);
-        setSelectedGreenhouse(configs[0]?.id ?? "");
-      });
+      .catch(() => setGreenhouses(readLocalConfigs()));
   }, []);
 
   useEffect(() => {
@@ -714,7 +778,6 @@ function ActivityLogsView() {
     };
   }, []);
 
-  const selected = greenhouses.find(g => g.id === selectedGreenhouse);
   const rangeStart = useMemo(() => {
     const now = Date.now();
     if (range === "today") {
@@ -726,59 +789,41 @@ function ActivityLogsView() {
     return new Date(now - 86400000).toISOString();
   }, [range]);
 
-  useEffect(() => {
-    let active = true;
-    async function loadHardware() {
-      if (!selected) {
-        setHardwareLogs([]);
-        return;
-      }
-      setHardwareBusy(true);
-      try {
-        const result = await getHardwareActivity(selected.id, selected.sensorIds, rangeStart, new Date().toISOString());
-        if (active) setHardwareLogs(result.readings);
-      } catch {
-        if (active) setHardwareLogs([]);
-      } finally {
-        if (active) setHardwareBusy(false);
-      }
-    }
-    loadHardware();
-    return () => {
-      active = false;
-    };
-  }, [selectedGreenhouse, rangeStart, selected?.sensorIds.join(",")]);
+  const greenhouseNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    greenhouses.forEach(g => map.set(g.id, g.name));
+    return map;
+  }, [greenhouses]);
 
-  useEffect(() => {
-    let active = true;
-    async function loadAggregates() {
-      if (!supabase || !selected) {
-        setAggregates([]);
-        return;
-      }
-      const { data: rows, error } = await supabase
-        .from("sensor_minute_aggregates")
-        .select("id, sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at")
-        .eq("greenhouse_id", selected.id)
-        .gte("bucket_start", rangeStart)
-        .order("bucket_start", { ascending: true });
-      if (!active) return;
-      setAggregates(error ? [] : ((rows ?? []) as MinuteAggregate[]));
-    }
-    loadAggregates();
-    return () => {
-      active = false;
-    };
-  }, [selectedGreenhouse, rangeStart, selected?.id]);
-
-  function aggregateFor(sensorId: string, recordedAt: string) {
-    const minute = new Date(recordedAt);
-    minute.setSeconds(0, 0);
-    const match = aggregates.find(a => a.sensor_id === sensorId && new Date(a.bucket_start).getTime() === minute.getTime());
-    return match ? match.avg_lux.toFixed(2) : "—";
+  function greenhouseLabel(id: string | null) {
+    if (!id) return "Unassigned";
+    return greenhouseNameById.get(id) ?? id;
   }
 
-
+  // All sensor readings, any greenhouse or none, any active status — this
+  // table intentionally shows everything, unlike the aggregates table used
+  // to.
+  useEffect(() => {
+    let active = true;
+    async function loadRaw() {
+      setRawLoading(true);
+      try {
+        const result = await getHardwareActivity(undefined, [], rangeStart, new Date().toISOString());
+        if (active) {
+          setRawLogs(result.readings);
+          setRawError(null);
+        }
+      } catch (error) {
+        if (active) setRawError(error instanceof Error ? error.message : "Unable to load hardware logs");
+      } finally {
+        if (active) setRawLoading(false);
+      }
+    }
+    loadRaw();
+    return () => {
+      active = false;
+    };
+  }, [rangeStart]);
 
   function openExportModal() {
     const now = new Date();
@@ -795,19 +840,18 @@ function ActivityLogsView() {
   }
 
   async function runExport() {
-    if (!selected || !exportStart || !exportEnd || exportBusy) return;
+    if (!exportStart || !exportEnd || exportBusy) return;
     setExportBusy(true);
     setExportError(null);
     try {
       const startISO = new Date(exportStart).toISOString();
       const endISO = new Date(exportEnd).toISOString();
-      const result = await getHardwareActivity(selected.id, selected.sensorIds, startISO, endISO);
+      const result = await getHardwareActivity(undefined, [], startISO, endISO);
       const headers = ["Timestamp", "Greenhouse", "Sensor ID", "Lux", "Phase", "Classification"];
-      const rows = result.readings.map(r => [new Date(r.recorded_at).toLocaleString(), selected.name, r.sensor_id, r.lux.toFixed(2), r.phase_type, r.classification]);
-      if (exportFormat === "csv") downloadCSV(`system-hardware-logs-${selected.name}.csv`, headers, rows);
-      else downloadPDF(`system-hardware-logs-${selected.name}.pdf`, headers, rows, `System Hardware Logs — ${selected.name}`);
+      const rows = result.readings.map(r => [new Date(r.recorded_at).toLocaleString(), greenhouseLabel(r.greenhouse_id), r.sensor_id, r.lux.toFixed(2), r.phase_type, r.classification]);
+      if (exportFormat === "csv") downloadCSV("system-hardware-logs.csv", headers, rows);
+      else downloadPDF("system-hardware-logs.pdf", headers, rows, "System Hardware Logs", buildLuxTrendChartImage(result.readings));
       await logActivity("EXPORT_HARDWARE_ACTIVITY_LOG", "activity_logs", undefined, {
-        greenhouse_id: selected.id,
         start: startISO,
         end: endISO,
         format: exportFormat,
@@ -839,13 +883,9 @@ function ActivityLogsView() {
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="font-bold text-[var(--foreground)]">SYSTEM HARDWARE LOGS</h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Raw 10-second readings from SQLite, matched against 1-minute Supabase aggregates, for the selected greenhouse and time range.</p>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">All sensor readings for the selected time range, regardless of greenhouse assignment or active status. Downloads pull the same raw data from the Raspberry Pi's SQLite database for the date range you choose.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select value={selectedGreenhouse} onChange={e => setSelectedGreenhouse(e.target.value)} className="min-w-[150px] rounded-xl border border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_10%,var(--surface))] px-3 py-2 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_20%,transparent)]">
-              <option value="">No Greenhouse</option>
-              {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-            </select>
             <select value={range} onChange={e => setRange(e.target.value)} className="min-w-[150px] rounded-xl border border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_10%,var(--surface))] px-3 py-2 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_20%,transparent)]">
               <option value="today">Today</option>
               <option value="24h">Last 24h</option>
@@ -862,30 +902,28 @@ function ActivityLogsView() {
           <table className="w-full table-fixed text-sm leading-5">
             <thead className="sticky top-0 border-b border-metal-700 bg-[var(--surface)] text-metal-400">
               <tr>
-                <th className="w-[16%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Timestamp</th>
-                <th className="w-[14%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Greenhouse</th>
-                <th className="w-[13%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Sensor ID</th>
-                <th className="w-[10%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Lux</th>
-                <th className="w-[19%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Avg Lux</th>
-                <th className="w-[14%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Phase</th>
-                <th className="w-[14%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Classification</th>
+                <th className="w-[18%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Timestamp</th>
+                <th className="w-[17%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Greenhouse</th>
+                <th className="w-[15%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Sensor ID</th>
+                <th className="w-[12%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Lux</th>
+                <th className="w-[19%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Phase</th>
+                <th className="w-[19%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Classification</th>
               </tr>
             </thead>
             <tbody>
-              {hardwareLogs.length ? hardwareLogs.map(r => (
+              {rawLogs.length ? rawLogs.map(r => (
                 <tr key={r.id} className="border-b border-metal-700 last:border-0">
                   <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-400">{new Date(r.recorded_at).toLocaleString()}</td>
-                  <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-300">{selected?.name ?? "—"}</td>
+                  <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-300">{greenhouseLabel(r.greenhouse_id)}</td>
                   <td className="px-4 py-3.5 text-center align-middle font-mono text-xs text-metal-400">{r.sensor_id}</td>
                   <td className="px-4 py-3.5 text-center align-middle font-mono text-sm font-semibold text-metal-100">{r.lux.toFixed(2)}</td>
-                  <td className="px-4 py-3.5 text-center align-middle font-mono text-xs text-metal-400">{aggregateFor(r.sensor_id, r.recorded_at)}</td>
                   <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-400">{r.phase_type}</td>
                   <td className="px-4 py-3.5 text-center align-middle">
                     <Badge tone={r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification}</Badge>
                   </td>
                 </tr>
               )) : (
-                <EmptyRow colSpan={7} text={hardwareLoading || hardwareBusy ? "Waiting for real hardware readings..." : hardwareError ? "Unable to load hardware logs" : "No hardware logs available"} />
+                <EmptyRow colSpan={6} text={rawLoading ? "Loading hardware logs..." : rawError ? "Unable to load hardware logs" : "No readings recorded yet for this range"} />
               )}
             </tbody>
           </table>
@@ -980,14 +1018,13 @@ function ActivityLogsView() {
                   <option value="pdf">PDF</option>
                 </select>
               </label>
-              {!selected && <p className="text-sm text-amber-400">Select a greenhouse above first.</p>}
               {exportError && <p className="text-sm text-red-400">{exportError}</p>}
             </div>
             <div className="mt-7 flex justify-end gap-3">
               <button onClick={closeExportModal} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)]">Cancel</button>
               <button
                 onClick={runExport}
-                disabled={!selected || !exportStart || !exportEnd || exportBusy}
+                disabled={!exportStart || !exportEnd || exportBusy}
                 className="rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] px-5 py-2.5 text-sm font-semibold disabled:opacity-50"
               >
                 {exportBusy ? "Exporting..." : "Export"}
@@ -1014,12 +1051,109 @@ function downloadCSV(filename: string, headers: string[], rows: string[][]) {
   URL.revokeObjectURL(url);
 }
 
-function downloadPDF(filename: string, headers: string[], rows: string[][], title: string) {
+function downloadPDF(filename: string, headers: string[], rows: string[][], title: string, chartDataUrl?: string | null) {
   const doc = new jsPDF();
   doc.setFontSize(13);
   doc.text(title, 14, 15);
-  autoTable(doc, { head: [headers], body: rows, startY: 20, styles: { fontSize: 8 } });
+  let startY = 22;
+  if (chartDataUrl) {
+    const imgWidth = 180;
+    const imgHeight = (LUX_TREND_CHART_HEIGHT / LUX_TREND_CHART_WIDTH) * imgWidth;
+    doc.addImage(chartDataUrl, "PNG", 14, startY, imgWidth, imgHeight);
+    startY += imgHeight + 8;
+  }
+  autoTable(doc, { head: [headers], body: rows, startY, styles: { fontSize: 8 } });
   doc.save(filename);
+}
+
+const LUX_TREND_CHART_WIDTH = 900;
+const LUX_TREND_CHART_HEIGHT = 300;
+
+// Renders a calculated lux trend (average across all sensors in the export,
+// bucketed so it stays readable regardless of how long the chosen date range
+// is) to a PNG data URL, so it can be embedded directly as an image in the
+// exported PDF rather than just a table of numbers.
+function buildLuxTrendChartImage(readings: { recorded_at: string; lux: number }[]): string | null {
+  if (!readings.length) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = LUX_TREND_CHART_WIDTH;
+  canvas.height = LUX_TREND_CHART_HEIGHT;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, LUX_TREND_CHART_WIDTH, LUX_TREND_CHART_HEIGHT);
+
+  const sorted = [...readings].sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+  const startTime = new Date(sorted[0].recorded_at).getTime();
+  const endTime = new Date(sorted[sorted.length - 1].recorded_at).getTime();
+  const span = Math.max(endTime - startTime, 1);
+
+  const bucketCount = Math.max(1, Math.min(60, sorted.length));
+  const bucketMs = span / bucketCount;
+  const buckets: { sum: number; count: number }[] = Array.from({ length: bucketCount }, () => ({ sum: 0, count: 0 }));
+
+  for (const reading of sorted) {
+    const t = new Date(reading.recorded_at).getTime();
+    const index = Math.min(bucketCount - 1, Math.floor((t - startTime) / bucketMs));
+    buckets[index].sum += reading.lux;
+    buckets[index].count += 1;
+  }
+
+  const points = buckets.map(b => (b.count ? b.sum / b.count : null));
+  const knownPoints = points.filter((p): p is number => p !== null);
+  if (!knownPoints.length) return null;
+
+  const maxLux = Math.max(...knownPoints, 1);
+  const minLux = Math.min(...knownPoints, 0);
+  const paddingLeft = 46;
+  const paddingRight = 20;
+  const paddingTop = 26;
+  const paddingBottom = 34;
+  const plotWidth = LUX_TREND_CHART_WIDTH - paddingLeft - paddingRight;
+  const plotHeight = LUX_TREND_CHART_HEIGHT - paddingTop - paddingBottom;
+
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "11px sans-serif";
+  ctx.lineWidth = 1;
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = paddingTop + (plotHeight * i) / gridLines;
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, y);
+    ctx.lineTo(LUX_TREND_CHART_WIDTH - paddingRight, y);
+    ctx.stroke();
+    const value = maxLux - ((maxLux - minLux) * i) / gridLines;
+    ctx.fillText(value.toFixed(1), 6, y + 4);
+  }
+
+  ctx.strokeStyle = "#7c3aed";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let started = false;
+  points.forEach((value, i) => {
+    if (value === null) return;
+    const x = paddingLeft + (plotWidth * i) / (bucketCount - 1 || 1);
+    const y = paddingTop + plotHeight - ((value - minLux) / (maxLux - minLux || 1)) * plotHeight;
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = "#111827";
+  ctx.font = "12px sans-serif";
+  ctx.fillText("Average lux over time (all sensors)", paddingLeft, 16);
+  ctx.fillText(new Date(startTime).toLocaleString(), paddingLeft, LUX_TREND_CHART_HEIGHT - 12);
+  const endLabel = new Date(endTime).toLocaleString();
+  ctx.fillText(endLabel, LUX_TREND_CHART_WIDTH - paddingRight - ctx.measureText(endLabel).width, LUX_TREND_CHART_HEIGHT - 12);
+
+  return canvas.toDataURL("image/png");
 }
 
 function toDatetimeLocal(iso: string) {
@@ -1028,7 +1162,71 @@ function toDatetimeLocal(iso: string) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+type RecycleBinEntry = {
+  id: number;
+  greenhouse_id: string;
+  name: string;
+  config: {
+    phase_start?: string;
+    phase_end?: string;
+    window_start?: string;
+    window_end?: string;
+    sensor_ids?: string[];
+  } | null;
+  deleted_at: string;
+};
+
 function RecycleBinView() {
+  const [entries, setEntries] = useState<RecycleBinEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [emptying, setEmptying] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      if (!supabase) {
+        if (active) {
+          setError("Supabase is not configured.");
+          setLoading(false);
+        }
+        return;
+      }
+      const { data, error } = await supabase
+        .from("greenhouse_recycle_bin")
+        .select("id, greenhouse_id, name, config, deleted_at")
+        .order("deleted_at", { ascending: false });
+      if (!active) return;
+      if (error) setError(error.message);
+      else {
+        setEntries((data ?? []) as RecycleBinEntry[]);
+        setError(null);
+      }
+      setLoading(false);
+    }
+    load();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function handleEmptyTrash() {
+    if (!supabase || emptying || !entries.length) return;
+    const confirmed = window.confirm(`Permanently delete ${entries.length} recycle bin ${entries.length === 1 ? "entry" : "entries"}? This cannot be undone.`);
+    if (!confirmed) return;
+    setEmptying(true);
+    try {
+      const { error } = await supabase.rpc("empty_greenhouse_recycle_bin");
+      if (error) throw new Error(error.message);
+      setEntries([]);
+      await logActivity("EMPTY_RECYCLE_BIN", "greenhouse_recycle_bin");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Unable to empty recycle bin");
+    } finally {
+      setEmptying(false);
+    }
+  }
+
   return (
     <div className="space-y-6 p-6 md:p-8">
       <div>
@@ -1036,10 +1234,45 @@ function RecycleBinView() {
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">Recently deleted greenhouse records.</p>
       </div>
       <Card>
-        <div className="flex min-h-56 flex-col items-center justify-center text-center">
-          <Recycle size={32} className="text-[var(--muted-foreground)]" />
-          <p className="mt-3 text-sm text-[var(--muted-foreground)]">Recycle bin is empty.</p>
+        <div className="mb-5 flex items-start justify-end">
+          <button
+            onClick={handleEmptyTrash}
+            type="button"
+            disabled={emptying || !entries.length}
+            className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,#ef4444_14%,transparent)] px-3.5 py-2 text-sm font-medium text-red-400 transition hover:bg-[color-mix(in_srgb,#ef4444_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 size={16} />
+            {emptying ? "Emptying..." : "Empty Trash"}
+          </button>
         </div>
+        {loading ? (
+          <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">Loading recycle bin...</div>
+        ) : error ? (
+          <div className="grid min-h-56 place-items-center text-center text-sm text-red-400">Unable to load recycle bin.<br />{error}</div>
+        ) : entries.length ? (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {entries.map(entry => (
+              <div key={entry.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
+                <p className="font-semibold text-[var(--foreground)]">{entry.name}</p>
+                <div className="mt-3 space-y-1.5 text-xs text-[var(--muted-foreground)]">
+                  <p>Deleted: {new Date(entry.deleted_at).toLocaleString()}</p>
+                  {entry.config?.phase_start && entry.config?.phase_end && (
+                    <p>Illumination: {entry.config.phase_start} → {entry.config.phase_end}</p>
+                  )}
+                  {entry.config?.window_start && entry.config?.window_end && (
+                    <p>Window: {entry.config.window_start} → {entry.config.window_end}</p>
+                  )}
+                  <p>Sensors: {entry.config?.sensor_ids?.length ? entry.config.sensor_ids.join(", ") : "—"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex min-h-56 flex-col items-center justify-center text-center">
+            <Recycle size={32} className="text-[var(--muted-foreground)]" />
+            <p className="mt-3 text-sm text-[var(--muted-foreground)]">Recycle bin is empty.</p>
+          </div>
+        )}
       </Card>
     </div>
   );
