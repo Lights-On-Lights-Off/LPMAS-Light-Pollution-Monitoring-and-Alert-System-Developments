@@ -85,8 +85,88 @@ export type HardwareActivityResponse = { readings: Reading[]; count: number };
 export type MinuteAggregate = { id: number; sensor_id: string; greenhouse_id: string | null; bucket_start: string; phase_type: "illumination" | "dark"; sample_count: number; avg_lux: number; min_lux: number; max_lux: number; safe_count: number; warning_count: number; violation_count: number; updated_at: string };
 
 export const getDashboardSummary = () => api<DashboardSummary>("/api/dashboard");
-export const getGreenhouses = () => api<Greenhouse[]>("/api/greenhouses");
-export const saveGreenhouse = (greenhouse: { id: string; name: string; sensor_ids: string[]; phase_start: string; phase_end: string; window_start: string; window_end: string }) => api<Greenhouse>("/api/greenhouses", { method: "POST", body: JSON.stringify(greenhouse) });
+
+// Greenhouse configuration lives in Supabase now (see
+// 0006_greenhouse_config.sql), not the Pi — reads go straight to the
+// greenhouses/greenhouse_sensors tables, and writes go through the
+// upsert_greenhouse()/delete_greenhouse() RPC functions rather than any
+// direct table insert (this project never lets client keys write tables
+// directly; see the migration's own comments).
+function toHHMM(value: string) {
+  // Postgres `time` columns come back from PostgREST as "HH:MM:SS";
+  // <input type="time"> and the existing card display both expect "HH:MM".
+  return value.slice(0, 5);
+}
+
+type GreenhouseRow = {
+  id: string;
+  name: string;
+  phase_start: string;
+  phase_end: string;
+  window_start: string;
+  window_end: string;
+  is_active: boolean;
+  updated_at: string;
+  greenhouse_sensors: { sensor_id: string }[] | null;
+};
+
+export async function getGreenhouses(): Promise<Greenhouse[]> {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { data, error } = await supabase
+    .from("greenhouses")
+    .select("id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at, greenhouse_sensors(sensor_id)")
+    .eq("is_active", true)
+    .order("name", { ascending: true });
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as unknown as GreenhouseRow[]).map(row => ({
+    id: row.id,
+    name: row.name,
+    phase_start: row.phase_start,
+    phase_end: row.phase_end,
+    window_start: toHHMM(row.window_start),
+    window_end: toHHMM(row.window_end),
+    is_active: row.is_active ? 1 : 0,
+    updated_at: row.updated_at,
+    sensor_ids: (row.greenhouse_sensors ?? []).map(s => s.sensor_id)
+  }));
+}
+
+export async function saveGreenhouse(greenhouse: { id: string; name: string; sensor_ids: string[]; phase_start: string; phase_end: string; window_start: string; window_end: string }): Promise<Greenhouse> {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { data, error } = await supabase.rpc("upsert_greenhouse", {
+    p_id: greenhouse.id,
+    p_name: greenhouse.name,
+    p_sensor_ids: greenhouse.sensor_ids,
+    p_phase_start: greenhouse.phase_start,
+    p_phase_end: greenhouse.phase_end,
+    p_window_start: greenhouse.window_start,
+    p_window_end: greenhouse.window_end
+  });
+
+  if (error) throw new Error(error.message);
+
+  const row = data as GreenhouseRow;
+  return {
+    id: row.id,
+    name: row.name,
+    phase_start: row.phase_start,
+    phase_end: row.phase_end,
+    window_start: toHHMM(row.window_start),
+    window_end: toHHMM(row.window_end),
+    is_active: row.is_active ? 1 : 0,
+    updated_at: row.updated_at,
+    sensor_ids: greenhouse.sensor_ids
+  };
+}
+
+export async function deleteGreenhouse(id: string): Promise<void> {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { error } = await supabase.rpc("delete_greenhouse", { p_id: id });
+  if (error) throw new Error(error.message);
+}
+
 export const getReadings = (sensorId?: string, limit = 100, start?: string, end?: string) => { const params = new URLSearchParams(); params.set("limit", limit.toString()); if (sensorId) params.set("sensor_id", sensorId); if (start) params.set("start", start); if (end) params.set("end", end); return api<Reading[]>(`/api/readings?${params.toString()}`); };
 export const getActivePhase = () => api<Phase | null>("/api/phase/active");
 export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/api/incidents${status ? `?status=${status}` : ""}`);
