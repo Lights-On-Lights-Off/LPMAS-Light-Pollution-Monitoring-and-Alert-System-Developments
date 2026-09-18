@@ -13,6 +13,19 @@ const publishableKey =
 
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// Keys this route reads/writes in system_settings, and which roles may do
+// which. manager_phone/default_* are readable by managers too, since the
+// Greenhouses page pre-fills its form from the defaults; only admins may
+// write any of them.
+const SETTINGS_KEYS = [
+  "manager_phone",
+  "default_illumination_start",
+  "default_illumination_end",
+  "dark_phase_duration_days",
+] as const;
+
+type SettingsKey = (typeof SETTINGS_KEYS)[number];
+
 async function getServerSupabase() {
   if (!supabaseUrl || !publishableKey) {
     return null;
@@ -65,7 +78,7 @@ function getAdminClient() {
   });
 }
 
-async function requireAdmin() {
+async function requireRole(allowedRoles: readonly string[]) {
   const supabase = await getServerSupabase();
 
   if (!supabase) {
@@ -106,10 +119,10 @@ async function requireAdmin() {
     };
   }
 
-  if (profile.role !== "admin") {
+  if (!allowedRoles.includes(profile.role)) {
     return {
       error: NextResponse.json(
-        { error: "Administrator access required." },
+        { error: "You do not have access to this resource." },
         { status: 403 }
       ),
     };
@@ -119,7 +132,7 @@ async function requireAdmin() {
 }
 
 export async function GET() {
-  const authorization = await requireAdmin();
+  const authorization = await requireRole(["admin", "manager"]);
 
   if (authorization.error) {
     return authorization.error;
@@ -137,8 +150,7 @@ export async function GET() {
   const { data, error } = await admin
     .from("system_settings")
     .select("key, value, updated_at")
-    .eq("key", "manager_phone")
-    .maybeSingle();
+    .in("key", SETTINGS_KEYS);
 
   if (error) {
     return NextResponse.json(
@@ -147,14 +159,19 @@ export async function GET() {
     );
   }
 
+  const byKey = new Map((data ?? []).map(row => [row.key, row]));
+
   return NextResponse.json({
-    manager_phone: data?.value ?? "",
-    updated_at: data?.updated_at ?? null,
+    manager_phone: byKey.get("manager_phone")?.value ?? "",
+    default_illumination_start: byKey.get("default_illumination_start")?.value ?? "",
+    default_illumination_end: byKey.get("default_illumination_end")?.value ?? "",
+    dark_phase_duration_days: byKey.get("dark_phase_duration_days")?.value ?? "",
+    updated_at: data?.[0]?.updated_at ?? null,
   });
 }
 
 export async function PATCH(request: NextRequest) {
-  const authorization = await requireAdmin();
+  const authorization = await requireRole(["admin"]);
 
   if (authorization.error) {
     return authorization.error;
@@ -180,35 +197,52 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
-  const managerPhone =
-    typeof body === "object" &&
-    body !== null &&
-    "manager_phone" in body &&
-    typeof body.manager_phone === "string"
-      ? body.manager_phone.trim()
-      : null;
-
-  if (managerPhone === null) {
+  if (typeof body !== "object" || body === null) {
     return NextResponse.json(
-      { error: "manager_phone must be a string." },
+      { error: "Request body must be an object." },
       { status: 400 }
     );
   }
 
-  const { data, error } = await admin
+  const updates: { key: SettingsKey; value: string }[] = [];
+
+  for (const key of SETTINGS_KEYS) {
+    if (key in body) {
+      const raw = (body as Record<string, unknown>)[key];
+      if (typeof raw !== "string") {
+        return NextResponse.json(
+          { error: `${key} must be a string.` },
+          { status: 400 }
+        );
+      }
+      updates.push({ key, value: raw.trim() });
+    }
+  }
+
+  if (!updates.length) {
+    return NextResponse.json(
+      { error: "No recognized settings provided." },
+      { status: 400 }
+    );
+  }
+
+  if (updates.some(u => u.key === "dark_phase_duration_days")) {
+    const days = updates.find(u => u.key === "dark_phase_duration_days")!.value;
+    const parsed = Number(days);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return NextResponse.json(
+        { error: "dark_phase_duration_days must be a whole number of at least 1." },
+        { status: 400 }
+      );
+    }
+  }
+
+  const { error } = await admin
     .from("system_settings")
     .upsert(
-      {
-        key: "manager_phone",
-        value: managerPhone,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "key",
-      }
-    )
-    .select("key, value, updated_at")
-    .single();
+      updates.map(u => ({ key: u.key, value: u.value, updated_at: new Date().toISOString() })),
+      { onConflict: "key" }
+    );
 
   if (error) {
     return NextResponse.json(
@@ -217,8 +251,25 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
+  const { data, error: readError } = await admin
+    .from("system_settings")
+    .select("key, value, updated_at")
+    .in("key", SETTINGS_KEYS);
+
+  if (readError) {
+    return NextResponse.json(
+      { error: readError.message },
+      { status: 500 }
+    );
+  }
+
+  const byKey = new Map((data ?? []).map(row => [row.key, row]));
+
   return NextResponse.json({
-    manager_phone: data.value,
-    updated_at: data.updated_at,
+    manager_phone: byKey.get("manager_phone")?.value ?? "",
+    default_illumination_start: byKey.get("default_illumination_start")?.value ?? "",
+    default_illumination_end: byKey.get("default_illumination_end")?.value ?? "",
+    dark_phase_duration_days: byKey.get("dark_phase_duration_days")?.value ?? "",
+    updated_at: data?.[0]?.updated_at ?? null,
   });
 }
