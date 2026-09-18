@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --background: #eef3f8;
+  --background: ;
   --foreground: #142033;
   --surface: rgba(255, 255, 255, 0.42);
   --surface-strong: rgba(255, 255, 255, 0.64);
@@ -20,6 +20,34 @@
   --warning: #c58a18;
   --danger: #d44949;
   --neutral: #718096;
+
+  /* Aliases for the metal, leaf, ink, and theme Tailwind color tokens in
+     tailwind.config.ts, which reference --theme- prefixed variables that
+     were referenced throughout the app but never actually defined. */
+  --theme-background: var(--background);
+  --theme-surface: var(--surface);
+  --theme-surface-secondary: var(--surface-strong);
+  --theme-surface-hover: var(--surface-strong);
+  --theme-border: var(--surface-border);
+  --theme-text: var(--foreground);
+  --theme-text-secondary: var(--text-secondary);
+  --theme-text-muted: var(--text-muted);
+  --theme-text-subtle: var(--text-muted);
+  --theme-accent: var(--accent);
+  --theme-accent-hover: var(--accent-hover);
+  --theme-accent-soft: var(--accent-soft);
+  --theme-accent-border: var(--accent-border);
+  --theme-accent-foreground: #ffffff;
+  --theme-success: var(--success);
+  --theme-warning: var(--warning);
+  --theme-danger: var(--danger);
+  --theme-info: var(--accent);
+  --theme-shadow: rgba(37, 73, 112, 0.14);
+  --theme-accent-shadow: var(--accent-soft);
+
+  /* Used throughout ManagerView.tsx but likewise never defined. */
+  --border: var(--surface-border);
+  --muted-foreground: var(--text-muted);
 }
 
 html {
@@ -177,7 +205,8 @@ textarea {
 }
 
 [data-theme="dark"] {
-  --background: #101722;
+    background-color: var(--background);
+    background-image: url("/bgd.png");
   --foreground: #edf5ff;
   --surface: rgba(20, 31, 46, 0.48);
   --surface-strong: rgba(20, 31, 46, 0.66);
@@ -190,6 +219,30 @@ textarea {
   --accent-hover: #82b9ff;
   --accent-soft: rgba(98, 168, 255, 0.15);
   --accent-border: rgba(98, 168, 255, 0.32);
+
+  --theme-background: var(--background);
+  --theme-surface: var(--surface);
+  --theme-surface-secondary: var(--surface-strong);
+  --theme-surface-hover: var(--surface-strong);
+  --theme-border: var(--surface-border);
+  --theme-text: var(--foreground);
+  --theme-text-secondary: var(--text-secondary);
+  --theme-text-muted: var(--text-muted);
+  --theme-text-subtle: var(--text-muted);
+  --theme-accent: var(--accent);
+  --theme-accent-hover: var(--accent-hover);
+  --theme-accent-soft: var(--accent-soft);
+  --theme-accent-border: var(--accent-border);
+  --theme-accent-foreground: #ffffff;
+  --theme-success: var(--success);
+  --theme-warning: var(--warning);
+  --theme-danger: var(--danger);
+  --theme-info: var(--accent);
+  --theme-shadow: rgba(0, 0, 0, 0.35);
+  --theme-accent-shadow: var(--accent-soft);
+
+  --border: var(--surface-border);
+  --muted-foreground: var(--text-muted);
 }
 
 [data-theme="dark"] body {
