@@ -52,6 +52,13 @@ export function AdminView({ section }: { section: string }) {
   const [phoneSaving, setPhoneSaving] = useState(false);
   const [phoneMessage, setPhoneMessage] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [defaultIllumStart, setDefaultIllumStart] = useState("");
+  const [defaultIllumEnd, setDefaultIllumEnd] = useState("");
+  const [darkPhaseDays, setDarkPhaseDays] = useState("60");
+  const [defaultsSaving, setDefaultsSaving] = useState(false);
+  const [defaultsMessage, setDefaultsMessage] = useState("");
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
+  const [defaultsEditOpen, setDefaultsEditOpen] = useState(false);
   const [monitoringEditOpen, setMonitoringEditOpen] = useState(false);
   const [smsAddOpen, setSmsAddOpen] = useState(false);
   const [smsEditTarget, setSmsEditTarget] = useState<{ id: string; name: string; phone: string } | null>(null);
@@ -115,15 +122,25 @@ export function AdminView({ section }: { section: string }) {
   const activeGreenhouseSensorIds = useMemo(() => new Set(greenhouses.filter(g => g.is_active === 1).flatMap(g => g.sensor_ids)), [greenhouses]);
   const connectedSensors = useMemo(() => {
     const now = Date.now();
-    const latestBySensor = new Map<string, typeof data.readings[number]>();
+    const latestBySensor = new Map<string, { sensor_id: string; lux: number; recorded_at: string }>();
     data.readings.forEach(reading => {
       if (!activeGreenhouseSensorIds.has(reading.sensor_id)) return;
       const current = latestBySensor.get(reading.sensor_id);
-      if (!current || new Date(reading.recorded_at).getTime() > new Date(current.recorded_at).getTime()) latestBySensor.set(reading.sensor_id, reading);
+      if (!current || new Date(reading.recorded_at).getTime() > new Date(current.recorded_at).getTime()) {
+        latestBySensor.set(reading.sensor_id, { sensor_id: reading.sensor_id, lux: reading.lux, recorded_at: reading.recorded_at });
+      }
     });
-    return Array.from(latestBySensor.values()).filter(reading => now - new Date(reading.recorded_at).getTime() <= 60_000).sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
-  }, [activeGreenhouseSensorIds, data.readings]);
-  const activityStatus = overviewLoading || loading ? "Loading" : overviewError || error || greenhouseError ? "Failed to fetch" : "Connected";
+    const live = Array.from(latestBySensor.values()).filter(reading => now - new Date(reading.recorded_at).getTime() <= 60_000);
+    if (live.length) return live.sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
+
+    // No fresh live readings: show the most recent Supabase aggregate per
+    // sensor instead of an empty table.
+    return Array.from(latest.values())
+      .filter(row => activeGreenhouseSensorIds.has(row.sensor_id))
+      .map(row => ({ sensor_id: row.sensor_id, lux: row.avg_lux, recorded_at: row.bucket_start }))
+      .sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
+  }, [activeGreenhouseSensorIds, data.readings, latest]);
+  const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
   const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
 
   async function loadOverviewData() {
@@ -187,6 +204,9 @@ export function AdminView({ section }: { section: string }) {
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
 
       setManagerPhone(body.manager_phone ?? "");
+      setDefaultIllumStart(body.default_illumination_start ?? "");
+      setDefaultIllumEnd(body.default_illumination_end ?? "");
+      setDarkPhaseDays(body.dark_phase_duration_days || "60");
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : "Failed to load manager phone.");
     } finally {
@@ -219,6 +239,40 @@ export function AdminView({ section }: { section: string }) {
       setPhoneError(e instanceof Error ? e.message : "Failed to save manager phone.");
     } finally {
       setPhoneSaving(false);
+    }
+  }
+
+  async function saveDefaults() {
+    if (defaultsSaving) return;
+
+    setDefaultsSaving(true);
+    setDefaultsMessage("");
+    setDefaultsError(null);
+
+    try {
+      const response = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          default_illumination_start: defaultIllumStart,
+          default_illumination_end: defaultIllumEnd,
+          dark_phase_duration_days: darkPhaseDays.trim()
+        })
+      });
+
+      const body = await response.json().catch(() => ({}));
+
+      if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+
+      setDefaultIllumStart(body.default_illumination_start ?? "");
+      setDefaultIllumEnd(body.default_illumination_end ?? "");
+      setDarkPhaseDays(body.dark_phase_duration_days || "60");
+      setDefaultsMessage("Defaults saved successfully.");
+      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "default_phase_config", { value_changed: true });
+    } catch (e) {
+      setDefaultsError(e instanceof Error ? e.message : "Failed to save defaults.");
+    } finally {
+      setDefaultsSaving(false);
     }
   }
 
@@ -363,7 +417,7 @@ export function AdminView({ section }: { section: string }) {
     return team.filter(user => user.role === roleFilter);
   }, [roleFilter, team]);
 
-  const controlClassName = "block w-full min-w-0 rounded-lg border border-theme-accent/60 bg-theme-surface-secondary px-3 py-2.5 text-sm font-medium text-theme-text shadow-sm outline-none transition placeholder:text-theme-muted focus:border-theme-accent focus:ring-2 focus:ring-theme-accent/30 disabled:cursor-not-allowed disabled:opacity-50";
+  const controlClassName = "block w-full min-w-0 rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm text-[var(--foreground)] outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))] transition placeholder:text-[var(--muted-foreground)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_30%,var(--border))] disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div className="space-y-5 p-5 md:p-7">
@@ -728,10 +782,58 @@ export function AdminView({ section }: { section: string }) {
           </div>
 
           <Card>
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">Default greenhouse phase settings</p></div>
+                <p className="mt-1 text-xs leading-5 text-theme-muted">Pre-fills a manager's Add Greenhouse form. Managers can still change these per greenhouse. Lux thresholds themselves remain fixed, unaffected by this.</p>
+              </div>
+              <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
+            </div>
+            <dl className="grid gap-4 sm:grid-cols-3">
+              <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
+              <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
+              <SettingRow label="Dark phase duration" value={`${darkPhaseDays || "60"} days`} />
+            </dl>
+          </Card>
+
+          <Modal
+            open={defaultsEditOpen}
+            onClose={() => !defaultsSaving && setDefaultsEditOpen(false)}
+            title="Edit default phase settings"
+            description="These are starting values only — each greenhouse's actual dates are still set per-greenhouse by a manager."
+            footer={
+              <>
+                <button onClick={() => setDefaultsEditOpen(false)} disabled={defaultsSaving} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent disabled:opacity-50">Cancel</button>
+                <button onClick={saveDefaults} disabled={defaultsSaving} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover disabled:opacity-50">{defaultsSaving ? "Saving..." : "Save"}</button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {defaultsError && <div className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{defaultsError}</div>}
+              {defaultsMessage && <div className="rounded-xl border border-theme-success/30 bg-theme-success/10 p-3 text-sm text-theme-success">{defaultsMessage}</div>}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Default illumination from</span>
+                  <input type="date" value={defaultIllumStart} onChange={e => setDefaultIllumStart(e.target.value)} className={controlClassName} />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Default illumination to</span>
+                  <input type="date" value={defaultIllumEnd} onChange={e => setDefaultIllumEnd(e.target.value)} className={controlClassName} />
+                </label>
+              </div>
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Dark phase duration (days)</span>
+                <input type="number" min={1} step={1} value={darkPhaseDays} onChange={e => setDarkPhaseDays(e.target.value)} className={controlClassName} />
+                <span className="mt-1.5 block text-xs text-theme-muted">Replaces the fixed 60-day default. Applies system-wide; the Pi picks this up within 30 seconds of saving.</span>
+              </label>
+            </div>
+          </Modal>
+
+          <Card>
             <div className="mb-5"><p className="font-bold text-theme-text">Connected sensors</p><p className="mt-1 text-sm text-theme-muted">Only active greenhouse sensors currently sending real lux values are shown.</p></div>
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
               <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
-                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux.toFixed(2)} lx</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">Reporting</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(reading.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No active sensors are currently reporting lux values.</td></tr>}</tbody>
+                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux.toFixed(2)} lx</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">Reporting</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(reading.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
               </table>
             </div>
           </Card>

@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDashboardData } from "@/lib/useDashboardData";
-import type { Reading, Greenhouse } from "@/lib/api";
+import type { Reading, Greenhouse, MinuteAggregate } from "@/lib/api";
 import { getGreenhouses } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 
@@ -22,7 +23,7 @@ const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d
 const ONLINE_WINDOW = 60_000;
 
 export function Monitor() {
-  const { data, loading, error } = useDashboardData();
+  const { data } = useDashboardData();
   const [greenhouses, setGreenhouses] = useState<(GreenhouseConfig | Greenhouse)[]>([]);
   const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [selectedSensor, setSelectedSensor] = useState("all");
@@ -66,10 +67,63 @@ export function Monitor() {
     return data.readings.filter(reading => configuredSensorIds.includes(reading.sensor_id));
   }, [data.readings, greenhouse, configuredSensorIds]);
 
+  // Fallback source so the dashboard is never blank: when the Pi is
+  // unreachable (or has sent nothing yet), fall back to the most recent
+  // 1-minute Supabase aggregates for this greenhouse instead of showing
+  // empty charts/tables.
+  const [fallbackAggregates, setFallbackAggregates] = useState<MinuteAggregate[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadFallback() {
+      if (!supabase || !greenhouse || !configuredSensorIds.length) {
+        setFallbackAggregates([]);
+        return;
+      }
+      const { data: rows, error } = await supabase
+        .from("sensor_minute_aggregates")
+        .select("id, sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at")
+        .eq("greenhouse_id", greenhouse.id)
+        .order("bucket_start", { ascending: false })
+        .limit(60);
+      if (!active) return;
+      setFallbackAggregates(error ? [] : ((rows ?? []) as MinuteAggregate[]));
+    }
+    loadFallback();
+    const interval = setInterval(loadFallback, 30_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [greenhouse, configuredSensorIds]);
+
+  function classificationFromAggregate(row: MinuteAggregate): Reading["classification"] {
+    if (row.violation_count > 0) return "violation";
+    if (row.warning_count > 0) return "warning";
+    return "safe";
+  }
+
+  // Live Pi readings win when present; otherwise the chart/table/KPIs below
+  // fall back to the recent Supabase aggregates so nothing renders blank.
+  const effectiveReadings = useMemo(() => {
+    if (configuredReadings.length) return configuredReadings;
+    return fallbackAggregates
+      .filter(row => configuredSensorIds.includes(row.sensor_id))
+      .map(row => ({
+        id: row.id,
+        sensor_id: row.sensor_id,
+        greenhouse_id: row.greenhouse_id,
+        lux: row.avg_lux,
+        recorded_at: row.bucket_start,
+        classification: classificationFromAggregate(row),
+        phase_type: row.phase_type
+      }));
+  }, [configuredReadings, fallbackAggregates, configuredSensorIds]);
+
   const latest = useMemo(() => {
     const map = new Map<string, Reading>();
 
-    for (const reading of configuredReadings) {
+    for (const reading of effectiveReadings) {
       if (!sensorIds.includes(reading.sensor_id)) continue;
 
       const current = map.get(reading.sensor_id);
@@ -80,27 +134,34 @@ export function Monitor() {
     }
 
     return map;
-  }, [configuredReadings, sensorIds]);
+  }, [effectiveReadings, sensorIds]);
 
   const chart = useMemo(() => {
     if (!greenhouse || !sensorIds.length) return [];
 
-    const rows = configuredReadings
+    const rows = effectiveReadings
       .filter(reading => sensorIds.includes(reading.sensor_id))
       .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
       .slice(-30);
 
-    const map = new Map<string, Record<string, string | number>>();
+    // Keyed by numeric epoch (rounded to the nearest 5s so near-simultaneous
+    // readings from different sensors share a point) rather than a formatted
+    // string, so points space proportionally to real elapsed time instead of
+    // evenly by array index — a long gap between readings now shows as a
+    // long gap on the axis instead of being compressed to the same width as
+    // a 10-second gap.
+    const map = new Map<number, Record<string, number>>();
 
     for (const reading of rows) {
-      const key = new Date(reading.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      const row = map.get(key) ?? { time: key };
+      const raw = new Date(reading.recorded_at).getTime();
+      const time = Math.round(raw / 5000) * 5000;
+      const row = map.get(time) ?? { time };
       row[reading.sensor_id] = reading.lux;
-      map.set(key, row);
+      map.set(time, row);
     }
 
-    return Array.from(map.values());
-  }, [configuredReadings, sensorIds, greenhouse]);
+    return Array.from(map.values()).sort((a, b) => a.time - b.time);
+  }, [effectiveReadings, sensorIds, greenhouse]);
 
   const distribution = useMemo(() => {
     const counts = { safe: 0, warning: 0, violation: 0 };
@@ -130,17 +191,26 @@ export function Monitor() {
   const selectedReadings = useMemo(() => {
     if (!greenhouse || !sensorIds.length) return [];
 
-    return configuredReadings
+    return effectiveReadings
       .filter(reading => sensorIds.includes(reading.sensor_id))
       .sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime())
       .slice(0, 3);
-  }, [configuredReadings, sensorIds, greenhouse]);
+  }, [effectiveReadings, sensorIds, greenhouse]);
 
   const phase = latest.values().next().value?.phase_type ?? data.phase?.phase_type ?? null;
   const phaseLabel = phase === "illumination" ? "Illumination" : phase === "dark" ? "Dark" : phase ?? "—";
   const phaseWindow = greenhouse ? (("phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart) && ("phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd) ? `${"phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart} - ${"phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd}` : "—") : "—";
   const target = phase === "illumination" ? "≥ 50 safe · 31–49 warning · ≤ 30 violation" : phase === "dark" ? "0–15 safe · 16–29 warning · ≥ 30 incident" : "—";
-  const status = !greenhouse ? "Not configured" : latest.size === 0 ? "Waiting for data" : onlineCount > 0 ? "Online" : "Offline";
+
+  // Timestamp of the newest reading actually being displayed, whether it came
+  // from the live Pi feed or the Supabase aggregate fallback.
+  const asOf = useMemo(() => {
+    if (!effectiveReadings.length) return null;
+    return effectiveReadings.reduce((newest, reading) => {
+      const time = new Date(reading.recorded_at).getTime();
+      return time > newest ? time : newest;
+    }, 0);
+  }, [effectiveReadings]);
 
   const handleGreenhouseChange = (value: string) => {
     setSelectedGreenhouse(value);
@@ -159,11 +229,14 @@ export function Monitor() {
         <Card className="h-full min-h-[34rem]">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="font-bold text-metal-50">Lux Intensity Trend</h2>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h2 className="font-bold text-metal-50">Lux Intensity Trend</h2>
+                {asOf && <span className="text-xs text-metal-500">as of {new Date(asOf).toLocaleString()}</span>}
+              </div>
               <p className="mt-1 text-sm text-metal-400">{greenhouse ? `Real sensor readings from ${greenhouse.name}` : "System configuration required before monitoring begins"}</p>
             </div>
 
-            {greenhouses.length > 0 && <div className="flex flex-wrap gap-2">
+            {greenhouses.length > 0 && <div className="flex flex-wrap items-center gap-2">
               <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
@@ -181,14 +254,25 @@ export function Monitor() {
                 <p className="text-sm text-metal-400">System not configured</p>
                 <p className="mt-1 text-xs text-metal-500">Ask a manager to configure a greenhouse and sensors first.</p>
               </div>
-            </div> : loading && !configuredReadings.length ? <div className="grid h-full place-items-center text-sm text-metal-400">Waiting for sensor data...</div> : !chart.length ? <div className="grid h-full place-items-center text-center">
-              {error ? <span className="rounded-full bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400">Unable to load live sensor data. Waiting for a real sensor connection.</span> : <span className="text-sm text-metal-400">No sensor data available</span>}
+            </div> : !chart.length ? <div className="grid h-full place-items-center text-center">
+              <span className="text-sm text-metal-400">No readings recorded yet for this greenhouse</span>
             </div> : <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chart}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" />
-                <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#6f7278" }} interval="preserveStartEnd" />
+                <XAxis
+                  dataKey="time"
+                  type="number"
+                  domain={["dataMin", "dataMax"]}
+                  scale="time"
+                  tick={{ fontSize: 11, fill: "#6f7278" }}
+                  tickFormatter={value => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  interval="preserveStartEnd"
+                />
                 <YAxis tick={{ fontSize: 11, fill: "#6f7278" }} width={40} />
-                <Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} />
+                <Tooltip
+                  contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }}
+                  labelFormatter={value => new Date(value as number).toLocaleTimeString()}
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 {sensors.map((sensor, i) => <Area key={sensor.id} type="monotone" dataKey={sensor.id} name={sensor.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill="none" />)}
               </AreaChart>
@@ -205,13 +289,6 @@ export function Monitor() {
               <Kpi label="Online" value={onlineCount} />
               <Kpi label="Incidents" value={incidentCount} tone={incidentCount ? "red" : undefined} />
               <Kpi label="Offline" value={offlineCount} />
-            </div>
-
-            <div className="mt-4 border-t border-metal-700 pt-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-metal-500">System status</span>
-                <span className={`text-xs font-medium ${status === "Online" ? "text-leaf-400" : status === "Offline" ? "text-red-400" : "text-metal-400"}`}>{status}</span>
-              </div>
             </div>
           </Card>
 
@@ -245,7 +322,7 @@ export function Monitor() {
               </span>)}
             </div>
 
-            {greenhouses.length > 0 && <div className="mt-4 flex flex-wrap gap-2">
+            {greenhouses.length > 0 && <div className="mt-4 flex flex-wrap items-center gap-2">
               <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
@@ -281,7 +358,7 @@ export function Monitor() {
                 <td className="p-3 text-metal-400">{new Date(reading.recorded_at).toLocaleString()}</td>
               </tr>) : <tr>
                 <td colSpan={6} className="p-8 text-center text-sm text-metal-500">
-                  {!greenhouse ? "Configure a greenhouse before monitoring begins" : "No sensor readings available"}
+                  {!greenhouse ? "Configure a greenhouse before monitoring begins" : "No readings recorded yet"}
                 </td>
               </tr>}
             </tbody>

@@ -25,7 +25,8 @@ ILLUMINATION_VIOLATION_MAX = 30
 DARK_SAFE_MAX = 15
 DARK_WARNING_MAX = 29
 DARK_VIOLATION_MIN = 30
-DARK_PHASE_DAYS = 60
+DARK_PHASE_DAYS_DEFAULT = 60
+DARK_PHASE_DAYS = DARK_PHASE_DAYS_DEFAULT
 CONSECUTIVE_READINGS_REQUIRED = 3
 # ESP32 readings are expected at roughly 10-second intervals. A larger gap
 # means the violation sequence was interrupted and must restart.
@@ -607,6 +608,65 @@ def supabase_request(table, payload, on_conflict):
     except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
 
 
+def supabase_select(table, params):
+    if not supabase_configured(): raise RuntimeError("Supabase environment variables are not configured")
+    query = urllib.parse.urlencode(params); url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"
+    req = urllib.request.Request(url, method="GET"); req.add_header("apikey", SUPABASE_SECRET_KEY); req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response: return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace"); raise RuntimeError(f"Supabase HTTP {error.code}: {detail}") from error
+    except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
+
+
+def sync_dark_phase_duration_from_supabase():
+    # Admin-configurable via AdminView.tsx -> web/app/api/admin/settings ->
+    # system_settings.dark_phase_duration_days. Falls back to the original
+    # fixed default if unset, invalid, or Supabase is unreachable.
+    global DARK_PHASE_DAYS
+    if not supabase_configured(): return DARK_PHASE_DAYS
+    rows = supabase_select("system_settings", {"key": "eq.dark_phase_duration_days", "select": "value", "limit": 1})
+    if not rows:
+        DARK_PHASE_DAYS = DARK_PHASE_DAYS_DEFAULT
+        return DARK_PHASE_DAYS
+    try:
+        parsed = int(str(rows[0].get("value", "")).strip())
+        DARK_PHASE_DAYS = parsed if parsed >= 1 else DARK_PHASE_DAYS_DEFAULT
+    except (TypeError, ValueError):
+        DARK_PHASE_DAYS = DARK_PHASE_DAYS_DEFAULT
+    return DARK_PHASE_DAYS
+
+
+def sync_greenhouses_from_supabase():
+    # Supabase is now the source of truth for greenhouse configuration
+    # (see 0006_greenhouse_config.sql). This mirrors it into local SQLite
+    # so classify_reading()/get_phase_for_sensor() keep working without a
+    # live Supabase round-trip on every 10-second ESP32 reading. If the
+    # fetch fails, local data is left untouched rather than wiped.
+    if not supabase_configured(): return 0
+    greenhouses = supabase_select("greenhouses", {
+        "select": "id,name,phase_start,phase_end,window_start,window_end,is_active,updated_at",
+        "is_active": "eq.true"
+    })
+    sensors = supabase_select("greenhouse_sensors", {"select": "greenhouse_id,sensor_id"})
+
+    conn = get_db()
+    conn.execute("DELETE FROM greenhouse_sensors")
+    conn.execute("DELETE FROM greenhouses")
+    for row in greenhouses:
+        conn.execute(
+            "INSERT INTO greenhouses (id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"], row["window_end"], 1 if row["is_active"] else 0, row["updated_at"])
+        )
+    for row in sensors:
+        conn.execute(
+            "INSERT INTO greenhouse_sensors (greenhouse_id, sensor_id) VALUES (?,?)",
+            (row["greenhouse_id"], row["sensor_id"])
+        )
+    conn.commit(); conn.close()
+    return len(greenhouses)
+
+
 def get_first_reading_bucket(conn):
     row = conn.execute("SELECT MIN(recorded_at) AS first_reading FROM readings").fetchone()
     parsed = parse_datetime(row["first_reading"]) if row and row["first_reading"] else None
@@ -655,7 +715,19 @@ def sync_incidents_to_supabase():
 
 
 def run_supabase_sync():
-    print(f"[SUPABASE SYNC] aggregates={aggregate_readings_to_supabase()} incidents={sync_incidents_to_supabase()}")
+    # Each piece is isolated: a failure in one shouldn't block the others
+    # from still syncing this cycle.
+    try:
+        greenhouse_count = sync_greenhouses_from_supabase()
+    except Exception as error:
+        print(f"[SUPABASE SYNC ERROR] greenhouses: {error}")
+        greenhouse_count = None
+    try:
+        dark_phase_days = sync_dark_phase_duration_from_supabase()
+    except Exception as error:
+        print(f"[SUPABASE SYNC ERROR] dark phase duration: {error}")
+        dark_phase_days = DARK_PHASE_DAYS
+    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days} aggregates={aggregate_readings_to_supabase()} incidents={sync_incidents_to_supabase()}")
 
 
 def supabase_sync_loop():
