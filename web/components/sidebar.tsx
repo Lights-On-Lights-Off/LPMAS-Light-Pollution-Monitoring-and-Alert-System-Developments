@@ -1,6 +1,6 @@
 "use client";
-
-import { Activity, BellRing, Gauge, LogOut, Settings, ShieldCheck, House, Paintbrush } from "lucide-react";
+import { useState } from "react";
+import { Activity, BellRing, Gauge, LogOut, Menu, Settings, ShieldCheck, House, Paintbrush, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
 import { useProfile, NAV_BY_ROLE } from "@/lib/profile";
@@ -9,25 +9,22 @@ import { useRouter } from "next/navigation";
 type DashboardSection = "Overview" | "Greenhouses" | "Activity Logs" | "Recycle bin" | "Team" | "System settings" | "Appearance";
 
 const ALL_NAV = [
-  [Gauge, "Overview"],
-  [House, "Greenhouses"],
-  [Activity, "Activity Logs"],
-  [BellRing, "Recycle bin"]
+  [Gauge, "Overview"], [House, "Greenhouses"], [Activity, "Activity Logs"], [BellRing, "Recycle bin"]
 ] as const;
 
 const ADMIN_NAV = [
-  [Gauge, "Overview"],
-  [ShieldCheck, "Team"],
-  [Activity, "Activity Logs"]
+  [Gauge, "Overview"], [ShieldCheck, "Team"], [Settings, "System settings"], [Activity, "Activity Logs"]
 ] as const;
 
 export function Sidebar({ active = "Overview", onNavigate }: { active?: DashboardSection; onNavigate: (page: DashboardSection) => void }) {
   const router = useRouter();
   const { profile } = useProfile();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   async function navigate(page: DashboardSection) {
     if (page !== active) await logActivity("NAVIGATE", page.toLowerCase().replace(/\s+/g, "_"), undefined, { from: active, to: page });
     onNavigate(page);
+    setMobileOpen(false);
   }
 
   async function signOut() {
@@ -39,14 +36,13 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
   const nav = profile?.role === "admin" ? ADMIN_NAV : ALL_NAV;
   const visibleNav = profile ? nav.filter(([, label]) => NAV_BY_ROLE[profile.role].includes(label)) : nav;
 
-  return <aside className="relative hidden h-screen w-72 shrink-0 flex-col overflow-hidden bg-[var(--surface)]/35 p-5 text-[var(--foreground)] shadow-2xl backdrop-blur-3xl backdrop-saturate-150 lg:sticky lg:top-0 lg:flex">
-    <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
-    <div className="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full bg-[var(--accent)]/8 blur-3xl" />
-    <div className="pointer-events-none absolute -right-24 bottom-10 h-72 w-72 rounded-full bg-[var(--accent)]/5 blur-3xl" />
-
+  const navContent = <>
     <div className="relative mb-10 flex items-center gap-3 px-2">
       <img src="/Hayag-logo.png" alt="Hayag logo" className="h-11 w-11 rounded-2xl object-contain shadow-lg" />
-      <div><p className="font-bold tracking-wide text-[var(--foreground)]">LPMAS</p><p className="text-xs text-[var(--accent)]">Flowerland Monitor</p></div>
+      <div>
+        <p className="font-bold tracking-wide text-[var(--foreground)]">LPMAS</p>
+        <p className="text-xs text-[var(--accent)]">Flowerland Monitor</p>
+      </div>
     </div>
 
     <nav className="relative space-y-2">
@@ -54,7 +50,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
         const selected = active === label;
         return <button key={label} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
           <Icon size={19} className={selected ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
-          <span>{label === "Team" ? "User Management" : label}</span>
+          <span>{label}</span>
           {selected && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
         </button>;
       })}
@@ -64,20 +60,60 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
         <span>Appearance</span>
         {active === "Appearance" && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
       </button>
-
-      {profile?.role === "admin" && <button onClick={() => navigate("System settings")} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${active === "System settings" ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
-        <Settings size={19} className={active === "System settings" ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
-        <span>System settings</span>
-        {active === "System settings" && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
-      </button>}
     </nav>
 
     <div className="relative mt-auto rounded-2xl [background:color-mix(in_srgb,var(--accent)_5%,transparent)] p-4 shadow-xl backdrop-blur-2xl">
       <div className="flex items-center gap-3">
-        <div className="grid h-10 w-10 place-items-center rounded-xl [background:color-mix(in_srgb,var(--accent)_15%,transparent)] text-sm font-bold uppercase text-[var(--accent)] ring-1 ring-[color-mix(in_srgb,var(--accent)_25%,transparent)]">{(profile?.full_name || profile?.role || "U").charAt(0)}</div>
-        <div className="min-w-0"><p className="truncate text-sm font-semibold text-[var(--foreground)]">{profile?.full_name || profile?.role || "Loading..."}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{profile?.email ?? ""}</p></div>
+        <div className="grid h-10 w-10 place-items-center rounded-xl [background:color-mix(in_srgb,var(--accent)_15%,transparent)] text-sm font-bold uppercase text-[var(--accent)] ring-1 ring-[color-mix(in_srgb,var(--accent)_25%,transparent)]">
+          {(profile?.full_name || profile?.role || "U").charAt(0)}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-[var(--foreground)]">{profile?.full_name || profile?.role || "Loading..."}</p>
+          <p className="truncate text-xs text-[var(--muted-foreground)]">{profile?.email ?? ""}</p>
+        </div>
       </div>
-      <button onClick={signOut} className="mt-4 flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-[var(--muted-foreground)] transition hover:bg-red-500/10 hover:text-red-500"><LogOut size={15} /> Sign out</button>
+
+      <button onClick={signOut} className="mt-4 flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-[var(--muted-foreground)] transition hover:bg-red-500/10 hover:text-red-500">
+        <LogOut size={15} />
+        Sign out
+      </button>
     </div>
-  </aside>;
+  </>;
+
+  return <>
+    {/* Desktop sidebar, unchanged */}
+    <aside className="relative hidden h-screen w-72 shrink-0 flex-col overflow-hidden bg-[var(--surface)]/35 p-5 text-[var(--foreground)] shadow-2xl backdrop-blur-3xl backdrop-saturate-150 lg:sticky lg:top-0 lg:flex">
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
+      <div className="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full bg-[var(--accent)]/8 blur-3xl" />
+      <div className="pointer-events-none absolute -right-24 bottom-10 h-72 w-72 rounded-full bg-[var(--accent)]/5 blur-3xl" />
+      {navContent}
+    </aside>
+
+    {/* Mobile: hamburger trigger, fixed top-right so it never collides with a page's own title */}
+    <button
+      onClick={() => setMobileOpen(true)}
+      aria-label="Open menu"
+      className="fixed right-4 top-4 z-40 grid h-11 w-11 place-items-center rounded-xl border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] bg-[var(--surface)]/70 text-[var(--foreground)] shadow-lg backdrop-blur-xl lg:hidden"
+    >
+      <Menu size={20} />
+    </button>
+
+    {/* Mobile: backdrop + slide-in drawer, reusing the same nav content */}
+    {mobileOpen && (
+      <div className="fixed inset-0 z-50 lg:hidden">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
+        <aside className="relative flex h-full w-72 max-w-[82vw] flex-col overflow-hidden bg-[var(--surface-solid,var(--surface))] p-5 text-[var(--foreground)] shadow-2xl">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
+          <button
+            onClick={() => setMobileOpen(false)}
+            aria-label="Close menu"
+            className="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-lg text-[var(--muted-foreground)] transition hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] hover:text-[var(--foreground)]"
+          >
+            <X size={18} />
+          </button>
+          {navContent}
+        </aside>
+      </div>
+    )}
+  </>;
 }
