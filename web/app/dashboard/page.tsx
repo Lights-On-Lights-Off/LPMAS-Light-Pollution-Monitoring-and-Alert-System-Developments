@@ -1,3 +1,4 @@
+// app/dashboard/page.tsx
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -26,7 +27,10 @@ export default function DashboardPage() {
 
   return <div className="flex min-h-screen bg-ink">
     <Sidebar active={section} onNavigate={setSection} />
-    <main className="min-w-0 flex-1">
+    {/* pt-[4.5rem] on mobile clears the fixed hamburger button (top-4, h-11, plus
+        the safe-area inset it now respects) so page titles/badges never sit
+        underneath it; lg:pt-0 restores flush layout once the sidebar is static. */}
+    <main className="min-w-0 flex-1 pt-[calc(4.5rem+env(safe-area-inset-top))] lg:pt-0">
       {section === "Appearance" ? <Appearance /> : profile.role === "manager" ? <ManagerView section={section as "Overview" | "Greenhouses" | "Recycle bin"} /> : <AdminView section={section} />}
     </main>
   </div>;
