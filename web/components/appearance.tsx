@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Moon, Monitor, Palette, Sun } from "lucide-react";
+import { Check, Droplets, Moon, Monitor, Palette, Sun } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { THEME_MODES, THEME_PALETTES } from "@/lib/theme";
 
@@ -11,8 +11,9 @@ const MODE_ICONS = {
 };
 
 export function Appearance() {
-  const { mode, palette, setMode, setPalette } = useTheme();
+  const { mode, palette, surfaceStyle, setMode, setPalette, setSurfaceStyle } = useTheme();
   const selectedPalette = THEME_PALETTES.find(item => item.id === palette) ?? THEME_PALETTES[0];
+  const transparent = surfaceStyle === "glass";
 
   return <div className="w-full p-5 md:p-6 lg:p-8">
     <div className="mx-auto max-w-5xl">
@@ -55,6 +56,34 @@ export function Appearance() {
         </section>
 
         <section className="glass-card rounded-2xl p-5 md:p-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+                <Droplets size={19} />
+              </div>
+              <div>
+                <h2 className="font-bold text-primary">Surface style</h2>
+                <p className="mt-1 text-sm text-secondary">Switch between the frosted Liquid Glass look and the solid Clay look.</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={transparent}
+              onClick={() => setSurfaceStyle(transparent ? "clay" : "glass")}
+              className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition ${transparent ? "bg-[var(--accent)]" : "bg-[var(--surface-border)]"}`}
+            >
+              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${transparent ? "translate-x-6" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-[var(--surface-border)] bg-glass px-4 py-3 text-xs text-secondary">
+            {transparent ? "Transparent is on: surfaces use blurred, translucent Liquid Glass." : "Transparent is off: surfaces use solid, soft-shadow Clay (default)."}
+          </div>
+        </section>
+
+        <section className="glass-card rounded-2xl p-5 md:p-6">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
               <Palette size={19} />
@@ -91,7 +120,7 @@ export function Appearance() {
         <section className="glass-card-strong rounded-2xl p-5 md:p-6">
           <div>
             <h2 className="font-bold text-primary">Preview</h2>
-            <p className="mt-1 text-sm text-secondary">Preview of the current Liquid Glass interface.</p>
+            <p className="mt-1 text-sm text-secondary">Preview of the current {transparent ? "Liquid Glass" : "Clay"} interface.</p>
           </div>
 
           <div className="mt-6 grid gap-4 md:grid-cols-3">

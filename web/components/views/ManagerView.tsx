@@ -247,7 +247,7 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
 
       <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
         <Card className="min-h-[340px]">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="font-bold text-[var(--foreground)]">Lux Intensity Trend</h2>
@@ -574,7 +574,7 @@ function GreenhousesView() {
 
   return (
     <div className="space-y-6 p-6 md:p-8">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">GREENHOUSE MANAGEMENT</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage greenhouses, real sensors and illumination monitoring windows.</p>
@@ -618,16 +618,16 @@ function GreenhousesView() {
       </Card>
 
       {modalOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 backdrop-blur-sm">
-          <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
-            <div className="relative flex items-center justify-between">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm">
+          <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
+            <div className="relative flex shrink-0 flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-bold">{editingId ? "EDIT CONFIGURATION" : "CONFIGURE GREENHOUSE"}</h2>
                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">Set dates, monitoring time and assign real detected sensors.</p>
               </div>
               <button onClick={closeModal} disabled={saving} className="rounded-lg p-2 text-[var(--muted-foreground)] hover:text-[var(--foreground)] disabled:opacity-50"><X size={19} /></button>
             </div>
-            <div className="relative mt-6 space-y-5">
+            <div className="relative mt-6 min-h-0 flex-1 space-y-5 overflow-y-auto">
               <label className="block">
                 <span className="mb-2 block text-sm font-medium">Greenhouse Name</span>
                 <input
@@ -700,7 +700,7 @@ function GreenhousesView() {
 
               {saveError && <p className="text-sm text-red-400">{saveError}</p>}
             </div>
-            <div className="relative mt-7 flex justify-end gap-3">
+            <div className="relative mt-7 flex shrink-0 flex-wrap justify-end gap-3">
               <button onClick={closeModal} disabled={saving} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] disabled:opacity-50">Cancel</button>
               <button
                 onClick={confirmGreenhouse}
@@ -898,7 +898,7 @@ function ActivityLogsView() {
           </div>
         </div>
 
-        <div className="max-h-[360px] overflow-y-auto overflow-x-auto">
+        <div className="hidden max-h-[360px] overflow-y-auto overflow-x-auto md:block">
           <table className="w-full table-fixed text-sm leading-5">
             <thead className="sticky top-0 border-b border-metal-700 bg-[var(--surface)] text-metal-400">
               <tr>
@@ -928,6 +928,25 @@ function ActivityLogsView() {
             </tbody>
           </table>
         </div>
+
+        <div className="max-h-[420px] space-y-3 overflow-y-auto md:hidden">
+          {rawLogs.length ? rawLogs.map(r => (
+            <div key={r.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <p className="min-w-0 break-all font-mono text-sm font-semibold text-[var(--foreground)]">{r.sensor_id}</p>
+                <Badge tone={r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification}</Badge>
+              </div>
+              <div className="mt-3 space-y-1.5">
+                <CardField label="Greenhouse" value={greenhouseLabel(r.greenhouse_id)} />
+                <CardField label="Lux" value={r.lux.toFixed(2)} mono />
+                <CardField label="Phase" value={r.phase_type} />
+                <CardField label="Recorded" value={new Date(r.recorded_at).toLocaleString()} />
+              </div>
+            </div>
+          )) : (
+            <div className="p-6 text-center text-sm text-[var(--muted-foreground)]">{rawLoading ? "Loading hardware logs..." : rawError ? "Unable to load hardware logs" : "No readings recorded yet for this range"}</div>
+          )}
+        </div>
       </Card>
 
       <Card>
@@ -946,7 +965,8 @@ function ActivityLogsView() {
         ) : userError && !userLogs.length ? (
           <div className="grid min-h-56 place-items-center text-center text-sm text-red-400">Unable to load user activity logs.<br />{userError}</div>
         ) : userLogs.length ? (
-          <div className="w-full overflow-x-auto rounded-2xl border border-white/[0.07] bg-black/[0.08]">
+          <>
+          <div className="hidden w-full overflow-x-auto rounded-2xl border border-white/[0.07] bg-black/[0.08] md:block">
             <table className="w-full table-fixed text-sm leading-5">
               <colgroup>
                 <col className="w-[38%]" />
@@ -971,22 +991,36 @@ function ActivityLogsView() {
               </tbody>
             </table>
           </div>
+          <div className="max-h-[420px] space-y-3 overflow-y-auto md:hidden">
+            {userLogs.map(log => (
+              <div key={log.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 truncate text-sm font-semibold text-[var(--foreground)]">{log.username ?? "Unknown"}</p>
+                  {actionBadge(log.action)}
+                </div>
+                <div className="mt-3">
+                  <CardField label="Timestamp" value={new Date(log.created_at).toLocaleString()} />
+                </div>
+              </div>
+            ))}
+          </div>
+          </>
         ) : (
           <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">No manager activity logs available.</div>
         )}
       </Card>
 
       {exportModalOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 backdrop-blur-sm">
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
-            <div className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm">
+          <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-bold">EXPORT HARDWARE LOGS</h2>
                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">Pulls raw readings from SQLite on the Raspberry Pi for the chosen date and time range.</p>
               </div>
               <button onClick={closeExportModal} className="rounded-lg p-2 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"><X size={19} /></button>
             </div>
-            <div className="mt-6 space-y-5">
+            <div className="mt-6 min-h-0 flex-1 space-y-5 overflow-y-auto">
               <div className="grid gap-3 sm:grid-cols-2">
                 <label>
                   <span className="mb-2 block text-xs text-[var(--muted-foreground)]">From</span>
@@ -1020,7 +1054,7 @@ function ActivityLogsView() {
               </label>
               {exportError && <p className="text-sm text-red-400">{exportError}</p>}
             </div>
-            <div className="mt-7 flex justify-end gap-3">
+            <div className="mt-7 flex shrink-0 flex-wrap justify-end gap-3">
               <button onClick={closeExportModal} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)]">Cancel</button>
               <button
                 onClick={runExport}
@@ -1297,6 +1331,15 @@ function ReportRow({ label, value, danger = false }: { label: string; value: str
     <div className="flex items-center justify-between border-b border-metal-700 pb-3 last:border-0 last:pb-0">
       <span className="text-sm text-[var(--muted-foreground)]">{label}</span>
       <span className={`max-w-[65%] text-right font-mono text-sm font-semibold ${danger ? "text-red-400" : "text-[var(--foreground)]"}`}>{value}</span>
+    </div>
+  );
+}
+
+function CardField({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 text-xs">
+      <span className="shrink-0 text-[var(--muted-foreground)]">{label}</span>
+      <span className={`min-w-0 break-words text-right text-[var(--foreground)] ${mono ? "font-mono font-semibold" : ""}`}>{value}</span>
     </div>
   );
 }

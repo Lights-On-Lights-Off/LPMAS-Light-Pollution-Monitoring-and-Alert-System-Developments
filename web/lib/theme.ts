@@ -1,5 +1,6 @@
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemePalette = "default" | "lavender" | "dune" | "rosegold" | "forest-dew" | "mountain-sunset" | "crimson" | "mint" | "orange" | "bright-pink" | "veronica" | "tree-frog" | "ying-yang";
+export type SurfaceStyle = "clay" | "glass";
 
 export const THEME_MODES: { id: ThemeMode; name: string }[] = [
   { id: "light", name: "Light" },
@@ -25,3 +26,4 @@ export const THEME_PALETTES: { id: ThemePalette; name: string; color: string }[]
 
 export const DEFAULT_THEME_MODE: ThemeMode = "light";
 export const DEFAULT_THEME_PALETTE: ThemePalette = "default";
+export const DEFAULT_SURFACE_STYLE: SurfaceStyle = "clay";

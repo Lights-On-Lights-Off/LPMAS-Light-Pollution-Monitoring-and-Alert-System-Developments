@@ -48,6 +48,15 @@
   /* Used throughout ManagerView.tsx but likewise never defined. */
   --border: var(--surface-border);
   --muted-foreground: var(--text-muted);
+
+  /* Clay surface style: opaque, soft-shadow "claymorphism" — the
+     alternative to the translucent/blurred Liquid Glass style above.
+     Selected via [data-surface="clay"] further down. */
+  --clay-surface: #eef2f8;
+  --clay-surface-strong: #e3e9f2;
+  --clay-border: rgba(255, 255, 255, 0.6);
+  --clay-shadow-dark: rgba(163, 177, 198, 0.55);
+  --clay-shadow-light: rgba(255, 255, 255, 0.85);
 }
 
 html {
@@ -243,6 +252,12 @@ textarea {
 
   --border: var(--surface-border);
   --muted-foreground: var(--text-muted);
+
+  --clay-surface: #1a2330;
+  --clay-surface-strong: #212c3b;
+  --clay-border: rgba(255, 255, 255, 0.07);
+  --clay-shadow-dark: rgba(0, 0, 0, 0.55);
+  --clay-shadow-light: rgba(255, 255, 255, 0.04);
 }
 
 [data-theme="dark"] body {
@@ -272,6 +287,57 @@ textarea {
 
 [data-theme="dark"] .glass-button {
   color: white;
+}
+
+/* Clay surface style overrides. Reuses the same .glass-* class names
+   used throughout the app so no component markup needs to change —
+   only the computed look differs when [data-surface="clay"] is set. */
+[data-surface="clay"] .glass-navbar,
+[data-surface="clay"] .glass-card,
+[data-surface="clay"] .metal-panel {
+  background: var(--clay-surface);
+  border: 1px solid var(--clay-border);
+  box-shadow: 8px 8px 18px var(--clay-shadow-dark), -8px -8px 18px var(--clay-shadow-light);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-surface="clay"] .glass-card-strong {
+  background: var(--clay-surface-strong);
+  border: 1px solid var(--clay-border);
+  box-shadow: 10px 10px 22px var(--clay-shadow-dark), -10px -10px 22px var(--clay-shadow-light);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-surface="clay"] .glass-dropdown,
+[data-surface="clay"] .glass-table {
+  background: var(--clay-surface-strong);
+  border: 1px solid var(--clay-border);
+  box-shadow: 6px 6px 14px var(--clay-shadow-dark), -6px -6px 14px var(--clay-shadow-light);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-surface="clay"] .glass-input {
+  background: var(--clay-surface);
+  border: 1px solid var(--clay-border);
+  box-shadow: inset 4px 4px 8px var(--clay-shadow-dark), inset -4px -4px 8px var(--clay-shadow-light);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-surface="clay"] .glass-button {
+  border: none;
+  box-shadow: 4px 4px 10px var(--clay-shadow-dark), -2px -2px 6px var(--clay-shadow-light), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+[data-surface="clay"] .bg-glass {
+  background: var(--clay-surface);
+}
+
+[data-surface="clay"] .bg-glass-strong {
+  background: var(--clay-surface-strong);
 }
 
 [data-palette="default"] {
