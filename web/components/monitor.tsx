@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDashboardData } from "@/lib/useDashboardData";
 import type { Reading, Greenhouse, MinuteAggregate } from "@/lib/api";
 import { getGreenhouses } from "@/lib/api";
@@ -21,6 +21,21 @@ const CONFIG_KEY = "lpmas-greenhouse-config";
 const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d", "#7bd389", "#b18cff"];
 const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d" } as const;
 const ONLINE_WINDOW = 60_000;
+
+// The two fixed lux thresholds that separate safe / warning / violation for
+// a given phase, drawn as reference lines on the chart. Matches the
+// classification rules from the README — not manager-configurable.
+function getThresholdLines(phase: string | null): { value: number; color: string; label: string }[] {
+  if (phase === "illumination") return [
+    { value: 50, color: STATUS_COLORS.safe, label: "Safe ≥ 50" },
+    { value: 30, color: STATUS_COLORS.violation, label: "Violation ≤ 30" }
+  ];
+  if (phase === "dark") return [
+    { value: 15, color: STATUS_COLORS.safe, label: "Safe ≤ 15" },
+    { value: 30, color: STATUS_COLORS.violation, label: "Violation ≥ 30" }
+  ];
+  return [];
+}
 
 export function Monitor() {
   const { data } = useDashboardData();
@@ -202,6 +217,20 @@ export function Monitor() {
   const phaseWindow = greenhouse ? (("phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart) && ("phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd) ? `${"phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart} - ${"phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd}` : "—") : "—";
   const target = phase === "illumination" ? "≥ 50 safe · 31–49 warning · ≤ 30 violation" : phase === "dark" ? "0–15 safe · 16–29 warning · ≥ 30 incident" : "—";
 
+  const thresholdLines = useMemo(() => getThresholdLines(phase), [phase]);
+
+  // Explicit, evenly-spaced tick positions instead of Recharts' automatic
+  // ticks, which crowd the axis with near-duplicate timestamps when
+  // readings land seconds apart (see the previous chart).
+  const xTicks = useMemo(() => {
+    if (chart.length < 2) return chart.map(row => row.time);
+    const first = chart[0].time;
+    const last = chart[chart.length - 1].time;
+    const count = Math.min(6, chart.length);
+    const step = (last - first) / (count - 1);
+    return Array.from({ length: count }, (_, i) => Math.round(first + step * i));
+  }, [chart]);
+
   // Timestamp of the newest reading actually being displayed, whether it came
   // from the live Pi feed or the Supabase aggregate fallback.
   const asOf = useMemo(() => {
@@ -257,24 +286,57 @@ export function Monitor() {
             </div> : !chart.length ? <div className="grid h-full place-items-center text-center">
               <span className="text-sm text-metal-400">No readings recorded yet for this greenhouse</span>
             </div> : <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chart}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#232427" />
+              <AreaChart data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <defs>
+                  {sensors.map((sensor, i) => <linearGradient key={sensor.id} id={`lux-fill-${sensor.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0.03} />
+                  </linearGradient>)}
+                </defs>
+
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--surface-border)" />
                 <XAxis
                   dataKey="time"
                   type="number"
                   domain={["dataMin", "dataMax"]}
                   scale="time"
-                  tick={{ fontSize: 11, fill: "#6f7278" }}
+                  ticks={xTicks}
+                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
                   tickFormatter={value => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  interval="preserveStartEnd"
                 />
-                <YAxis tick={{ fontSize: 11, fill: "#6f7278" }} width={40} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  width={40}
+                  domain={[0, (dataMax: number) => Math.max(dataMax, ...thresholdLines.map(line => line.value)) + 20]}
+                  allowDecimals={false}
+                />
                 <Tooltip
-                  contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }}
+                  contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }}
                   labelFormatter={value => new Date(value as number).toLocaleTimeString()}
+                  formatter={(value: number, name: string) => [`${value.toFixed(1)} lux`, name]}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                {sensors.map((sensor, i) => <Area key={sensor.id} type="monotone" dataKey={sensor.id} name={sensor.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} fill="none" />)}
+
+                {thresholdLines.map(line => <ReferenceLine
+                  key={line.label}
+                  y={line.value}
+                  stroke={line.color}
+                  strokeDasharray="4 4"
+                  strokeOpacity={0.7}
+                  label={{ value: line.label, position: "insideTopRight", fontSize: 10, fill: line.color }}
+                />)}
+                {sensors.map((sensor, i) => <Area
+                  key={sensor.id}
+                  type="monotone"
+                  dataKey={sensor.id}
+                  name={sensor.name}
+                  stroke={LINE_COLORS[i % LINE_COLORS.length]}
+                  strokeWidth={2}
+                  fill={`url(#lux-fill-${sensor.id})`}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  connectNulls
+                />)}
               </AreaChart>
             </ResponsiveContainer>}
           </div>
@@ -295,14 +357,14 @@ export function Monitor() {
           <Card className="min-h-0">
             <h2 className="font-bold text-metal-50">Status Distribution</h2>
 
-            <div className="mt-4 grid min-h-0 grid-cols-[minmax(130px,0.8fr)_1fr] items-center gap-4">
+            <div className="mt-4 grid min-h-0 grid-cols-1 items-center gap-4 sm:grid-cols-[minmax(130px,0.8fr)_1fr]">
               <div className="h-40 min-w-0">
                 {distribution.length ? <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={34} outerRadius={56} paddingAngle={2}>
                       {distribution.map(d => <Cell key={d.name} fill={STATUS_COLORS[d.name as keyof typeof STATUS_COLORS]} />)}
                     </Pie>
-                    <Tooltip contentStyle={{ borderRadius: 12, background: "#18191b", border: "1px solid #34363b", color: "#e3e4e7" }} />
+                    <Tooltip contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }} />
                   </PieChart>
                 </ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No status data</div>}
               </div>
