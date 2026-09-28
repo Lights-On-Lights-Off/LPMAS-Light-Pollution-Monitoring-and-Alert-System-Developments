@@ -1,9 +1,11 @@
+// components/sidebar.tsx
 "use client";
 import { useState } from "react";
 import { Activity, BellRing, Gauge, LogOut, Menu, Settings, ShieldCheck, House, Paintbrush, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
 import { useProfile, NAV_BY_ROLE } from "@/lib/profile";
+import { useTheme } from "@/components/theme-provider";
 import { useRouter } from "next/navigation";
 
 type DashboardSection = "Overview" | "Greenhouses" | "Activity Logs" | "Recycle bin" | "Team" | "System settings" | "Appearance";
@@ -19,7 +21,9 @@ const ADMIN_NAV = [
 export function Sidebar({ active = "Overview", onNavigate }: { active?: DashboardSection; onNavigate: (page: DashboardSection) => void }) {
   const router = useRouter();
   const { profile } = useProfile();
+  const { surfaceStyle } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isGlass = surfaceStyle === "glass";
 
   async function navigate(page: DashboardSection) {
     if (page !== active) await logActivity("NAVIGATE", page.toLowerCase().replace(/\s+/g, "_"), undefined, { from: active, to: page });
@@ -48,21 +52,21 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
     <nav className="relative space-y-2">
       {visibleNav.map(([Icon, label]) => {
         const selected = active === label;
-        return <button key={label} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
+        return <button key={label} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
           <Icon size={19} className={selected ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
           <span>{label}</span>
           {selected && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
         </button>;
       })}
 
-      <button onClick={() => navigate("Appearance")} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${active === "Appearance" ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
+      <button onClick={() => navigate("Appearance")} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${active === "Appearance" ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
         <Paintbrush size={19} className={active === "Appearance" ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
         <span>Appearance</span>
         {active === "Appearance" && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
       </button>
     </nav>
 
-    <div className="relative mt-auto rounded-2xl [background:color-mix(in_srgb,var(--accent)_5%,transparent)] p-4 shadow-xl backdrop-blur-2xl">
+    <div className="relative mt-auto rounded-2xl [background:color-mix(in_srgb,var(--accent)_5%,transparent)] p-4 shadow-xl">
       <div className="flex items-center gap-3">
         <div className="grid h-10 w-10 place-items-center rounded-xl [background:color-mix(in_srgb,var(--accent)_15%,transparent)] text-sm font-bold uppercase text-[var(--accent)] ring-1 ring-[color-mix(in_srgb,var(--accent)_25%,transparent)]">
           {(profile?.full_name || profile?.role || "U").charAt(0)}
@@ -81,33 +85,35 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
   </>;
 
   return <>
-    {/* Desktop sidebar, unchanged */}
-    <aside className="relative hidden h-screen w-72 shrink-0 flex-col overflow-hidden bg-[var(--surface)]/35 p-5 text-[var(--foreground)] shadow-2xl backdrop-blur-3xl backdrop-saturate-150 lg:sticky lg:top-0 lg:flex">
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
-      <div className="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full bg-[var(--accent)]/8 blur-3xl" />
-      <div className="pointer-events-none absolute -right-24 bottom-10 h-72 w-72 rounded-full bg-[var(--accent)]/5 blur-3xl" />
+    {/* Desktop sidebar — now theme-aware via .glass-navbar, which already has Clay/Glass CSS overrides in globals.css */}
+    <aside className="glass-navbar relative hidden h-screen w-72 shrink-0 flex-col overflow-hidden border-r p-5 text-[var(--foreground)] lg:sticky lg:top-0 lg:flex">
+      {isGlass && <>
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
+        <div className="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full bg-[var(--accent)]/8 blur-3xl" />
+        <div className="pointer-events-none absolute -right-24 bottom-10 h-72 w-72 rounded-full bg-[var(--accent)]/5 blur-3xl" />
+      </>}
       {navContent}
     </aside>
 
-    {/* Mobile: hamburger trigger, fixed top-right so it never collides with a page's own title */}
+    {/* Mobile: hamburger trigger, theme-aware, safe-area aware for Android edge-to-edge */}
     <button
       onClick={() => setMobileOpen(true)}
       aria-label="Open menu"
-      className="fixed right-4 top-4 z-40 grid h-11 w-11 place-items-center rounded-xl border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] bg-[var(--surface)]/70 text-[var(--foreground)] shadow-lg backdrop-blur-xl lg:hidden"
+      className="glass-card fixed right-4 top-[max(1rem,env(safe-area-inset-top))] z-40 grid h-11 w-11 place-items-center rounded-xl text-[var(--foreground)] lg:hidden"
     >
       <Menu size={20} />
     </button>
 
-    {/* Mobile: backdrop + slide-in drawer, reusing the same nav content */}
+    {/* Mobile: backdrop + slide-in drawer, reusing the same nav content, theme-aware + safe-area padded */}
     {mobileOpen && (
       <div className="fixed inset-0 z-50 lg:hidden">
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
-        <aside className="relative flex h-full w-72 max-w-[82vw] flex-col overflow-hidden bg-[var(--surface-solid,var(--surface))] p-5 text-[var(--foreground)] shadow-2xl">
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
+        <aside className="glass-card-strong relative flex h-full w-72 max-w-[82vw] flex-col overflow-hidden px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] text-[var(--foreground)]">
+          {isGlass && <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />}
           <button
             onClick={() => setMobileOpen(false)}
             aria-label="Close menu"
-            className="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-lg text-[var(--muted-foreground)] transition hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] hover:text-[var(--foreground)]"
+            className="absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 grid h-9 w-9 place-items-center rounded-lg text-[var(--muted-foreground)] transition hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] hover:text-[var(--foreground)]"
           >
             <X size={18} />
           </button>
