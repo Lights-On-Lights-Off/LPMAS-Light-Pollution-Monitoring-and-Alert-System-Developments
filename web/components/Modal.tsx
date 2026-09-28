@@ -1,3 +1,4 @@
+// components/Modal.tsx
 "use client";
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
@@ -15,18 +16,23 @@ export function Modal({
   if (!open) return null;
 
   return <div
-    className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+    className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm"
     onClick={onClose}
   >
+    {/* max-h-[85vh] + flex column + overflow-y-auto on the body: on a short
+        mobile viewport (small Android phones, or the keyboard eating half the
+        screen) a modal with a long form used to overflow past the bottom of
+        the screen with no way to reach the footer buttons. Now the header and
+        footer stay put and only the middle content scrolls. */}
     <div
-      className="metal-panel w-full max-w-md rounded-2xl border border-metal-600 p-6 shadow-soft"
+      className="metal-panel flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-metal-600 p-5 shadow-soft sm:p-6"
       onClick={e => e.stopPropagation()}
       role="dialog"
       aria-modal="true"
       aria-label={title}
     >
-      <div className="mb-5 flex items-start justify-between gap-4">
-        <div>
+      <div className="mb-5 flex shrink-0 items-start justify-between gap-4">
+        <div className="min-w-0">
           <h3 className="font-bold text-metal-50">{title}</h3>
           {description && <p className="mt-1 text-sm text-metal-400">{description}</p>}
         </div>
@@ -35,9 +41,9 @@ export function Modal({
         </button>
       </div>
 
-      <div className="space-y-4">{children}</div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">{children}</div>
 
-      <div className="mt-6 flex justify-end gap-2">{footer}</div>
+      <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-2">{footer}</div>
     </div>
   </div>;
 }
