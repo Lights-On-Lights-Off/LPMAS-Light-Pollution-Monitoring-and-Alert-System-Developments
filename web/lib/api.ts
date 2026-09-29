@@ -208,3 +208,32 @@ export async function getOnlineSensors(greenhouseId: string): Promise<SensorList
   const sensors = await getSensorList();
   return filterSensors(sensors, { greenhouse_id: greenhouseId, status: "online" });
 }
+
+/**
+ * Assign or unassign one sensor immediately, outside the greenhouse form.
+ *
+ * Goes through /api/sensor-assign rather than a direct RPC call so the
+ * server can check the caller's role: the RPC is SECURITY DEFINER and
+ * only performs its own check when auth.uid() is set, which a
+ * service_role call does not have.
+ */
+export async function assignSensor(
+  sensorId: string,
+  greenhouseId: string,
+  isAssignedNow: boolean
+): Promise<void> {
+  const response = await fetch("/api/sensor-assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sensor_id: sensorId,
+      greenhouse_id: greenhouseId,
+      is_assigned_now: isAssignedNow,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}) as { error?: string });
+    throw new Error(body.error ?? `Sensor assignment failed (${response.status})`);
+  }
+}

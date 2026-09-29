@@ -73,13 +73,19 @@ function toLocalConfig(g: Greenhouse): GreenhouseConfig {
 // so the Overview and Greenhouses pages stay accurate while the Pi is quiet.
 async function knownSensorIds(): Promise<string[]> {
   if (!supabase) return [];
-  const [aggregateResult, assignedResult] = await Promise.all([
+  const [aggregateResult, assignedResult, sensorListResult] = await Promise.all([
     supabase.from("sensor_minute_aggregates").select("sensor_id").order("bucket_start", { ascending: false }).limit(1000),
-    supabase.from("greenhouse_sensors").select("sensor_id")
+    supabase.from("greenhouse_sensors").select("sensor_id"),
+    // sensor_list is the cloud's own record of every device that has ever
+    // reported. Preferring it means a sensor is assignable the moment it
+    // first forwards a reading, rather than only once a full minute bucket
+    // has been aggregated.
+    supabase.from("sensor_list").select("sensor_id")
   ]);
   const ids = new Set<string>();
   if (!aggregateResult.error) (aggregateResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
   if (!assignedResult.error) (assignedResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
+  if (!sensorListResult.error) (sensorListResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
   return Array.from(ids);
 }
 
