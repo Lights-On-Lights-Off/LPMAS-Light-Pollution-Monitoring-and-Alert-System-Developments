@@ -36,6 +36,31 @@ SUPABASE_SYNC_INTERVAL_SECONDS = 30
 _supabase_sync_thread = None
 _supabase_sync_running = False
 
+# Bounded retries. Three attempts with exponential backoff spans roughly
+# 7 seconds, which fits inside the ESP32's tolerance for a slow cloud
+# without holding the reading endpoint open indefinitely.
+FORWARD_MAX_ATTEMPTS = 3
+FORWARD_TIMEOUT_SECONDS = 5
+FORWARD_BACKOFF_BASE_SECONDS = 1
+
+# The retry queue is a plain JSONL file so a crash or power cut loses at
+# most the entry being written, and so it can be inspected by hand.
+RETRY_QUEUE_PATH = BASE_DIR / "failed_readings.jsonl"
+RETRY_FLUSH_INTERVAL_SECONDS = 60
+
+# Disk protection. A Pi SD card is small, so the queue is capped and the
+# OLDEST entries are dropped: during a long outage the newest readings are
+# the ones worth keeping.
+RETRY_MAX_ENTRIES = 10000
+RETRY_BATCH_SIZE = 500
+
+# A single entry larger than this is dropped rather than written. Such an
+# entry would never replay successfully and would otherwise be retried
+# forever, blocking the entries behind it.
+RETRY_MAX_ENTRY_BYTES = 4096
+
+_retry_lock = threading.Lock()
+
 
 def load_env_file():
     if not ENV_PATH.exists(): return
@@ -56,6 +81,18 @@ load_env_file()
 LPMAS_TIMEZONE = ZoneInfo(os.getenv("LPMAS_TIMEZONE", "Asia/Manila"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
+
+# --- Pi -> Edge Function forwarding -----------------------------------------
+#
+# The Edge Function is the only writer of sensor_list and
+# sensor_minute_aggregates. The Pi forwards each reading as it arrives rather
+# than batch-aggregating, so a sensor that goes offline shows up in the cloud
+# within seconds instead of up to one sync interval later.
+#
+# SERVICE_KEY is the service_role key: this is a server-to-server call from a
+# device holding the secret, never a browser, so it bypasses RLS by design.
+EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/ingest-reading" if SUPABASE_URL else ""
+SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 
 def get_db():
@@ -531,7 +568,253 @@ def create_reading():
     if phase:
         incident_id, incident_status = handle_incident(conn, sensor_id, greenhouse_id, lux, classification, phase_type)
     conn.commit(); reading_id = cursor.lastrowid; conn.close()
+
+    # The local write above is the durable one and is already committed, so
+    # the cloud forward happens after it. Forwarding on a background thread
+    # keeps the ESP32's request fast even when Supabase is slow, which
+    # matters because the ESP32 retries on a timeout and a duplicate local
+    # insert would be visible as a second reading.
+    forward_in_background({
+        "sensor_id": sensor_id,
+        "lux": lux,
+        "recorded_at": recorded_at,
+        "phase_type": phase_type,
+        "greenhouse_id": greenhouse_id,
+    })
+
     return jsonify({"id": reading_id, "sensor_id": sensor_id, "greenhouse_id": greenhouse_id, "lux": lux, "recorded_at": recorded_at, "classification": classification, "phase_type": phase_type, "incident_id": incident_id, "incident_status": incident_status}), 201
+
+
+# ===========================================================================
+# Pi -> Edge Function forwarding
+# ===========================================================================
+#
+# The reading is already committed to SQLite by the time any of this runs.
+# Every function here is therefore best-effort with respect to the cloud and
+# MUST NOT raise into the ESP32 request path: losing a cloud reading is
+# recoverable from the local database, but a 500 to the ESP32 would lose the
+# reading entirely and make the hardware retry into the same failure.
+
+
+def default_post(url, body, headers, timeout):
+    """urllib POST. The default so tests can inject a stub."""
+    request = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
+    for name, value in headers.items(): request.add_header(name, value)
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
+def edge_function_configured(): return bool(EDGE_FUNCTION_URL and SERVICE_KEY)
+
+
+def build_forward_payload(reading):
+    """
+    Only the fields the Edge Function accepts.
+
+    Deliberately excludes `classification` and the local reading `id`: the
+    cloud re-derives both, and sending them would let a stale local decision
+    override the cloud's own. The greenhouse is forwarded as the Pi knows it
+    (possibly null); the Edge Function prefers its own sensor_list row and
+    falls back to this.
+    """
+    return {
+        "sensor_id": reading["sensor_id"],
+        "lux": float(reading["lux"]),
+        "recorded_at": reading["recorded_at"],
+        "phase_type": reading["phase_type"],
+        "greenhouse_id": reading.get("greenhouse_id"),
+    }
+
+
+def forward_to_supabase(reading, post=default_post):
+    """
+    POST one reading to the Edge Function with bounded retries.
+
+    Returns True once the reading is accepted, False when it has been queued
+    for a later attempt. Never raises.
+    """
+    if not edge_function_configured():
+        # An unconfigured Pi has nowhere to queue to; queueing locally would
+        # only fill the SD card with readings nobody will ever forward.
+        return False
+
+    payload = build_forward_payload(reading)
+    body = json.dumps(payload)
+    headers = {
+        "apikey": SERVICE_KEY,
+        "Authorization": f"Bearer {SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+    dedupe_key = reading_dedupe_key(reading)
+
+    for attempt in range(FORWARD_MAX_ATTEMPTS):
+        if attempt: time.sleep(FORWARD_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+        try:
+            with post(EDGE_FUNCTION_URL, body, headers, FORWARD_TIMEOUT_SECONDS) as response:
+                if 200 <= response.status < 300: return True
+                # A 4xx other than 429 is a contract error: retrying the same
+                # payload will fail identically, so stop early rather than
+                # burning the remaining attempts.
+                if 400 <= response.status < 500 and response.status != 429:
+                    print(f"[FORWARD REJECTED] status={response.status} sensor={payload['sensor_id']}")
+                    break
+        except Exception as error:
+            print(f"[FORWARD ATTEMPT {attempt + 1}/{FORWARD_MAX_ATTEMPTS} FAILED] sensor={payload['sensor_id']} error={error}")
+
+    queue_failed_reading(payload, dedupe_key=dedupe_key)
+    return False
+
+
+def forward_in_background(reading):
+    """Fire-and-forget forward so the ESP32 request never waits on the cloud."""
+    thread = threading.Thread(target=forward_to_supabase, args=(reading,), name="forward-reading", daemon=True)
+    thread.start()
+
+
+# --- retry queue -------------------------------------------------------------
+
+
+def reading_dedupe_key(reading):
+    """
+    Identity of a reading, used so a replayed entry is not sent twice.
+
+    The Edge Function folds per-reading deltas additively into a minute
+    bucket, so a duplicate POST inflates that minute's sample_count and
+    skews its average. sensor + timestamp + lux identifies a physical
+    reading; two genuinely distinct readings in the same minute differ in
+    lux, and the same lux from two sensors differs in sensor_id.
+    """
+    return "|".join([
+        str(reading.get("sensor_id", "")),
+        str(reading.get("recorded_at", "")),
+        str(reading.get("lux", "")),
+    ])
+
+
+def queue_failed_reading(payload, dedupe_key=None):
+    """
+    Append a reading to the retry queue. Never raises.
+
+    Two safeguards, both because this runs after the local write is already
+    committed: a full or read-only disk must not propagate, and an entry that
+    is already queued must not be queued again or it would be replayed
+    twice.
+    """
+    entry = dict(payload)
+    entry["dedupe_key"] = dedupe_key or reading_dedupe_key(payload)
+    try:
+        line = json.dumps(entry)
+    except (TypeError, ValueError) as error:
+        print(f"[RETRY QUEUE SKIP] unreadable reading: {error}")
+        return
+
+    if len(line.encode("utf-8")) > RETRY_MAX_ENTRY_BYTES:
+        print(f"[RETRY QUEUE SKIP] entry too large ({len(line)} bytes) sensor={payload.get('sensor_id')}")
+        return
+
+    with _retry_lock:
+        try:
+            _dedupe_retry_queue(entry["dedupe_key"])
+            with open(RETRY_QUEUE_PATH, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+            _trim_retry_queue()
+        except Exception as error:
+            # Losing a cloud reading is recoverable from SQLite; taking down
+            # the ESP32 endpoint is not.
+            print(f"[RETRY QUEUE ERROR] {error}")
+
+
+def read_retry_queue():
+    """Every queued entry, skipping corrupt lines. Never raises."""
+    if not RETRY_QUEUE_PATH.exists(): return []
+    entries = []
+    try:
+        with open(RETRY_QUEUE_PATH, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line: continue
+                try: entries.append(json.loads(line))
+                except ValueError: continue
+    except Exception as error:
+        print(f"[RETRY QUEUE READ ERROR] {error}")
+        return entries
+    return entries
+
+
+def _dedupe_retry_queue(keep_key):
+    """Rewrite the queue without any entry matching keep_key."""
+    entries = [e for e in read_retry_queue() if e.get("dedupe_key") != keep_key]
+    _rewrite_retry_queue(entries)
+
+
+def _trim_retry_queue():
+    """Keep only the newest RETRY_MAX_ENTRIES entries."""
+    entries = read_retry_queue()
+    if len(entries) <= RETRY_MAX_ENTRIES: return
+    _rewrite_retry_queue(entries[-RETRY_MAX_ENTRIES:])
+
+
+def _rewrite_retry_queue(entries):
+    temporary = RETRY_QUEUE_PATH.with_suffix(".tmp")
+    with open(temporary, "w", encoding="utf-8") as handle:
+        for entry in entries: handle.write(json.dumps(entry) + "\n")
+    os.replace(temporary, RETRY_QUEUE_PATH)
+
+
+def flush_retry_queue(post=default_post):
+    """
+    Replay queued readings, oldest first. Returns the number delivered.
+
+    Bounded by RETRY_BATCH_SIZE so one unreachable sensor cannot consume the
+    whole cycle. A failed entry stays queued; a delivered one is removed.
+    """
+    if not edge_function_configured(): return 0
+
+    with _retry_lock:
+        entries = read_retry_queue()[:RETRY_BATCH_SIZE]
+        if not entries: return 0
+
+        remaining = []
+        delivered = 0
+        for entry in entries:
+            payload = {k: v for k, v in entry.items() if k != "dedupe_key"}
+            if _deliver(payload, post): delivered += 1
+            else: remaining.append(entry)
+
+        # Entries beyond the batch are preserved untouched.
+        remaining.extend(read_retry_queue()[len(entries):])
+        try: _rewrite_retry_queue(remaining)
+        except Exception as error: print(f"[RETRY QUEUE FLUSH ERROR] {error}")
+
+    if delivered: print(f"[RETRY QUEUE] delivered={delivered} still_queued={len(remaining)}")
+    return delivered
+
+
+def _deliver(payload, post):
+    body = json.dumps(payload)
+    headers = {
+        "apikey": SERVICE_KEY,
+        "Authorization": f"Bearer {SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with post(EDGE_FUNCTION_URL, body, headers, FORWARD_TIMEOUT_SECONDS) as response:
+            return 200 <= response.status < 300
+    except Exception as error:
+        print(f"[RETRY QUEUE DELIVERY FAILED] sensor={payload.get('sensor_id')} error={error}")
+        return False
+
+
+def retry_queue_loop():
+    """Background thread: replay the queue on a fixed interval."""
+    while True:
+        time.sleep(RETRY_FLUSH_INTERVAL_SECONDS)
+        try: flush_retry_queue()
+        except Exception as error: print(f"[RETRY QUEUE LOOP ERROR] {error}")
+
+
+def start_retry_queue():
+    thread = threading.Thread(target=retry_queue_loop, name="retry-queue", daemon=True)
+    thread.start()
 
 
 @app.route("/api/phase/active", methods=["GET"])
@@ -677,6 +960,20 @@ def current_bucket(): return datetime.now(LPMAS_TIMEZONE).replace(second=0, micr
 
 
 def aggregate_readings_to_supabase():
+    """
+    Retired: the Edge Function now owns sensor_minute_aggregates.
+
+    Two writers for one table is a double-count bug, not redundancy — the
+    cloud RPC folds deltas additively, so the Pi's batched rows and the
+    per-reading deltas would both land in the same minute bucket. Per-reading
+    forwarding (forward_to_supabase) is the only remaining writer.
+
+    The body is left in place rather than deleted because the SQL documents
+    how the buckets were originally derived, and because a rollback to the
+    pre-Edge-Function architecture should be a one-line change. It is no
+    longer called from run_supabase_sync.
+    """
+    return 0
     if not supabase_configured(): return 0
     conn = get_db(); state = get_sync_state(conn, "last_aggregate_bucket")
     if state:
@@ -727,7 +1024,11 @@ def run_supabase_sync():
     except Exception as error:
         print(f"[SUPABASE SYNC ERROR] dark phase duration: {error}")
         dark_phase_days = DARK_PHASE_DAYS
-    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days} aggregates={aggregate_readings_to_supabase()} incidents={sync_incidents_to_supabase()}")
+    # NOTE: aggregates are intentionally absent. The Edge Function writes
+    # sensor_minute_aggregates per reading; the Pi must not also batch them.
+    # Incidents stay on the Pi because the Pi owns the incident state machine
+    # and no Edge Function writes monitoring_incidents yet.
+    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days} incidents={sync_incidents_to_supabase()}")
 
 
 def supabase_sync_loop():
@@ -748,4 +1049,4 @@ def start_supabase_sync():
 
 
 if __name__ == "__main__":
-    init_db(); start_supabase_sync(); app.run(host="0.0.0.0", port=5000, debug=False)
+    init_db(); start_supabase_sync(); start_retry_queue(); app.run(host="0.0.0.0", port=5000, debug=False)
