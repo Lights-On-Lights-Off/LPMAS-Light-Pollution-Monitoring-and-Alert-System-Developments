@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { buildSensorList, filterSensors } from "./sensor-list";
 
 // If NEXT_PUBLIC_PI_API_URL is set (e.g. local dev pointed at a LAN IP, or a
 // future permanent domain), it is used as-is and none of the dynamic lookup
@@ -172,3 +173,38 @@ export const getActivePhase = () => api<Phase | null>("/api/phase/active");
 export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/api/incidents${status ? `?status=${status}` : ""}`);
 export const acknowledgeIncident = (id: number) => api<{ status: string }>(`/api/incidents/${id}/acknowledge`, { method: "POST" });
 export const getHardwareActivity = (greenhouseId?: string, sensorIds: string[] = [], start?: string, end?: string) => { const params = new URLSearchParams(); if (greenhouseId) params.set("greenhouse_id", greenhouseId); sensorIds.forEach(id => params.append("sensor_id", id)); if (start) params.set("start", start); if (end) params.set("end", end); return api<HardwareActivityResponse>(`/api/hardware-activity?${params.toString()}`); };
+
+// --- sensor_list ------------------------------------------------------------
+//
+// Read directly from Supabase rather than through the Pi: sensor_list lives
+// only in the cloud, and migration 0009 grants SELECT to anon/authenticated.
+// Writes go through the update_sensor_list RPC instead, so a browser can
+// never invent a lux value or flip a sensor's status.
+
+import type { SensorListEntry } from "./sensor-list";
+export type { SensorListEntry };
+
+/**
+ * Every sensor the cloud knows about, most recently seen first.
+ *
+ * Filtering is applied client-side through the same tested helpers the API
+ * route uses, so the Monitor and Manager views and the route can never
+ * disagree about what "online sensors for gh-001" means.
+ */
+export async function getSensorList(): Promise<SensorListEntry[]> {
+  if (!supabase) throw new Error("Supabase is not configured");
+
+  const { data, error } = await supabase
+    .from("sensor_list")
+    .select("sensor_id,lux,status,last_reading_at,greenhouse_id,created_at,updated_at");
+
+  if (error) throw new Error(error.message);
+
+  return buildSensorList(data, {});
+}
+
+/** The sensors assigned to a greenhouse that are currently reporting. */
+export async function getOnlineSensors(greenhouseId: string): Promise<SensorListEntry[]> {
+  const sensors = await getSensorList();
+  return filterSensors(sensors, { greenhouse_id: greenhouseId, status: "online" });
+}
