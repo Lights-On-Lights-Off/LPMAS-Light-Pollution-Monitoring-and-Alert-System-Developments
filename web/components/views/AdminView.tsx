@@ -10,6 +10,11 @@ import { useDashboardData } from "@/lib/useDashboardData";
 import { getGreenhouses, type Greenhouse } from "@/lib/api";
 import { listAdminUsers, createAdminUser, updateAdminUserRole, deleteAdminUser, type AdminUser } from "@/lib/adminUsers";
 import type { Role } from "@/lib/profile";
+import {
+  canSendTestSms,
+  parseOfflineThreshold,
+  validateManagerPhone,
+} from "@/lib/admin-notification-settings";
 import { useProfile } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
@@ -48,9 +53,19 @@ export function AdminView({ section }: { section: string }) {
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [managerPhone, setManagerPhone] = useState("");
+  // Notification settings. The Semaphore key is write-only: the API returns
+  // only whether one is set plus a masked preview, so this field starts
+  // empty and saving a new one replaces the stored key.
+  const [offlineThreshold, setOfflineThreshold] = useState("15");
+  const [semaphoreSender, setSemaphoreSender] = useState("");
+  const [semaphoreKey, setSemaphoreKey] = useState("");
+  const [semaphoreKeyPreview, setSemaphoreKeyPreview] = useState("");
+  const [smsSaving, setSmsSaving] = useState(false);
+  const [smsMessage, setSmsMessage] = useState("");
+  const [smsError, setSmsError] = useState<string | null>(null);
+  const [testSmsBusy, setTestSmsBusy] = useState(false);
+  const [testSmsMessage, setTestSmsMessage] = useState("");
   const [phoneLoading, setPhoneLoading] = useState(false);
-  const [phoneSaving, setPhoneSaving] = useState(false);
-  const [phoneMessage, setPhoneMessage] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [defaultIllumStart, setDefaultIllumStart] = useState("");
   const [defaultIllumEnd, setDefaultIllumEnd] = useState("");
@@ -207,6 +222,10 @@ export function AdminView({ section }: { section: string }) {
       setDefaultIllumStart(body.default_illumination_start ?? "");
       setDefaultIllumEnd(body.default_illumination_end ?? "");
       setDarkPhaseDays(body.dark_phase_duration_days || "60");
+      setOfflineThreshold(body.sensor_offline_threshold_seconds || "15");
+      setSemaphoreSender(body.semaphore_sender_name ?? "");
+      setSemaphoreKey("");
+      setSemaphoreKeyPreview(body.semaphore_api_key_preview ?? "");
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : "Failed to load manager phone.");
     } finally {
@@ -214,31 +233,83 @@ export function AdminView({ section }: { section: string }) {
     }
   }
 
-  async function saveManagerPhone() {
-    if (phoneSaving) return;
+  async function saveNotificationSettings() {
+    if (smsSaving) return;
 
-    setPhoneSaving(true);
-    setPhoneMessage("");
-    setPhoneError(null);
+    const threshold = parseOfflineThreshold(offlineThreshold);
+    if (!threshold.ok) {
+      setSmsError(threshold.error);
+      setSmsMessage("");
+      return;
+    }
+
+    const phoneError = validateManagerPhone(managerPhone);
+    if (phoneError) {
+      setSmsError(phoneError);
+      setSmsMessage("");
+      return;
+    }
+
+    setSmsSaving(true);
+    setSmsMessage("");
+    setSmsError(null);
 
     try {
+      const payload: Record<string, string> = {
+        manager_phone: managerPhone.trim(),
+        sensor_offline_threshold_seconds: String(threshold.value),
+        semaphore_sender_name: semaphoreSender.trim(),
+      };
+
+      // An empty key field means "leave the stored key alone" — the real
+      // value was never sent to this browser, so sending "" would wipe it.
+      if (semaphoreKey.trim()) payload.semaphore_api_key = semaphoreKey.trim();
+
       const response = await fetch("/api/admin/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manager_phone: managerPhone.trim() })
+        body: JSON.stringify(payload),
       });
 
       const body = await response.json().catch(() => ({}));
 
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
 
-      setManagerPhone(body.manager_phone ?? "");
-      setPhoneMessage("Manager phone saved successfully.");
-      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "manager_phone", { value_changed: true });
+      setOfflineThreshold(String(threshold.value));
+      setSemaphoreKey("");
+      setSemaphoreKeyPreview(body.semaphore_api_key_preview ?? "");
+      setSmsMessage("Notification settings saved.");
+      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "notification_settings", {
+        offline_threshold_seconds: threshold.value,
+        semaphore_key_changed: Boolean(semaphoreKey.trim()),
+      });
     } catch (e) {
-      setPhoneError(e instanceof Error ? e.message : "Failed to save manager phone.");
+      setSmsError(e instanceof Error ? e.message : "Failed to save notification settings.");
     } finally {
-      setPhoneSaving(false);
+      setSmsSaving(false);
+    }
+  }
+
+  async function sendTestSms() {
+    if (testSmsBusy) return;
+
+    setTestSmsBusy(true);
+    setTestSmsMessage("");
+
+    try {
+      // The Edge Function authenticates with the service role, which the
+      // browser must never hold, so the request is proxied through a server
+      // route that adds the key itself.
+      const response = await fetch("/api/admin/test-sms", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+
+      if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+
+      setTestSmsMessage(body.message ?? "Test SMS sent.");
+    } catch (e) {
+      setTestSmsMessage(e instanceof Error ? e.message : "Test SMS failed.");
+    } finally {
+      setTestSmsBusy(false);
     }
   }
 
@@ -777,7 +848,97 @@ export function AdminView({ section }: { section: string }) {
                   <tbody>{smsRecipients.length ? smsRecipients.map(recipient => <tr key={recipient.id} className="border-b border-theme-border last:border-0"><td className="px-4 py-3.5 text-theme-text">{recipient.name}</td><td className="px-4 py-3.5 font-mono text-xs text-theme-secondary-text">{recipient.phone}</td><td className="px-4 py-3.5"><div className="flex justify-end gap-2"><button type="button" onClick={() => { setSmsEditTarget(recipient); setSmsPhone(recipient.phone); }} className="rounded-lg border border-theme-accent/60 px-2.5 py-1.5 text-xs font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent"><Pencil size={13} /></button><button type="button" onClick={() => setSmsRecipients(current => current.filter(item => item.id !== recipient.id))} className="rounded-lg border border-theme-danger/30 px-2.5 py-1.5 text-xs font-semibold text-theme-danger hover:bg-theme-danger/10"><Trash2 size={13} /></button></div></td></tr>) : <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-theme-muted">No SMS recipients configured.</td></tr>}</tbody>
                 </table>
               </div>
-              <div className="mt-3 flex items-center justify-between gap-3 text-xs"><span className="text-theme-muted">Provider status</span><span className="rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent">Not configured</span></div>
+              <div className="mt-3 flex items-center justify-between gap-3 text-xs">
+                <span className="text-theme-muted">Provider status</span>
+                <span
+                  className={
+                    semaphoreSender.trim() && (semaphoreKey.trim() || semaphoreKeyPreview)
+                      ? "rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent"
+                      : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
+                  }
+                >
+                  {semaphoreSender.trim() && (semaphoreKey.trim() || semaphoreKeyPreview)
+                    ? "Configured"
+                    : "Not configured"}
+                </span>
+              </div>
+
+              {/* Semaphore credentials and the offline threshold. The API key is
+                  write-only: the stored value is never sent to this browser, so
+                  the field starts blank and saving a new one replaces it. */}
+              <div className="mt-5 space-y-4 border-t border-theme-border/70 pt-5">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="semaphore-sender">Semaphore sender name</label>
+                  <input
+                    id="semaphore-sender"
+                    type="text"
+                    value={semaphoreSender}
+                    onChange={e => setSemaphoreSender(e.target.value)}
+                    placeholder="LPMAS"
+                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="semaphore-key">
+                    Semaphore API key
+                  </label>
+                  <input
+                    id="semaphore-key"
+                    type="password"
+                    value={semaphoreKey}
+                    onChange={e => setSemaphoreKey(e.target.value)}
+                    placeholder={semaphoreKeyPreview ? `Stored: ${semaphoreKeyPreview} — type to replace` : "Paste your Semaphore API key"}
+                    autoComplete="off"
+                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
+                  />
+                  <p className="mt-1.5 text-xs text-theme-muted">
+                    Stored server-side and never sent back to this browser. Leave blank to keep the current key.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="offline-threshold">Offline threshold (seconds)</label>
+                  <input
+                    id="offline-threshold"
+                    type="number"
+                    min={5}
+                    value={offlineThreshold}
+                    onChange={e => setOfflineThreshold(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
+                  />
+                  <p className="mt-1.5 text-xs text-theme-muted">
+                    How long a sensor may go silent before it is marked offline. The ESP32 reports every 10 seconds, so keep this above 5.
+                  </p>
+                </div>
+
+                {smsError && <div className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{smsError}</div>}
+                {smsMessage && <div className="rounded-xl border border-theme-accent/30 bg-theme-accent-soft p-3 text-sm text-theme-accent">{smsMessage}</div>}
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={saveNotificationSettings}
+                    disabled={smsSaving}
+                    className="rounded-xl bg-theme-accent px-4 py-2.5 text-sm font-semibold text-theme-accent-foreground transition hover:bg-theme-accent-hover disabled:opacity-50"
+                  >
+                    {smsSaving ? "Saving…" : "Save notification settings"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendTestSms}
+                    disabled={testSmsBusy || !canSendTestSms({ semaphoreApiKey: semaphoreKey, semaphoreSenderName: semaphoreSender, managerPhone }).enabled}
+                    title={canSendTestSms({ semaphoreApiKey: semaphoreKey, semaphoreSenderName: semaphoreSender, managerPhone }).reason ?? "Send a test message to the manager phone"}
+                    className="rounded-xl border border-theme-accent px-4 py-2.5 text-sm font-semibold text-theme-accent transition hover:bg-theme-accent-soft disabled:opacity-50"
+                  >
+                    {testSmsBusy ? "Sending…" : "Send test SMS"}
+                  </button>
+                </div>
+
+                {testSmsMessage && (
+                  <p className="text-sm text-theme-muted">{testSmsMessage}</p>
+                )}
+              </div>
             </Card>
           </div>
 
