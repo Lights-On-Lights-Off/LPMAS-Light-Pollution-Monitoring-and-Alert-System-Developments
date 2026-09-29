@@ -53,15 +53,6 @@ export function Login() {
     router.refresh();
   }
 
-  async function resetPassword() {
-    if (!supabase) { setMessage("Supabase is not configured."); return; }
-    if (!email) { setMessage("Enter your email address first."); return; }
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${location.origin}/login`
-    });
-    setMessage(error?.message ?? "Password reset email sent.");
-  }
-
   return <main className="relative grid min-h-screen place-items-center overflow-hidden bg-leaf-900 p-5">
     <div className="absolute inset-0 opacity-15 [background-image:radial-gradient(circle_at_20%_25%,#d9a441_0,transparent_30%),radial-gradient(circle_at_85%_80%,#8f631f_0,transparent_22%)]" />
     <Link href="/" className="absolute left-5 top-5 z-10 flex items-center gap-2 text-sm text-metal-300 hover:text-metal-50">
@@ -84,7 +75,10 @@ export function Login() {
       </div>
       {message && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{message}</p>}
       <button disabled={loading} className="mt-6 w-full rounded-xl bg-leaf-500 py-3 font-semibold text-ink hover:bg-leaf-100 disabled:opacity-60">{loading ? "Signing in..." : "Sign in"}</button>
-      <button type="button" onClick={resetPassword} className="mt-4 w-full text-sm text-leaf-500 hover:text-leaf-100">Forgot password?</button>
+      {/* A real page rather than an inline handler: the reset needs the
+          email address, a clear "check your inbox" state, and somewhere for
+          the link to land that is not this form. */}
+      <Link href="/forgot-password" className="mt-4 block w-full text-center text-sm text-leaf-500 hover:text-leaf-100">Forgot password?</Link>
     </form>
   </main>;
 }
