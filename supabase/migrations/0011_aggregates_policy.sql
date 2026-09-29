@@ -159,17 +159,57 @@ revoke insert on public.sensor_minute_aggregates from authenticated;
 --
 -- TIMESTAMP SEMANTICS
 --
--- last_reading_at is stamped with clock_timestamp(), not now(). now()
--- is the TRANSACTION start time, so two concurrent readings for one
--- sensor can stamp the row backwards: A begins at T1, B begins at
--- T2 > T1, B commits first and A commits second, and the row ends up
--- carrying T1 < T2. The unique index on sensor_id serialises them so
--- nothing corrupts, but "latest reading" moves backwards, and
--- check_sensor_offline() (0012) compares that stamp against the
--- offline threshold -- so an actively-reporting sensor can be marked
--- offline by a transaction that merely held the row lock across a lock
--- wait. clock_timestamp() is the actual wall clock at the moment of
--- the write, so the later writer always stamps the later time.
+-- The goal is that last_reading_at only ever moves FORWARD, because
+-- check_sensor_offline() (0012) reads it as "when did this sensor last
+-- report?" and flips the sensor offline when it falls behind the
+-- threshold. A stamp that moves backwards reports a live sensor as
+-- stale.
+--
+-- now() is unusable for this: it is the TRANSACTION start time, so a
+-- transaction that begins early and then blocks on a lock can commit a
+-- stamp arbitrarily older than the one it replaced.
+--
+-- clock_timestamp() in the VALUES list is better but NOT sufficient on
+-- its own. INSERT ... ON CONFLICT DO UPDATE forms the proposed
+-- (`excluded`) tuple BEFORE it attempts the speculative insertion and
+-- waits on the blocking transaction. So the VALUES-list stamp is
+-- captured before the lock wait, and the interleaving still lands
+-- backwards:
+--
+--     A forms its tuple at T1, is descheduled
+--     B forms at T2 > T1, takes the lock, commits (row now = T2)
+--     A resumes, DO UPDATE fires with excluded.last_reading_at = T1
+--     -> the row ends stamped T1 < T2.  Backwards.
+--
+-- The conflict clause therefore does NOT reuse excluded.last_reading_at.
+-- It computes greatest(sl.last_reading_at, clock_timestamp()):
+--
+--   * clock_timestamp() in the SET list is evaluated after the lock has
+--     been acquired, so it is a genuine "now" for the writer that
+--     actually wins the row;
+--   * greatest() then makes the result monotonic in the stored value
+--     regardless of when the tuple was formed. If the winner's clock
+--     reads earlier than what is already stored -- clock skew between
+--     the writer's clock and whatever stamped the row, or a stale value
+--     left by an older code path -- the existing stamp is kept instead
+--     of regressing.
+--
+-- The guarantee this actually provides, stated precisely: a call on the
+-- reading path never lowers last_reading_at. It does NOT guarantee the
+-- stamp equals the moment the reading arrived; it guarantees it is
+-- monotonic and never regresses. On the INSERT path there is no
+-- existing row, so the VALUES-list clock_timestamp() is used directly
+-- and the greatest() expression is never evaluated.
+--
+-- The trade-off that buys monotonicity: because the stamp can only
+-- move forward, a value that is ever set in the future -- by clock skew
+-- or a bad writer -- cannot be corrected downwards by later readings.
+-- Until the wall clock catches up, check_sensor_offline() (0012) will
+-- not consider that sensor stale, so a dead sensor can stay "online"
+-- for that period. This is inherent to preferring a false negative
+-- (a live sensor briefly shown stale) over a false positive (a dead
+-- sensor shown healthy); the skew would have to be large, not
+-- marginal, for the outage to be noticeable.
 -- ============================================================
 
 create or replace function public.update_sensor_list(
@@ -239,6 +279,12 @@ begin
         -- default lux, never as a healthy sensor.
         case when p_reading then p_lux else 0 end,
         case when p_reading then 'online' else 'offline' end,
+        -- INSERT path only. There is no existing row to compare
+        -- against here, so the conflict clause below (which is what
+        -- guarantees monotonicity) never runs. On a conflict this
+        -- value becomes excluded.last_reading_at and is deliberately
+        -- ignored in favour of greatest(sl.last_reading_at,
+        -- clock_timestamp()) -- see TIMESTAMP SEMANTICS above.
         clock_timestamp(),
         p_greenhouse_id
     )
@@ -249,7 +295,20 @@ begin
         lux = case when p_reading then excluded.lux else sl.lux end,
         status = case when p_reading then 'online' else sl.status end,
         last_reading_at = case
-            when p_reading then excluded.last_reading_at
+            -- Deliberately NOT excluded.last_reading_at. That value is
+            -- captured when the proposed tuple is formed, which happens
+            -- BEFORE this statement waits on the blocking transaction,
+            -- so reusing it can stamp the row backwards. See
+            -- TIMESTAMP SEMANTICS in the header for the interleaving.
+            --
+            -- clock_timestamp() here is evaluated after the lock is
+            -- acquired, and greatest() makes the stored stamp
+            -- monotonic in the existing value, so the last writer can
+            -- never regress "when did this sensor last report?".
+            --
+            -- Reachable only on the conflict path, so `sl` (the
+            -- existing row) is guaranteed non-null here.
+            when p_reading then greatest(sl.last_reading_at, clock_timestamp())
             else sl.last_reading_at
         end,
         -- p_greenhouse_id null  => keep whatever the manager assigned.
@@ -394,6 +453,39 @@ begin
         raise exception 'phase_type must be illumination or dark';
     end if;
 
+    -- Lux is validated, not defaulted.
+    --
+    -- The three count parameters below are coalesce()d to 0, and it is
+    -- tempting to treat the lux arguments the same way. That would be
+    -- wrong here: 0002 declares avg_lux/min_lux/max_lux NOT NULL, and
+    -- a silent 0 would be indistinguishable from a real reading of zero
+    -- lux. A caller that forgot to send the lux values would write a
+    -- plausible-looking row that drags the bucket's minimum to zero and
+    -- its average toward zero -- corrupting the chart data this whole
+    -- pipeline exists to produce, with no error anywhere.
+    --
+    -- Rejecting the null explicitly is also the only way to keep the
+    -- conflict clause's avg_lux zero-denominator fallback sound: that
+    -- CASE returns excluded.avg_lux, which would itself be NULL for a
+    -- null-lux caller and violate the NOT NULL constraint from inside
+    -- the SET list.
+    if p_avg_lux is null or p_min_lux is null or p_max_lux is null then
+        raise exception 'avg_lux, min_lux and max_lux are all required and must not be null';
+    end if;
+
+    -- 0002's sensor_minute_aggregates_lux_check also enforces
+    -- avg/min/max >= 0 and min <= max. Repeating the range and ordering
+    -- check here rejects the input before the sensor_list lookup and
+    -- names the actual problem, rather than surfacing a bare constraint
+    -- violation after the work has been done.
+    if p_avg_lux < 0 or p_min_lux < 0 or p_max_lux < 0 then
+        raise exception 'avg_lux, min_lux and max_lux must all be non-negative';
+    end if;
+
+    if p_min_lux > p_max_lux then
+        raise exception 'min_lux (%) must not be greater than max_lux (%)', p_min_lux, p_max_lux;
+    end if;
+
     -- sensor_list is the authority on liveness and assignment. Reading
     -- the greenhouse_id from it (instead of trusting the caller's copy)
     -- means a stale or spoofed greenhouse_id in the payload cannot put
@@ -472,6 +564,13 @@ begin
         -- min/max fold: the bucket minimum is the smaller of the two
         -- minima, the maximum the larger. This is associative and
         -- commutative, so it is correct regardless of commit order.
+        --
+        -- NOT NULL on both sides is guaranteed by the explicit null
+        -- rejection near the top of this function, so neither operand
+        -- can be null here. (PostgreSQL's least()/greatest() ignore
+        -- nulls rather than propagating them, so a null would silently
+        -- degrade to the other side instead of erroring -- which is
+        -- exactly why the input is rejected up front.)
         min_lux = least(sma.min_lux, excluded.min_lux),
         max_lux = greatest(sma.max_lux, excluded.max_lux),
 
