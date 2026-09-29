@@ -1,21 +1,37 @@
 -- ============================================================
--- LPMAS - SENSOR OFFLINE CHECK (pg_cron)
+-- LPMAS - SENSOR OFFLINE CHECK (RPC)
 -- Migration 0012
 --
 -- sensor_list.status is set to 'online' by update_sensor_list() on
 -- every reading (0011). Nothing ever set it back to 'offline', so a
 -- sensor that died would stay "online" on the Monitor page forever.
--- This migration adds the reaper:
+-- This migration provides the reaper itself:
 --
---   pg_cron (every 30s) -> public.check_sensor_offline()
---                            -> update sensor_list
---                               set status = 'offline'
---                              where now() - last_reading_at
---                                    > threshold
+--   public.check_sensor_offline()
+--       -> update sensor_list set status = 'offline'
+--          where now() - last_reading_at > threshold
 --
 -- Only rows already marked 'online' are considered, so the job is a
 -- no-op for healthy sensors and does not rewrite last_reading_at (and
--- therefore does not churn updated_at) every 30 seconds.
+-- therefore does not churn updated_at) on every run.
+--
+-- WHY THE pg_cron PARTS ARE NOT IN THIS FILE
+--
+-- Scheduling this job needs `create extension pg_cron`, and
+-- `create extension` is not guaranteed to succeed on every project:
+-- on a project where the extension is unavailable or not permitted,
+-- it raises. Supabase applies each migration file in a single
+-- transaction, so an unguarded create extension sharing a file with
+-- this function would roll the whole file back -- taking
+-- check_sensor_offline() and its grants with it, and leaving the
+-- offline reaper that the entire sensor_list.status design depends on
+-- uncreated.
+--
+-- The scheduling DDL therefore lives in its own file,
+-- 0013_pg_cron_schedule.sql. That way a project without pg_cron still
+-- gets the function (callable by hand, or schedulable by other means)
+-- and only the convenience schedule is lost, rather than the entire
+-- offline-detection mechanism.
 -- ============================================================
 
 
@@ -37,11 +53,21 @@
 -- about. So the argument is only a fallback for the case where the
 -- setting is missing, empty, or not a number.
 --
--- SECURITY DEFINER with no role check: this is a maintenance job run
--- by the database itself (pg_cron connects as the migration role), and
--- the only thing it can do is mark rows offline, which is strictly
--- more conservative than the state the reading path already creates.
--- It is not granted to anon.
+-- SECURITY DEFINER + ROLE CHECK
+--
+-- The function is SECURITY DEFINER because it is invoked by pg_cron,
+-- which connects as the database role that owns the job rather than as
+-- any API role, and because marking rows offline is a write that
+-- should not depend on the caller's table grants.
+--
+-- It IS granted to `authenticated` (for a manual "check now" from the
+-- Admin panel), and that grant is why the role check below exists: a
+-- SECURITY DEFINER function reachable by any signed-in user would let
+-- any user flip sensors offline on demand. The check is the same
+-- profiles/role test update_sensor_list() applies, so only admin and
+-- manager can call it. The pg_cron path is unaffected -- cron runs
+-- with auth.uid() null, so the check is skipped exactly as it is in
+-- update_sensor_list().
 -- ============================================================
 
 create or replace function public.check_sensor_offline(
@@ -57,6 +83,20 @@ declare
     v_setting text;
     v_count integer;
 begin
+    -- pg_cron connects with no auth.uid() and is trusted (it can only
+    -- ever mark sensors offline, which is the conservative direction).
+    -- A signed-in caller must be admin or manager.
+    if auth.uid() is not null then
+        if not exists (
+            select 1
+            from public.profiles p
+            where p.id = auth.uid()
+              and p.role::text in ('admin', 'manager')
+        ) then
+            raise exception 'Not authorized to run the sensor offline check';
+        end if;
+    end if;
+
     v_threshold := p_threshold_seconds;
 
     select s.value into v_setting
@@ -71,6 +111,13 @@ begin
         end if;
     end if;
 
+    -- Backstop only. The 5..86400 range the Admin panel exposes is
+    -- enforced at write time by the validator in 0010, so a stored
+    -- value outside it cannot exist; this clamp exists solely so a
+    -- null or non-positive ARGUMENT cannot produce a nonsense
+    -- interval. It deliberately does not clamp to 5: silently
+    -- rewriting an explicit check_sensor_offline(1) that an operator
+    -- passed on purpose would be a confusing thing to debug.
     if v_threshold is null or v_threshold <= 0 then
         v_threshold := 15;
     end if;
@@ -89,8 +136,7 @@ $$;
 -- Every role is a member of PUBLIC and new functions get EXECUTE for
 -- PUBLIC by default, so revoking from anon alone would leave the door
 -- open. Revoke from PUBLIC, then grant only the roles that should
--- reach it: service_role for the Edge Function / on-call diagnostics,
--- authenticated so an admin can force a check from the Admin panel.
+-- reach it.
 revoke execute on function public.check_sensor_offline(integer)
     from public;
 
@@ -99,66 +145,12 @@ grant execute on function public.check_sensor_offline(integer)
 
 
 -- ============================================================
--- 2. pg_cron EXTENSION
+-- 2. VERIFICATION
 -- ============================================================
--- Supabase supports pg_cron on hosted projects (enable it under
--- Database > Extensions if it is not already on). It must exist
--- before the job can be scheduled below.
--- ============================================================
-
-create extension if not exists pg_cron;
-
-
--- ============================================================
--- 3. SCHEDULE THE JOB
--- ============================================================
--- DOLLAR QUOTING
---
--- The command string handed to cron.schedule() is itself a dollar
--- quoted SQL string, so it CANNOT use `$$` -- that would terminate
--- the statement early and the migration would fail to parse. It uses
--- $cron$ instead. A literal `$$` is only safe here if this whole
--- statement is itself inside a differently tagged block (for example
--- inside a DO ... $outer$), which it is not.
---
--- The job is named, and any previous job with that name is removed
--- first, so re-applying this migration reschedules rather than
--- stacking a second copy of a 30-second job on top of the first.
---
--- The literal 15 in the call is the fallback threshold described in
--- section 1; the effective value comes from system_settings.
--- ============================================================
-
-do $schedule$
-begin
-    if exists (
-        select 1 from cron.job where jobname = 'lpmas-sensor-offline-check'
-    ) then
-        perform cron.unschedule('lpmas-sensor-offline-check');
-    end if;
-
-    perform cron.schedule(
-        'lpmas-sensor-offline-check',
-        '30s',
-        $cron$select public.check_sensor_offline(15)$cron$
-    );
-end;
-$schedule$;
-
-
--- ============================================================
--- 4. VERIFICATION
--- ============================================================
-
-select jobid, jobname, schedule, command, active
-from cron.job
-where jobname = 'lpmas-sensor-offline-check';
-
--- Manual run (returns the number of sensors just marked offline):
+-- The function is registered and callable:
 --
 -- select public.check_sensor_offline(15);
-
-
--- ============================================================
--- END OF OFFLINE CHECK
+--
+-- ...but the scheduled job lives in 0013_pg_cron_schedule.sql, which
+-- is the file to check for the cron entry itself.
 -- ============================================================

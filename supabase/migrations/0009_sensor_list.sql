@@ -157,9 +157,13 @@ with check (false);
 -- is rolling out a requirement for explicit grants on new tables for
 -- PostgREST to see them at all. RLS above still governs row access.
 --
--- insert/update are granted only so the table is reachable by the
--- security-definer RPC update_sensor_list(); with the deny-all policy
--- above, a direct client insert/update is still refused by RLS.
+-- insert/update are granted because the brief asks for it and 0006
+-- sets the same convention for the tables its RPCs write. They are
+-- NOT what makes update_sensor_list() work: that function is SECURITY
+-- DEFINER and runs as its owner, so it never depends on the caller's
+-- table grants. The grants exist so PostgREST exposes the columns to
+-- the roles at all, while the deny-all policy above -- not the grant --
+-- is what actually blocks a direct client write.
 -- ============================================================
 
 grant select on public.sensor_list to anon, authenticated;

@@ -52,8 +52,19 @@ on conflict (key) do nothing;
 -- system_settings is generic key/value storage, so a table CHECK
 -- cannot express "if key = 'semaphore_sender_name' then ...". A
 -- BEFORE INSERT OR UPDATE trigger can, and it is scoped to only the
--- three keys this migration introduces so it cannot break any
--- pre-existing or future key.
+-- TWO keys this migration introduces whose format the database can
+-- actually know -- so it cannot break any pre-existing or future key.
+--
+--   semaphore_sender_name          validated below
+--   sensor_offline_threshold_seconds  validated below
+--   semaphore_api_key              deliberately NOT validated
+--
+-- The API key is opaque by nature: it is a credential minted by a
+-- third party, and this database has no way to know its real format.
+-- Any pattern imposed here would be a guess that rejects a legitimate
+-- key. It is protected instead by never being exposed to the frontend
+-- (0002 gives system_settings no SELECT policy for authenticated) and
+-- by only ever being read server-side with the service role.
 --
 -- The empty string MUST stay valid: it is the default that disables
 -- SMS, so a naive "value ~ '^[a-zA-Z0-9]{1,11}$'" would reject the
@@ -66,6 +77,15 @@ on conflict (key) do nothing;
 -- accepted here and silently dropped by the Semaphore API later, and
 -- a non-numeric threshold would be caught only by the silent fallback
 -- inside check_sensor_offline().
+--
+-- ATOMICITY WARNING for the Admin settings route: because this trigger
+-- RAISES, a batched settings write that touches more than one key in a
+-- single statement fails as a whole if any one value is invalid. A
+-- settings PATCH that sets the threshold, the API key and the sender
+-- name together will reject all three if the sender name is bad. The
+-- route should either validate every field before issuing the write,
+-- or write the keys in separate statements so one bad field does not
+-- discard the rest.
 -- ============================================================
 
 create or replace function public.validate_system_settings_value()
@@ -95,14 +115,19 @@ begin
         -- instead of the message below.
         if new.value !~ '^[0-9]{1,9}$' then
             raise exception
-                'sensor_offline_threshold_seconds must be a whole number of seconds between 1 and 86400 (got: %)', new.value;
+                'sensor_offline_threshold_seconds must be a whole number of seconds between 5 and 86400 (got: %)', new.value;
         end if;
 
-        -- Upper bound is one day so a typo cannot silently disable the
-        -- offline check for every sensor.
-        if new.value::bigint not between 1 and 86400 then
+        -- Range is 5..86400, not 1..86400. The lower bound of 5 comes
+        -- from the Admin panel's number input (design spec section
+        -- 5.3) and the plan's global constraints: below ~5s a single
+        -- dropped ESP32 packet flips a healthy sensor offline, since
+        -- the reading interval is 10s. The upper bound is one day, so
+        -- a typo cannot silently disable the offline check for every
+        -- sensor.
+        if new.value::bigint not between 5 and 86400 then
             raise exception
-                'sensor_offline_threshold_seconds must be a whole number of seconds between 1 and 86400 (got: %)', new.value;
+                'sensor_offline_threshold_seconds must be a whole number of seconds between 5 and 86400 (got: %)', new.value;
         end if;
     end if;
 
