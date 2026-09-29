@@ -6,6 +6,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { Card, Badge } from "../ui";
 import { ActivityLogTable } from "../ActivityLogTable";
+import { AvailableSensors } from "../AvailableSensors";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, deleteGreenhouse, type Greenhouse, type MinuteAggregate, type Reading } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
@@ -364,6 +365,10 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
             </table>
           </div>
         </Card>
+
+        {/* The same liveness panel the public Monitor page shows, so a manager
+            sees which devices are reporting rather than only what they read. */}
+        <AvailableSensors greenhouseId={selectedGreenhouse} />
       </div>
     </div>
   );

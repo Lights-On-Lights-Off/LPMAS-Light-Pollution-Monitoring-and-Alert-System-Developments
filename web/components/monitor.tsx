@@ -8,6 +8,7 @@ import { getGreenhouses } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
+import { AvailableSensors } from "@/components/AvailableSensors";
 
 type GreenhouseConfig = {
   id: string;
@@ -394,6 +395,11 @@ export function Monitor() {
                 {sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}
               </select>
             </div>}
+
+            {/* Which devices are actually reporting, as opposed to what the
+                readings say. A flat chart with no sensors listed is the case
+                this panel exists to make obvious. */}
+            <AvailableSensors greenhouseId={selectedGreenhouse} />
           </Card>
         </div>
       </div>

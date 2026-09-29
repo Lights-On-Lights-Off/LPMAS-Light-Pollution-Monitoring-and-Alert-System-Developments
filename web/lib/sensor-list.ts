@@ -107,3 +107,35 @@ export function parseQuery(params: URLSearchParams): SensorListQuery {
 export function buildSensorList(rows: unknown, query: SensorListQuery): SensorListEntry[] {
   return sortSensors(filterSensors(normalizeSensorRows(rows), query));
 }
+
+// ---------------------------------------------------------------------------
+// Display helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * "12s ago" / "4m ago" / "2h ago" / "5d ago", relative to `now`.
+ *
+ * Takes `now` as a parameter rather than reading the clock, because the
+ * polling loop re-renders every few seconds and a test needs a fixed
+ * instant. A sensor reading 90s ago is already marked offline by the
+ * database's own cron, so this is a display nicety, not a liveness check —
+ * the authoritative status is `entry.status`.
+ */
+export function formatLastSeen(iso: string | null, now: number): string {
+  if (!iso) return "never";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "never";
+
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Lux with one decimal, or an em dash when the reading is unusable. */
+export function formatLux(lux: number): string {
+  return Number.isFinite(lux) ? `${lux.toFixed(1)} lux` : "—";
+}
