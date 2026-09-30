@@ -67,14 +67,43 @@ create type public.user_role_v2 as enum (
 -- ============================================================
 -- 3. CHANGE PROFILES.ROLE TO THE NEW ENUM
 -- ============================================================
+--
+-- Postgres refuses to alter the type of a column that a row-level
+-- security policy depends on:
+--
+--   ERROR: cannot alter type of a column used in a policy definition
+--
+-- Migration 0001 created "Admins can view all profiles", whose USING
+-- clause reads p.role = 'admin'. That policy is still present at this
+-- point (0005 replaces it later), so the column cannot be changed while
+-- it exists.
+--
+-- The policy is therefore dropped before the type change and recreated
+-- immediately after, with identical semantics. Both statements are
+-- idempotent so this migration stays safe to re-run.
 
 alter table public.profiles
     alter column role drop default;
 
 
+drop policy if exists "Admins can view all profiles" on public.profiles;
+
+
 alter table public.profiles
     alter column role type public.user_role_v2
     using role::text::public.user_role_v2;
+
+
+create policy "Admins can view all profiles"
+    on public.profiles for select
+    using (
+        exists (
+            select 1
+            from public.profiles p
+            where p.id = auth.uid()
+              and p.role = 'admin'::public.user_role_v2
+        )
+    );
 
 
 -- ============================================================

@@ -1,1 +1,34 @@
 node_modules
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+web/.env
+web/.env.local
+
+# Supabase local tooling artifacts
+supabase/.temp
+supabase/.branches
+
+# Deno
+deno.lock
+
+# Pi runtime state: the local database and the offline reading retry queue
+pi-server/lpmas.db
+pi-server/failed_readings.jsonl
+pi-server/failed_readings.tmp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Machine-local tooling files are not listed here on purpose: naming them in
+# .gitignore hides them from the editor's source-control view, which makes
+# them look like they do not exist. The pre-commit hook at
+# scripts/git-hooks/pre-commit refuses to stage them instead, so they stay
+# visible and stay out of commits at the same time.

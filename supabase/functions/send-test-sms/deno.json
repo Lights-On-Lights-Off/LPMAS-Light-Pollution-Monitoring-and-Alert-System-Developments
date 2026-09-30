@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.unstable", "dom", "dom.iterable"],
+    "strict": true
+  },
+  "tasks": {
+    "test": "deno test --allow-env --allow-net index.test.ts",
+    "check": "deno check index.ts index.test.ts"
+  },
+  "imports": {}
+}

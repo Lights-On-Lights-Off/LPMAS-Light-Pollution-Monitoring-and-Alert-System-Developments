@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "dom.iterable"],
+    "strict": true
+  },
+  "tasks": {
+    "test": "deno test lib/sensor-list.test.ts"
+  }
+}

@@ -5,6 +5,8 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { Card, Badge } from "../ui";
+import { ActivityLogTable } from "../ActivityLogTable";
+import { AvailableSensors } from "../AvailableSensors";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, deleteGreenhouse, type Greenhouse, type MinuteAggregate, type Reading } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
@@ -19,6 +21,9 @@ type ActivityLog = {
   resource: string | null;
   resource_id: string | null;
   details: Record<string, unknown> | null;
+  page: string | null;
+  ip_address: string | null;
+  browser: string | null;
   created_at: string;
 };
 
@@ -33,28 +38,6 @@ type GreenhouseConfig = {
 };
 
 const CONFIG_KEY = "lpmas-greenhouse-config";
-
-function actionBadge(action: string) {
-  const tone = action === "SIGN_IN" || action === "SIGN_OUT" ? "green" : action.startsWith("EXPORT_") ? "purple" : "accent";
-  const background =
-    tone === "green" ? "color-mix(in_srgb,#22c55e_12%,transparent)"
-    : tone === "purple" ? "color-mix(in_srgb,#a855f7_12%,transparent)"
-    : "color-mix(in_srgb,var(--accent)_12%,transparent)";
-  const border =
-    tone === "green" ? "color-mix(in_srgb,#22c55e_25%,transparent)"
-    : tone === "purple" ? "color-mix(in_srgb,#a855f7_25%,transparent)"
-    : "color-mix(in_srgb,var(--accent)_25%,transparent)";
-  const color = tone === "green" ? "#4ade80" : tone === "purple" ? "#c084fc" : "var(--accent)";
-
-  return (
-    <span
-      className="inline-flex items-center justify-center rounded-full px-2.5 py-1 text-[11px] font-bold leading-none tracking-[0.04em]"
-      style={{ background, border: `1px solid ${border}`, color }}
-    >
-      {action}
-    </span>
-  );
-}
 
 export function ManagerView({ section = "Overview" }: { section?: ManagerSection }) {
   const { data, loading, error } = useDashboardData();
@@ -90,13 +73,19 @@ function toLocalConfig(g: Greenhouse): GreenhouseConfig {
 // so the Overview and Greenhouses pages stay accurate while the Pi is quiet.
 async function knownSensorIds(): Promise<string[]> {
   if (!supabase) return [];
-  const [aggregateResult, assignedResult] = await Promise.all([
+  const [aggregateResult, assignedResult, sensorListResult] = await Promise.all([
     supabase.from("sensor_minute_aggregates").select("sensor_id").order("bucket_start", { ascending: false }).limit(1000),
-    supabase.from("greenhouse_sensors").select("sensor_id")
+    supabase.from("greenhouse_sensors").select("sensor_id"),
+    // sensor_list is the cloud's own record of every device that has ever
+    // reported. Preferring it means a sensor is assignable the moment it
+    // first forwards a reading, rather than only once a full minute bucket
+    // has been aggregated.
+    supabase.from("sensor_list").select("sensor_id")
   ]);
   const ids = new Set<string>();
   if (!aggregateResult.error) (aggregateResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
   if (!assignedResult.error) (assignedResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
+  if (!sensorListResult.error) (sensorListResult.data ?? []).forEach(row => row.sensor_id && ids.add(row.sensor_id));
   return Array.from(ids);
 }
 
@@ -382,6 +371,10 @@ function OverviewView({ data, loading, error }: { data: ReturnType<typeof useDas
             </table>
           </div>
         </Card>
+
+        {/* The same liveness panel the public Monitor page shows, so a manager
+            sees which devices are reporting rather than only what they read. */}
+        <AvailableSensors greenhouseId={selectedGreenhouse} />
       </div>
     </div>
   );
@@ -757,7 +750,7 @@ function ActivityLogsView() {
       if (firstLoad.current) setUserLoading(true);
       const { data: logs, error } = await supabase
         .from("activity_logs")
-        .select("id, username, action, resource, resource_id, details, created_at")
+        .select("id, username, action, resource, resource_id, details, page, ip_address, browser, created_at")
         .eq("role", "manager")
         .neq("action", "NAVIGATE")
         .order("created_at", { ascending: false });
@@ -866,8 +859,8 @@ function ActivityLogsView() {
   }
 
   async function downloadUserCSV() {
-    const headers = ["Timestamp", "Username", "Action Taken"];
-    const rows = userLogs.map(log => [new Date(log.created_at).toLocaleString(), log.username ?? "Unknown", log.action]);
+    const headers = ["Timestamp", "Username", "Action Taken", "Page", "IP Address", "Browser"];
+    const rows = userLogs.map(log => [new Date(log.created_at).toLocaleString(), log.username ?? "Unknown", log.action, log.page ?? "", log.ip_address ?? "", log.browser ?? ""]);
     downloadCSV("manager-user-activity-logs.csv", headers, rows);
     await logActivity("EXPORT_ACTIVITY_LOGS", "activity_logs", undefined, { scope: "manager", format: "csv" });
   }
@@ -950,64 +943,17 @@ function ActivityLogsView() {
       </Card>
 
       <Card>
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="font-bold text-[var(--foreground)]">USER ACTIVITY LOGS</h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manager-level actions performed in the system.</p>
-          </div>
-          <button onClick={downloadUserCSV} disabled={userLoading || !userLogs.length} className="flex shrink-0 items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-3.5 py-2 text-sm font-medium disabled:opacity-50">
-            <Download size={16} />
-            Download CSV
-          </button>
+        <div className="mb-5">
+          <h2 className="font-bold text-[var(--foreground)]">USER ACTIVITY LOGS</h2>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manager-level actions performed in the system.</p>
         </div>
-        {userLoading ? (
-          <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">Loading manager activity logs...</div>
-        ) : userError && !userLogs.length ? (
-          <div className="grid min-h-56 place-items-center text-center text-sm text-red-400">Unable to load user activity logs.<br />{userError}</div>
-        ) : userLogs.length ? (
-          <>
-          <div className="hidden w-full overflow-x-auto rounded-2xl border border-white/[0.07] bg-black/[0.08] md:block">
-            <table className="w-full table-fixed text-sm leading-5">
-              <colgroup>
-                <col className="w-[38%]" />
-                <col className="w-[25%]" />
-                <col className="w-[37%]" />
-              </colgroup>
-              <thead className="border-b border-metal-700 bg-[var(--surface)]">
-                <tr>
-                  <th className="px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Timestamp</th>
-                  <th className="px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Username</th>
-                  <th className="px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Action Taken</th>
-                </tr>
-              </thead>
-              <tbody>
-                {userLogs.map(log => (
-                  <tr key={log.id} className="border-b border-metal-700 last:border-0">
-                    <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-400">{new Date(log.created_at).toLocaleString()}</td>
-                    <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-300">{log.username ?? "Unknown"}</td>
-                    <td className="px-4 py-3.5 text-center align-middle">{actionBadge(log.action)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="max-h-[420px] space-y-3 overflow-y-auto md:hidden">
-            {userLogs.map(log => (
-              <div key={log.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <p className="min-w-0 truncate text-sm font-semibold text-[var(--foreground)]">{log.username ?? "Unknown"}</p>
-                  {actionBadge(log.action)}
-                </div>
-                <div className="mt-3">
-                  <CardField label="Timestamp" value={new Date(log.created_at).toLocaleString()} />
-                </div>
-              </div>
-            ))}
-          </div>
-          </>
-        ) : (
-          <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">No manager activity logs available.</div>
-        )}
+        <ActivityLogTable
+          logs={userLogs}
+          loading={userLoading}
+          error={userError}
+          onDownloadCsv={downloadUserCSV}
+          downloadDisabled={!userLogs.length}
+        />
       </Card>
 
       {exportModalOpen && (
