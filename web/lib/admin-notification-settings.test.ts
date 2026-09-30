@@ -8,10 +8,18 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 import {
+  DARK_PHASE_DAYS_DEFAULT,
   OFFLINE_THRESHOLD_DEFAULT,
-  canSendTestSms,
+  PH_COUNTRY_CODE,
+  PH_LOCAL_DIGITS,
   maskApiKey,
+  parseDarkPhaseDays,
+  parseIlluminationRange,
   parseOfflineThreshold,
+  sanitizeLocalDigits,
+  toInternationalNumber,
+  toLocalDigits,
+  validateLocalDigits,
   validateManagerPhone,
 } from "./admin-notification-settings.ts";
 
@@ -98,35 +106,92 @@ Deno.test("a number full of separators with too few digits is rejected", () => {
 });
 
 // ---------------------------------------------------------------------------
-// canSendTestSms
+// The Philippine mobile number field: a fixed +63 country code plus 10 digits
 // ---------------------------------------------------------------------------
 
-const ready = { semaphoreApiKey: "key", semaphoreSenderName: "LPMAS", managerPhone: "+639171234567" };
-
-Deno.test("a fully configured panel may send a test SMS", () => {
-  assertEquals(canSendTestSms(ready), { enabled: true, reason: null });
+Deno.test("the number field is a fixed +63 prefix followed by exactly 10 digits", () => {
+  assertEquals(PH_COUNTRY_CODE, "+63");
+  assertEquals(PH_LOCAL_DIGITS, 10);
 });
 
-Deno.test("each missing field disables the button and says which one", () => {
-  const cases: [Partial<typeof ready>, string][] = [
-    [{ semaphoreApiKey: "" }, "API key"],
-    [{ semaphoreSenderName: "  " }, "sender name"],
-    [{ managerPhone: "" }, "phone number"],
-  ];
-  for (const [override, expected] of cases) {
-    const result = canSendTestSms({ ...ready, ...override });
-    assertEquals(result.enabled, false);
-    assert(
-      result.reason?.toLowerCase().includes(expected.toLowerCase()),
-      `expected the reason to mention the ${expected}, got: ${result.reason}`,
-    );
+Deno.test("the displayed number is the +63 prefix plus the typed digits", () => {
+  assertEquals(toInternationalNumber("9171234567"), "+639171234567");
+});
+
+Deno.test("ten digits are accepted and a short number explains itself", () => {
+  assertEquals(validateLocalDigits("9171234567"), null);
+
+  for (const short of ["", "  ", "917123456", "12345"]) {
+    const error = validateLocalDigits(short);
+    assert(error !== null, `expected "${short}" to be rejected`);
+    assert(/10/.test(error), `expected the error to state the 10 digit rule, got: ${error}`);
   }
 });
 
-Deno.test("the button is disabled when everything is blank", () => {
-  const result = canSendTestSms({ semaphoreApiKey: "", semaphoreSenderName: "", managerPhone: "" });
-  assertEquals(result.enabled, false);
-  assert(result.reason !== null);
+Deno.test("digits pasted with separators or the +63 prefix are reduced to 10 digits", () => {
+  assertEquals(sanitizeLocalDigits("917 123 4567"), "9171234567");
+  assertEquals(sanitizeLocalDigits("+63 917-123-4567"), "9171234567");
+  assertEquals(sanitizeLocalDigits("0917abc1234567"), "9171234567");
+});
+
+Deno.test("typing is capped at 10 digits so the prefix can never be pushed along", () => {
+  // A pasted 0917… number plus an accidental extra digit must not silently
+  // become an 11 digit number prefixed with +63.
+  assertEquals(sanitizeLocalDigits("091712345678999").length, PH_LOCAL_DIGITS);
+});
+
+Deno.test("letters and symbols are dropped rather than stored", () => {
+  assertEquals(sanitizeLocalDigits("917abc123-4567"), "9171234567");
+});
+
+Deno.test("a stored number is split back into the 10 digits for editing", () => {
+  assertEquals(toLocalDigits("+639171234567"), "9171234567");
+  assertEquals(toLocalDigits("63 917 123 4567"), "9171234567");
+  assertEquals(toLocalDigits("09171234567"), "9171234567");
+  assertEquals(toLocalDigits("9171234567"), "9171234567");
+  assertEquals(toLocalDigits(""), "");
+});
+
+// ---------------------------------------------------------------------------
+// Dark phase duration
+// ---------------------------------------------------------------------------
+
+Deno.test("a whole positive number of days is accepted", () => {
+  assertEquals(parseDarkPhaseDays("60"), { ok: true, value: 60, error: null });
+  assertEquals(parseDarkPhaseDays(" 1 ").value, 1);
+});
+
+Deno.test("the dark phase default is 60 days", () => {
+  assertEquals(DARK_PHASE_DAYS_DEFAULT, 60);
+  assertEquals(parseDarkPhaseDays("").value, DARK_PHASE_DAYS_DEFAULT);
+});
+
+Deno.test("a zero, negative or fractional dark phase is rejected", () => {
+  for (const value of ["0", "-5", "7.5", "sixty", ""]) {
+    assertEquals(parseDarkPhaseDays(value).ok, false, `expected ${value} to be rejected`);
+  }
+  assert(parseDarkPhaseDays("0").error !== null);
+});
+
+// ---------------------------------------------------------------------------
+// Illumination phase dates
+// ---------------------------------------------------------------------------
+
+Deno.test("an illumination window that ends before it starts is rejected", () => {
+  const result = parseIlluminationRange("2026-10-10", "2026-10-01");
+  assertEquals(result.ok, false);
+  assert(result.error !== null && result.error.length > 0);
+});
+
+Deno.test("a same-day or correctly ordered window is accepted", () => {
+  assertEquals(parseIlluminationRange("2026-10-01", "2026-10-01").ok, true);
+  assertEquals(parseIlluminationRange("2026-10-01", "2026-10-10").ok, true);
+});
+
+Deno.test("a half-filled window is accepted, so an operator can set one side first", () => {
+  assertEquals(parseIlluminationRange("2026-10-01", "").ok, true);
+  assertEquals(parseIlluminationRange("", "2026-10-10").ok, true);
+  assertEquals(parseIlluminationRange("", "").ok, true);
 });
 
 // ---------------------------------------------------------------------------

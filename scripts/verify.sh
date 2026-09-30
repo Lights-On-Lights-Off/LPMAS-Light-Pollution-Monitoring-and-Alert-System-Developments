@@ -50,6 +50,10 @@ run "Web typecheck" \
   bash -c 'cd web && npx tsc --noEmit'
 run "Pi forwarding tests" \
   bash -c "cd pi-server && '$PY' -m pytest test_forwarding.py -q"
+# The monitoring time window's rules — including the overnight wrap that
+# migration 0015 mirrors in SQL — live in their own suite.
+run "Pi monitoring window tests" \
+  bash -c "cd pi-server && '$PY' -m pytest test_monitoring_window.py -q"
 
 run "Migration SQL parses" "$PY" scripts/check_sql_syntax.py
 run "RPC contract (SQL vs TypeScript)" \

@@ -23,7 +23,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
  *
  * Admin only, matching the System settings section the button lives in.
  */
-export async function POST(_request: NextRequest) {
+export async function POST(request: NextRequest) {
   if (!supabaseUrl || !publishableKey || !serviceRoleKey) {
     return NextResponse.json(
       { error: "Supabase service configuration is missing." },
@@ -71,6 +71,13 @@ export async function POST(_request: NextRequest) {
     );
   }
 
+  // The recipient the admin typed into the test field, if any. It is passed
+  // through as given rather than filled in from the stored manager phone, so
+  // an unusable value is refused by the Edge Function instead of quietly
+  // texting somebody else.
+  const requested = await request.json().catch(() => ({})) as { to?: unknown };
+  const payload = requested.to === undefined ? {} : { to: requested.to };
+
   let response: Response;
   try {
     response = await fetch(`${supabaseUrl}/functions/v1/send-test-sms`, {
@@ -80,7 +87,7 @@ export async function POST(_request: NextRequest) {
         Authorization: `Bearer ${serviceRoleKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload),
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

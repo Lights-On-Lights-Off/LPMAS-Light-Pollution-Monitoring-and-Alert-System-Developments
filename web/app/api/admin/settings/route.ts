@@ -27,8 +27,8 @@ const SETTINGS_KEYS = [
   "default_illumination_end",
   "dark_phase_duration_days",
   "sensor_offline_threshold_seconds",
-  "semaphore_sender_name",
-  "semaphore_api_key",
+  "sms_provider",
+  "textbee_api_key",
 ] as const;
 
 type SettingsKey = (typeof SETTINGS_KEYS)[number];
@@ -47,12 +47,12 @@ const MANAGER_READABLE_KEYS: readonly string[] = [
 ];
 
 /**
- * The Semaphore API key is a secret. It is never returned by GET in full —
+ * The SMS gateway API key is a secret. It is never returned by GET in full —
  * only a boolean saying whether one is set, plus a masked preview — so the
  * browser never receives a value it could leak into a screenshot, a
  * support ticket, or a React DevTools dump. Writing a new one replaces it.
  */
-const SECRET_KEYS: readonly string[] = ["semaphore_api_key"];
+const SECRET_KEYS: readonly string[] = ["textbee_api_key"];
 
 function maskSecret(value: string): string {
   const trimmed = value.trim();
@@ -72,10 +72,10 @@ function buildSettingsResponse(
     dark_phase_duration_days: byKey.get("dark_phase_duration_days")?.value ?? "",
     sensor_offline_threshold_seconds:
       byKey.get("sensor_offline_threshold_seconds")?.value ?? "",
-    semaphore_sender_name: byKey.get("semaphore_sender_name")?.value ?? "",
+    sms_provider: byKey.get("sms_provider")?.value ?? "",
     // Never the real value.
-    semaphore_api_key_set: Boolean(byKey.get("semaphore_api_key")?.value?.trim()),
-    semaphore_api_key_preview: maskSecret(byKey.get("semaphore_api_key")?.value ?? ""),
+    textbee_api_key_set: Boolean(byKey.get("textbee_api_key")?.value?.trim()),
+    textbee_api_key_preview: maskSecret(byKey.get("textbee_api_key")?.value ?? ""),
     updated_at: updatedAt,
   };
 }

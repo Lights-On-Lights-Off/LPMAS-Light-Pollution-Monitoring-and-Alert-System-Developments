@@ -11,8 +11,17 @@ import { getGreenhouses, type Greenhouse } from "@/lib/api";
 import { listAdminUsers, createAdminUser, updateAdminUserRole, deleteAdminUser, type AdminUser } from "@/lib/adminUsers";
 import type { Role } from "@/lib/profile";
 import {
-  canSendTestSms,
+  DARK_PHASE_DAYS_DEFAULT,
+  OFFLINE_THRESHOLD_DEFAULT,
+  PH_COUNTRY_CODE,
+  OFFLINE_THRESHOLD_MIN,
+  parseDarkPhaseDays,
+  parseIlluminationRange,
   parseOfflineThreshold,
+  sanitizeLocalDigits,
+  toInternationalNumber,
+  toLocalDigits,
+  validateLocalDigits,
   validateManagerPhone,
 } from "@/lib/admin-notification-settings";
 import { useProfile } from "@/lib/profile";
@@ -56,20 +65,29 @@ export function AdminView({ section }: { section: string }) {
   // Notification settings. The Semaphore key is write-only: the API returns
   // only whether one is set plus a masked preview, so this field starts
   // empty and saving a new one replaces the stored key.
-  const [offlineThreshold, setOfflineThreshold] = useState("15");
-  const [semaphoreSender, setSemaphoreSender] = useState("");
-  const [semaphoreKey, setSemaphoreKey] = useState("");
-  const [semaphoreKeyPreview, setSemaphoreKeyPreview] = useState("");
-  const [smsSaving, setSmsSaving] = useState(false);
-  const [smsMessage, setSmsMessage] = useState("");
-  const [smsError, setSmsError] = useState<string | null>(null);
+  const [offlineThreshold, setOfflineThreshold] = useState(String(OFFLINE_THRESHOLD_DEFAULT));
+  // Blank is the correct starting value, not an oversight: Semaphore defaults
+  // to the account's own registered sender at no cost, and a custom name has
+  // to be registered first, which costs a top-up. Defaulting the field to
+  // "LPMAS" would quietly point every alert at a paid registration.
+  // The SMS gateway is textbee, which relays through the project's own
+  // prepaid SIM. There is no alphanumeric sender name: the provider used to
+  // require a registered one before it would send, and registering it cost a
+  // paid top-up, which is why this field no longer exists.
+  const [smsProvider, setSmsProvider] = useState("textbee");
+  const [textbeeKey, setTextbeeKey] = useState("");
+  const [textbeeKeyPreview, setTextbeeKeyPreview] = useState("");
   const [testSmsBusy, setTestSmsBusy] = useState(false);
   const [testSmsMessage, setTestSmsMessage] = useState("");
+  // The number a test message goes to. Typed by the admin on purpose: a test
+  // is meant to be sent without saving anything first, and to a phone the
+  // admin is holding.
+  const [testSmsPhone, setTestSmsPhone] = useState("");
   const [phoneLoading, setPhoneLoading] = useState(false);
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [defaultIllumStart, setDefaultIllumStart] = useState("");
   const [defaultIllumEnd, setDefaultIllumEnd] = useState("");
-  const [darkPhaseDays, setDarkPhaseDays] = useState("60");
+  const [darkPhaseDays, setDarkPhaseDays] = useState(String(DARK_PHASE_DAYS_DEFAULT));
   const [defaultsSaving, setDefaultsSaving] = useState(false);
   const [defaultsMessage, setDefaultsMessage] = useState("");
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
@@ -221,11 +239,11 @@ export function AdminView({ section }: { section: string }) {
       setManagerPhone(body.manager_phone ?? "");
       setDefaultIllumStart(body.default_illumination_start ?? "");
       setDefaultIllumEnd(body.default_illumination_end ?? "");
-      setDarkPhaseDays(body.dark_phase_duration_days || "60");
-      setOfflineThreshold(body.sensor_offline_threshold_seconds || "15");
-      setSemaphoreSender(body.semaphore_sender_name ?? "");
-      setSemaphoreKey("");
-      setSemaphoreKeyPreview(body.semaphore_api_key_preview ?? "");
+      setDarkPhaseDays(body.dark_phase_duration_days || String(DARK_PHASE_DAYS_DEFAULT));
+      setOfflineThreshold(body.sensor_offline_threshold_seconds || String(OFFLINE_THRESHOLD_DEFAULT));
+      setSmsProvider(body.sms_provider || "textbee");
+      setTextbeeKey("");
+      setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : "Failed to load manager phone.");
     } finally {
@@ -233,37 +251,64 @@ export function AdminView({ section }: { section: string }) {
     }
   }
 
-  async function saveNotificationSettings() {
-    if (smsSaving) return;
+  /**
+   * Saves the whole Configure System form in one request.
+   *
+   * One form, one save: these values are read together by the Pi and by the
+   * alert path, and splitting them across two modals let an admin save a
+   * 60-day dark phase that disagreed with the sender name beside it.
+   *
+   * Every field is validated before anything is sent, so a rejected value
+   * never leaves a half-saved configuration behind.
+   */
+  async function saveSystemConfig() {
+    if (defaultsSaving) return;
 
     const threshold = parseOfflineThreshold(offlineThreshold);
     if (!threshold.ok) {
-      setSmsError(threshold.error);
-      setSmsMessage("");
+      setDefaultsError(threshold.error);
+      setDefaultsMessage("");
+      return;
+    }
+
+    const darkPhase = parseDarkPhaseDays(darkPhaseDays);
+    if (!darkPhase.ok) {
+      setDefaultsError(darkPhase.error);
+      setDefaultsMessage("");
+      return;
+    }
+
+    const range = parseIlluminationRange(defaultIllumStart, defaultIllumEnd);
+    if (!range.ok) {
+      setDefaultsError(range.error);
+      setDefaultsMessage("");
       return;
     }
 
     const phoneError = validateManagerPhone(managerPhone);
     if (phoneError) {
-      setSmsError(phoneError);
-      setSmsMessage("");
+      setDefaultsError(phoneError);
+      setDefaultsMessage("");
       return;
     }
 
-    setSmsSaving(true);
-    setSmsMessage("");
-    setSmsError(null);
+    setDefaultsSaving(true);
+    setDefaultsMessage("");
+    setDefaultsError(null);
 
     try {
       const payload: Record<string, string> = {
         manager_phone: managerPhone.trim(),
         sensor_offline_threshold_seconds: String(threshold.value),
-        semaphore_sender_name: semaphoreSender.trim(),
+        sms_provider: smsProvider.trim() || "textbee",
+        default_illumination_start: defaultIllumStart,
+        default_illumination_end: defaultIllumEnd,
+        dark_phase_duration_days: String(darkPhase.value),
       };
 
       // An empty key field means "leave the stored key alone" — the real
       // value was never sent to this browser, so sending "" would wipe it.
-      if (semaphoreKey.trim()) payload.semaphore_api_key = semaphoreKey.trim();
+      if (textbeeKey.trim()) payload.textbee_api_key = textbeeKey.trim();
 
       const response = await fetch("/api/admin/settings", {
         method: "PATCH",
@@ -276,22 +321,43 @@ export function AdminView({ section }: { section: string }) {
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
 
       setOfflineThreshold(String(threshold.value));
-      setSemaphoreKey("");
-      setSemaphoreKeyPreview(body.semaphore_api_key_preview ?? "");
-      setSmsMessage("Notification settings saved.");
-      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "notification_settings", {
+      setDarkPhaseDays(String(darkPhase.value));
+      setTextbeeKey("");
+      setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
+      setDefaultsMessage("System configuration saved.");
+      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "system_config", {
         offline_threshold_seconds: threshold.value,
-        semaphore_key_changed: Boolean(semaphoreKey.trim()),
+        dark_phase_duration_days: darkPhase.value,
+        default_illumination_start: defaultIllumStart,
+        default_illumination_end: defaultIllumEnd,
+        sms_provider: smsProvider.trim(),
+        gateway_key_changed: Boolean(textbeeKey.trim()),
       });
     } catch (e) {
-      setSmsError(e instanceof Error ? e.message : "Failed to save notification settings.");
+      setDefaultsError(e instanceof Error ? e.message : "Failed to save the system configuration.");
     } finally {
-      setSmsSaving(false);
+      setDefaultsSaving(false);
     }
   }
 
+  /**
+   * Sends a test message to the number in the test field.
+   *
+   * Deliberately not gated on the saved configuration. The whole point of a
+   * test is to find out whether SMS works, and an operator who has not saved
+   * anything yet needs the answer more than anyone. A partial configuration
+   * comes back as the real reason from the function, which is far more use
+   * than a button that silently does nothing.
+   */
   async function sendTestSms() {
     if (testSmsBusy) return;
+
+    const number = sanitizeLocalDigits(testSmsPhone);
+    const incomplete = validateLocalDigits(number);
+    if (incomplete) {
+      setTestSmsMessage(incomplete);
+      return;
+    }
 
     setTestSmsBusy(true);
     setTestSmsMessage("");
@@ -300,7 +366,11 @@ export function AdminView({ section }: { section: string }) {
       // The Edge Function authenticates with the service role, which the
       // browser must never hold, so the request is proxied through a server
       // route that adds the key itself.
-      const response = await fetch("/api/admin/test-sms", { method: "POST" });
+      const response = await fetch("/api/admin/test-sms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: toInternationalNumber(number) }),
+      });
       const body = await response.json().catch(() => ({}));
 
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
@@ -310,40 +380,6 @@ export function AdminView({ section }: { section: string }) {
       setTestSmsMessage(e instanceof Error ? e.message : "Test SMS failed.");
     } finally {
       setTestSmsBusy(false);
-    }
-  }
-
-  async function saveDefaults() {
-    if (defaultsSaving) return;
-
-    setDefaultsSaving(true);
-    setDefaultsMessage("");
-    setDefaultsError(null);
-
-    try {
-      const response = await fetch("/api/admin/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          default_illumination_start: defaultIllumStart,
-          default_illumination_end: defaultIllumEnd,
-          dark_phase_duration_days: darkPhaseDays.trim()
-        })
-      });
-
-      const body = await response.json().catch(() => ({}));
-
-      if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
-
-      setDefaultIllumStart(body.default_illumination_start ?? "");
-      setDefaultIllumEnd(body.default_illumination_end ?? "");
-      setDarkPhaseDays(body.dark_phase_duration_days || "60");
-      setDefaultsMessage("Defaults saved successfully.");
-      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "default_phase_config", { value_changed: true });
-    } catch (e) {
-      setDefaultsError(e instanceof Error ? e.message : "Failed to save defaults.");
-    } finally {
-      setDefaultsSaving(false);
     }
   }
 
@@ -845,19 +881,19 @@ export function AdminView({ section }: { section: string }) {
               <div className="overflow-x-auto rounded-xl border border-theme-border/70">
                 <table className="w-full min-w-[460px] border-collapse text-sm">
                   <thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-accent/30"><th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-text">User name</th><th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-text">Phone</th><th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-theme-text">Actions</th></tr></thead>
-                  <tbody>{smsRecipients.length ? smsRecipients.map(recipient => <tr key={recipient.id} className="border-b border-theme-border last:border-0"><td className="px-4 py-3.5 text-theme-text">{recipient.name}</td><td className="px-4 py-3.5 font-mono text-xs text-theme-secondary-text">{recipient.phone}</td><td className="px-4 py-3.5"><div className="flex justify-end gap-2"><button type="button" onClick={() => { setSmsEditTarget(recipient); setSmsPhone(recipient.phone); }} className="rounded-lg border border-theme-accent/60 px-2.5 py-1.5 text-xs font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent"><Pencil size={13} /></button><button type="button" onClick={() => setSmsRecipients(current => current.filter(item => item.id !== recipient.id))} className="rounded-lg border border-theme-danger/30 px-2.5 py-1.5 text-xs font-semibold text-theme-danger hover:bg-theme-danger/10"><Trash2 size={13} /></button></div></td></tr>) : <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-theme-muted">No SMS recipients configured.</td></tr>}</tbody>
+                  <tbody>{smsRecipients.length ? smsRecipients.map(recipient => <tr key={recipient.id} className="border-b border-theme-border last:border-0"><td className="px-4 py-3.5 text-theme-text">{recipient.name}</td><td className="px-4 py-3.5 font-mono text-xs text-theme-secondary-text">{recipient.phone}</td><td className="px-4 py-3.5"><div className="flex justify-end gap-2"><button type="button" onClick={() => { setSmsEditTarget(recipient); setSmsPhone(toLocalDigits(recipient.phone)); }} className="rounded-lg border border-theme-accent/60 px-2.5 py-1.5 text-xs font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent"><Pencil size={13} /></button><button type="button" onClick={() => setSmsRecipients(current => current.filter(item => item.id !== recipient.id))} className="rounded-lg border border-theme-danger/30 px-2.5 py-1.5 text-xs font-semibold text-theme-danger hover:bg-theme-danger/10"><Trash2 size={13} /></button></div></td></tr>) : <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-theme-muted">No SMS recipients configured.</td></tr>}</tbody>
                 </table>
               </div>
               <div className="mt-3 flex items-center justify-between gap-3 text-xs">
                 <span className="text-theme-muted">Provider status</span>
                 <span
                   className={
-                    semaphoreSender.trim() && (semaphoreKey.trim() || semaphoreKeyPreview)
+                    textbeeKey.trim() || textbeeKeyPreview
                       ? "rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent"
                       : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
                   }
                 >
-                  {semaphoreSender.trim() && (semaphoreKey.trim() || semaphoreKeyPreview)
+                  {textbeeKey.trim() || textbeeKeyPreview
                     ? "Configured"
                     : "Not configured"}
                 </span>
@@ -867,68 +903,20 @@ export function AdminView({ section }: { section: string }) {
                   write-only: the stored value is never sent to this browser, so
                   the field starts blank and saving a new one replaces it. */}
               <div className="mt-5 space-y-4 border-t border-theme-border/70 pt-5">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="semaphore-sender">Semaphore sender name</label>
-                  <input
-                    id="semaphore-sender"
-                    type="text"
-                    value={semaphoreSender}
-                    onChange={e => setSemaphoreSender(e.target.value)}
-                    placeholder="LPMAS"
-                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="semaphore-key">
-                    Semaphore API key
-                  </label>
-                  <input
-                    id="semaphore-key"
-                    type="password"
-                    value={semaphoreKey}
-                    onChange={e => setSemaphoreKey(e.target.value)}
-                    placeholder={semaphoreKeyPreview ? `Stored: ${semaphoreKeyPreview} — type to replace` : "Paste your Semaphore API key"}
-                    autoComplete="off"
-                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
-                  />
-                  <p className="mt-1.5 text-xs text-theme-muted">
-                    Stored server-side and never sent back to this browser. Leave blank to keep the current key.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wide text-theme-text" htmlFor="offline-threshold">Offline threshold (seconds)</label>
-                  <input
-                    id="offline-threshold"
-                    type="number"
-                    min={5}
-                    value={offlineThreshold}
-                    onChange={e => setOfflineThreshold(e.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-theme-border bg-theme-surface-secondary px-3.5 py-2.5 text-sm text-theme-text outline-none transition focus:border-theme-accent"
-                  />
-                  <p className="mt-1.5 text-xs text-theme-muted">
-                    How long a sensor may go silent before it is marked offline. The ESP32 reports every 10 seconds, so keep this above 5.
-                  </p>
-                </div>
-
-                {smsError && <div className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{smsError}</div>}
-                {smsMessage && <div className="rounded-xl border border-theme-accent/30 bg-theme-accent-soft p-3 text-sm text-theme-accent">{smsMessage}</div>}
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={saveNotificationSettings}
-                    disabled={smsSaving}
-                    className="rounded-xl bg-theme-accent px-4 py-2.5 text-sm font-semibold text-theme-accent-foreground transition hover:bg-theme-accent-hover disabled:opacity-50"
-                  >
-                    {smsSaving ? "Saving…" : "Save notification settings"}
-                  </button>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="min-w-[240px] flex-1">
+                    <PhNumberField
+                      id="test-sms-phone"
+                      label="Send a test message to"
+                      value={testSmsPhone}
+                      onChange={setTestSmsPhone}
+                      hint="Try it before waiting for a real violation — nothing needs saving first."
+                    />
+                  </div>
                   <button
                     type="button"
                     onClick={sendTestSms}
-                    disabled={testSmsBusy || !canSendTestSms({ semaphoreApiKey: semaphoreKey, semaphoreSenderName: semaphoreSender, managerPhone }).enabled}
-                    title={canSendTestSms({ semaphoreApiKey: semaphoreKey, semaphoreSenderName: semaphoreSender, managerPhone }).reason ?? "Send a test message to the manager phone"}
+                    disabled={testSmsBusy}
                     className="rounded-xl border border-theme-accent px-4 py-2.5 text-sm font-semibold text-theme-accent transition hover:bg-theme-accent-soft disabled:opacity-50"
                   >
                     {testSmsBusy ? "Sending…" : "Send test SMS"}
@@ -945,47 +933,95 @@ export function AdminView({ section }: { section: string }) {
           <Card>
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">Default greenhouse phase settings</p></div>
-                <p className="mt-1 text-xs leading-5 text-theme-muted">Pre-fills a manager's Add Greenhouse form. Managers can still change these per greenhouse. Lux thresholds themselves remain fixed, unaffected by this.</p>
+                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">System configuration</p></div>
+                <p className="mt-1 text-xs leading-5 text-theme-muted">Sender name, offline threshold and the phase schedule every greenhouse starts from. Lux thresholds themselves remain fixed, unaffected by this.</p>
               </div>
               <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
             </div>
-            <dl className="grid gap-4 sm:grid-cols-3">
+            <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <SettingRow label="SMS gateway" value={smsProvider.trim() || "Not set"} />
+              <SettingRow label="Offline threshold" value={`${offlineThreshold} seconds`} />
+              <SettingRow label="Dark phase duration" value={`${darkPhaseDays || String(DARK_PHASE_DAYS_DEFAULT)} days`} />
               <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
               <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
-              <SettingRow label="Dark phase duration" value={`${darkPhaseDays || "60"} days`} />
+              <SettingRow label="Gateway API key" value={textbeeKeyPreview ? `Stored ${textbeeKeyPreview}` : "Not set"} />
             </dl>
           </Card>
 
           <Modal
             open={defaultsEditOpen}
             onClose={() => !defaultsSaving && setDefaultsEditOpen(false)}
-            title="Edit default phase settings"
-            description="These are starting values only — each greenhouse's actual dates are still set per-greenhouse by a manager."
+            title="Configure system"
+            description="These values apply system-wide. Each greenhouse's actual dates are still set per-greenhouse by a manager."
             footer={
               <>
                 <button onClick={() => setDefaultsEditOpen(false)} disabled={defaultsSaving} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent disabled:opacity-50">Cancel</button>
-                <button onClick={saveDefaults} disabled={defaultsSaving} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover disabled:opacity-50">{defaultsSaving ? "Saving..." : "Save"}</button>
+                <button onClick={saveSystemConfig} disabled={defaultsSaving} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover disabled:opacity-50">{defaultsSaving ? "Saving..." : "Save"}</button>
               </>
             }
           >
             <div className="space-y-4">
               {defaultsError && <div className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{defaultsError}</div>}
               {defaultsMessage && <div className="rounded-xl border border-theme-success/30 bg-theme-success/10 p-3 text-sm text-theme-success">{defaultsMessage}</div>}
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block">
-                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Default illumination from</span>
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">SMS gateway</span>
+                  <select
+                    id="configure-provider"
+                    value={smsProvider}
+                    onChange={e => setSmsProvider(e.target.value)}
+                    className={controlClassName}
+                  >
+                    <option value="textbee" className="bg-theme-surface-secondary text-theme-text">textbee (Android phone gateway)</option>
+                  </select>
+                  <span className="mt-1.5 block text-xs text-theme-muted">textbee sends through your own prepaid SIM, so messages cost nothing each. The phone must stay on, plugged in, with the app running.</span>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Offline threshold (seconds)</span>
+                  <input
+                    id="configure-offline-threshold"
+                    type="number"
+                    min={OFFLINE_THRESHOLD_MIN}
+                    step={1}
+                    value={offlineThreshold}
+                    onChange={e => setOfflineThreshold(e.target.value)}
+                    className={controlClassName}
+                  />
+                  <span className="mt-1.5 block text-xs text-theme-muted">How long a sensor may go silent before it is marked offline. The ESP32 reports every 10 seconds, so keep this above {OFFLINE_THRESHOLD_MIN}.</span>
+                </label>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Illumination phase — from</span>
                   <input type="date" value={defaultIllumStart} onChange={e => setDefaultIllumStart(e.target.value)} className={controlClassName} />
                 </label>
                 <label className="block">
-                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Default illumination to</span>
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Illumination phase — to</span>
                   <input type="date" value={defaultIllumEnd} onChange={e => setDefaultIllumEnd(e.target.value)} className={controlClassName} />
                 </label>
               </div>
+
               <label className="block">
-                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Dark phase duration (days)</span>
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Dark phase (days)</span>
                 <input type="number" min={1} step={1} value={darkPhaseDays} onChange={e => setDarkPhaseDays(e.target.value)} className={controlClassName} />
-                <span className="mt-1.5 block text-xs text-theme-muted">Replaces the fixed 60-day default. Applies system-wide; the Pi picks this up within 30 seconds of saving.</span>
+                <span className="mt-1.5 block text-xs text-theme-muted">Replaces the fixed {DARK_PHASE_DAYS_DEFAULT}-day default. Applies system-wide; the Pi picks this up within 30 seconds of saving.</span>
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">textbee API key</span>
+                <input
+                  id="configure-textbee-key"
+                  type="password"
+                  value={textbeeKey}
+                  onChange={e => setTextbeeKey(e.target.value)}
+                  placeholder={textbeeKeyPreview ? `Stored: ${textbeeKeyPreview} — type to replace` : "Paste your textbee API key"}
+                  autoComplete="off"
+                  className={controlClassName}
+                />
+                <span className="mt-1.5 block text-xs text-theme-muted">From your textbee dashboard, under API keys. Stored server-side and never sent back to this browser. Leave blank to keep the current key.</span>
               </label>
             </div>
           </Modal>
@@ -1003,8 +1039,8 @@ export function AdminView({ section }: { section: string }) {
             {data.phase ? <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><SettingRow label="Current phase" value={data.phase.phase_type} /><SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} /><SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} /><SettingRow label="Confirmation" value="3 consecutive readings" /></div><div className="rounded-xl border border-theme-accent/20 bg-theme-accent-soft p-4"><p className="text-sm font-semibold text-theme-text">System-defined thresholds</p><div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs"><div><p className="text-theme-muted">Illumination</p><p className="mt-1 font-medium text-theme-text">≥ 50 safe · 31–49 warning · ≤ 30 violation</p></div><div><p className="text-theme-muted">Dark</p><p className="mt-1 font-medium text-theme-text">0–15 safe · 16–29 warning · ≥ 30 violation</p></div></div></div><p className="text-xs text-theme-muted">Thresholds are fixed by the monitoring service and are intentionally not editable here.</p></div> : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
           </Modal>
 
-          <Modal open={smsAddOpen || !!smsEditTarget} onClose={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} title={smsEditTarget ? "Edit SMS recipient" : "Add SMS recipient"} description="Select a manager account and provide the mobile number used for incident notifications." footer={<><button onClick={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent">Cancel</button><button onClick={() => { const manager = team?.find(user => user.id === smsManagerId); if (!smsEditTarget && manager && smsPhone.trim()) setSmsRecipients(current => [...current.filter(item => item.id !== manager.id), { id: manager.id, name: manager.full_name || manager.email, phone: smsPhone.trim() }]); if (smsEditTarget && smsPhone.trim()) setSmsRecipients(current => current.map(item => item.id === smsEditTarget.id ? { ...item, phone: smsPhone.trim() } : item)); setSmsAddOpen(false); setSmsEditTarget(null); }} disabled={(!smsEditTarget && !smsManagerId) || !smsPhone.trim()} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{smsEditTarget ? "Save" : "Add"}</button></>}>
-            <div className="space-y-4">{!smsEditTarget && <label className="block"><span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Manager</span><select value={smsManagerId} onChange={e => setSmsManagerId(e.target.value)} className={controlClassName}><option value="" className="bg-theme-surface-secondary text-theme-text">Select manager</option>{(team ?? []).filter(user => user.role === "manager").map(user => <option key={user.id} value={user.id} className="bg-theme-surface-secondary text-theme-text">{user.full_name || user.email}</option>)}</select></label>}<label className="block"><span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Mobile number</span><input value={smsPhone} onChange={e => setSmsPhone(e.target.value)} placeholder="+63 9XX XXX XXXX" inputMode="tel" className={controlClassName} /></label></div>
+          <Modal open={smsAddOpen || !!smsEditTarget} onClose={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} title={smsEditTarget ? "Edit SMS recipient" : "Add SMS recipient"} description="Select a manager account and provide the mobile number used for incident notifications." footer={<><button onClick={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent">Cancel</button><button onClick={() => { const manager = team?.find(user => user.id === smsManagerId); const phone = toInternationalNumber(smsPhone); if (!smsEditTarget && manager) setSmsRecipients(current => [...current.filter(item => item.id !== manager.id), { id: manager.id, name: manager.full_name || manager.email, phone }]); if (smsEditTarget) setSmsRecipients(current => current.map(item => item.id === smsEditTarget.id ? { ...item, phone } : item)); setSmsAddOpen(false); setSmsEditTarget(null); }} disabled={(!smsEditTarget && !smsManagerId) || validateLocalDigits(smsPhone) !== null} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{smsEditTarget ? "Save" : "Add"}</button></>}>
+            <div className="space-y-4">{!smsEditTarget && <label className="block"><span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Manager</span><select value={smsManagerId} onChange={e => setSmsManagerId(e.target.value)} className={controlClassName}><option value="" className="bg-theme-surface-secondary text-theme-text">Select manager</option>{(team ?? []).filter(user => user.role === "manager").map(user => <option key={user.id} value={user.id} className="bg-theme-surface-secondary text-theme-text">{user.full_name || user.email}</option>)}</select></label>}<PhNumberField id="sms-recipient-phone" label="Mobile number" value={smsPhone} onChange={setSmsPhone} hint="Ten digits after the +63. A number that is one digit short is never delivered." /></div>
           </Modal>
         </div>
       )}
@@ -1184,4 +1220,57 @@ export function AdminView({ section }: { section: string }) {
 
 function SettingRow({ label, value }: { label: string; value: string }) {
   return <div><dt className="text-xs text-theme-muted">{label}</dt><dd className="mt-1 font-medium text-theme-text">{value}</dd></div>;
+}
+
+/**
+ * A Philippine mobile number: a fixed +63 the operator cannot edit, and the
+ * 10 digits they can.
+ *
+ * The prefix is shown rather than typed because a mistyped country code is
+ * the failure that costs a real alert — Semaphore accepts "+6391712345" or
+ * "639171234567", bills it, and the message never arrives. Fixing the prefix
+ * and capping the field at 10 digits makes both impossible.
+ */
+function PhNumberField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder = "917 XXX XXXX",
+  hint,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (digits: string) => void;
+  placeholder?: string;
+  hint?: string;
+}) {
+  const error = value ? validateLocalDigits(value) : null;
+
+  return (
+    <label className="block" htmlFor={id}>
+      <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">{label}</span>
+      <span className="flex min-w-0 items-stretch overflow-hidden rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))] transition focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--accent)_30%,var(--border))]">
+        <span className="flex select-none items-center border-r border-[color-mix(in_srgb,var(--accent)_14%,var(--border))] px-3.5 py-3 text-sm font-semibold text-theme-muted">{PH_COUNTRY_CODE}</span>
+        <input
+          id={id}
+          type="text"
+          inputMode="numeric"
+          autoComplete="tel-national"
+          maxLength={10}
+          value={value}
+          onChange={e => onChange(sanitizeLocalDigits(e.target.value))}
+          placeholder={placeholder}
+          aria-invalid={error ? true : undefined}
+          className="min-w-0 flex-1 bg-transparent px-3.5 py-3 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+        />
+      </span>
+      {error
+        ? <span className="mt-1.5 block text-xs text-theme-danger">{error}</span>
+        : hint
+          ? <span className="mt-1.5 block text-xs text-theme-muted">{hint}</span>
+          : null}
+    </label>
+  );
 }

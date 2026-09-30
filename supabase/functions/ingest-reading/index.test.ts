@@ -16,7 +16,6 @@ import {
   createSmsGuard,
   floorToMinute,
   hasPriorConfirmedBreach,
-  isAuthorized,
   minuteLookbackWindow,
   validateReadingPayload,
   type PhaseType,
@@ -52,6 +51,9 @@ interface StubOptions {
   sensorError?: { message: string } | null;
   aggregateError?: { message: string } | null;
   priorRows?: Record<string, unknown>[];
+  /** Rows the sensor_list pre-read returns; defaults to the sensor row. */
+  sensorLookupRows?: Record<string, unknown>[] | null;
+  sensorLookupError?: { message: string } | null;
 }
 
 function stubClient(options: StubOptions = {}) {
@@ -90,6 +92,19 @@ function stubClient(options: StubOptions = {}) {
           return {
             in(column, values) {
               calls.push({ kind: "select", table, columns, column, values });
+              // This builder serves two distinct queries, so the answer
+              // depends on which table is being read: the sensor_list
+              // pre-read that decides whether a greenhouse is passed to
+              // update_sensor_list, and the aggregate history read that
+              // backs the durable breach dedupe.
+              if (table === "sensor_list") {
+                return Promise.resolve({
+                  data: options.sensorLookupError
+                    ? null
+                    : (options.sensorLookupRows ?? [sensorRow]),
+                  error: options.sensorLookupError ?? null,
+                });
+              }
               return Promise.resolve({ data: options.priorRows ?? [], error: null });
             },
           };
@@ -154,8 +169,8 @@ function buildHandler(overrides: HandlerOverrides = {}) {
     readSettings: overrides.readSettings ?? (() =>
       Promise.resolve(
         overrides.settings ?? {
-          semaphore_api_key: "semi-key",
-          semaphore_sender_name: "LPMAS",
+          sms_provider: "textbee",
+          textbee_api_key: "tb_key_value",
           manager_phone: "+639171234567",
         },
       )),
@@ -309,49 +324,17 @@ Deno.test("a non-POST request is rejected with 405", async () => {
 // Authentication
 // ---------------------------------------------------------------------------
 
-Deno.test("isAuthorized requires an exact service_role bearer match", () => {
-  const ok = new Request("http://x", { headers: { Authorization: `Bearer ${SERVICE_KEY}` } });
-  assert(isAuthorized(ok, SERVICE_KEY));
-  assert(!isAuthorized(new Request("http://x"), SERVICE_KEY));
-  assert(!isAuthorized(new Request("http://x", { headers: { Authorization: "Bearer nope" } }), SERVICE_KEY));
-  assert(
-    !isAuthorized(
-      new Request("http://x", { headers: { Authorization: `bearer ${SERVICE_KEY}` } }),
-      SERVICE_KEY,
-    ),
-    "the scheme is case-sensitive, matching the spec's 'Bearer' form",
-  );
-  assert(
-    !isAuthorized(
-      new Request("http://x", {
-        headers: { Authorization: `Bearer ${SERVICE_KEY}x` },
-      }),
-      SERVICE_KEY,
-    ),
-  );
-  assert(!isAuthorized(ok, ""));
-});
-
-Deno.test("a request without a service_role key is rejected with 401 before any work", async () => {
-  const { handler, request, calls, fetchCalls } = buildHandler({ authHeader: null });
-  const response = await handler(request);
-  assertEquals(response.status, 401);
-  assertEquals((await response.json()).ok, false);
-  assertEquals(calls.length, 0);
-  assertEquals(fetchCalls.length, 0);
-});
-
-Deno.test("a request with the wrong bearer token is rejected with 401", async () => {
-  const { handler, request, calls } = buildHandler({ authHeader: "Bearer wrong-key" });
-  const response = await handler(request);
-  assertEquals(response.status, 401);
-  assertEquals(calls.length, 0);
-});
-
-Deno.test("an unconfigured service role key rejects everything rather than allowing all", async () => {
-  const { handler, request, calls } = buildHandler();
+Deno.test("a forwarded reading is accepted even though the function cannot read its own key", async () => {
+  // The regression this guards. SUPABASE_SERVICE_ROLE_KEY is a
+  // platform-reserved name that is NOT exposed to a function's environment,
+  // so it reads as "". A self-check against it rejected every forwarded
+  // reading with 401 — no sensor data, no violation alerts — while looking
+  // exactly like a wrong Pi credential. The gateway has already verified the
+  // JWT, so the handler must not second-guess it.
+  const stub = stubClient();
+  const { request } = buildHandler({ stub });
   const broken = createHandler({
-    client: stubClient().client,
+    client: stub.client,
     serviceRoleKey: "",
     guard: createSmsGuard(),
     spawn: () => {},
@@ -359,10 +342,60 @@ Deno.test("an unconfigured service role key rejects everything rather than allow
     fetchImpl: async () => ({}),
     log: silentLog,
   });
-  assertEquals((await broken(request)).status, 401);
-  assertEquals((await handler(request)).status, 200, "control: the real key still works");
-  assert(calls.length > 0);
+
+  const response = await broken(request);
+  assertEquals(response.status, 200, "a valid reading must not be refused by the function's own env");
+  assert(stub.calls.length > 0, "the reading should have been recorded");
 });
+
+Deno.test("the Authorization header does not change the outcome — the gateway owns auth", async () => {
+  // The old self-check made the header decide everything, and decided wrong.
+  // Whatever the header says, the gateway has already authenticated the
+  // request, so the handler's own validation is the only thing that matters.
+  for (const header of [null, "Bearer wrong-key", "Bearer total-nonsense"]) {
+    const stub = stubClient();
+    const { request } = buildHandler({ stub, authHeader: header });
+    const handler = createHandler({
+      client: stub.client,
+      serviceRoleKey: "",
+      guard: createSmsGuard(),
+      spawn: () => {},
+      readSettings: () => Promise.resolve({}),
+      fetchImpl: async () => ({}),
+      log: silentLog,
+    });
+
+    const response = await handler(request);
+    assertEquals(response.status, 200, `header ${header} should not change the outcome`);
+  }
+});
+
+Deno.test("an out-of-window reading is stored by the reading table but makes no aggregate", async () => {
+  // The monitoring time window is enforced inside upsert_minute_aggregate,
+  // which returns NULL for a bucket outside the greenhouse's window. That
+  // must not be read as a failure: the reading itself is still recorded, no
+  // SMS fires, and the request still succeeds. Treating the null as an error
+  // would make the Pi retry every out-of-window reading and eventually
+  // discard it, and treating it as an aggregate would defeat the filter.
+  const { handler, request, spawner, fetchCalls } = buildHandler({
+    stub: stubClient({ aggregateRow: null }),
+    body: { sensor_id: "ESP32-001", lux: 12, recorded_at: "2026-09-29T10:30:00.000Z", phase_type: "dark" },
+  });
+
+  const response = await handler(request);
+  assertEquals(response.status, 200, "an out-of-window reading must not fail the request");
+
+  const body = await response.json();
+  assertEquals(body.sms_triggered, false, "no aggregate means no violation count, so no alert");
+  await spawner.settle();
+  assertEquals(fetchCalls.length, 0, "no SMS may be sent for an unstored bucket");
+});
+
+// The monitoring time window's own cases — the 23:00 -> 05:00 wrap above all,
+// which a naive range test turns into an empty window — are pinned in
+// pi-server/test_monitoring_window.py, which is executable and runs in
+// verify.sh. Migration 0015 implements the same comparison in SQL. They are
+// deliberately not restated here: a copy would drift from the original.
 
 // ---------------------------------------------------------------------------
 // Classification thresholds (pi-server/app.py lines 21-27, 285-294)
@@ -485,16 +518,20 @@ Deno.test("an assigned online reading updates the sensor list then upserts the m
     sms_triggered: false,
   });
 
-  assertEquals(calls.length, 2);
-  assertEquals((calls[0] as RpcCall).name, "update_sensor_list");
-  assertEquals((calls[1] as RpcCall).name, "upsert_minute_aggregate");
+  // Three calls now, not two: the sensor_list pre-read that decides whether
+  // a greenhouse may be written, then the two writes.
+  assertEquals(calls.length, 3);
+  assertEquals((calls[0] as SelectCall).table, "sensor_list");
+  assertEquals((calls[1] as RpcCall).name, "update_sensor_list");
+  assertEquals((calls[2] as RpcCall).name, "upsert_minute_aggregate");
 
-  // The reading path must never name a greenhouse: passing one would overwrite
-  // a manager's assignment, and passing null is safe only because the RPC
-  // preserves the existing value.
+  // The reading path DOES name a greenhouse, but only the one the sensor is
+  // already assigned to in sensor_list. See the "first reading assigns the
+  // sensor" tests below for why that distinction is load-bearing.
   assertEquals(rpcArgs(calls, "update_sensor_list"), {
     p_sensor_id: "ESP32-001",
     p_lux: 45.2,
+    p_greenhouse_id: "gh-001",
     p_reading: true,
   });
 
@@ -517,10 +554,73 @@ Deno.test("the greenhouse used for the aggregate comes from sensor_list, not the
     },
   });
   await handler(request);
-  assertEquals(rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id, undefined);
+  assertEquals(
+    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
+    "gh-002",
+    "a spoofed payload greenhouse must never be written",
+  );
   assertEquals(
     rpcArgs(calls, "upsert_minute_aggregate")!.p_greenhouse_id,
     "gh-002",
+  );
+});
+
+Deno.test("a sensor seen for the first time is assigned from the payload's greenhouse", async () => {
+  // THE BUG THIS FIXES.
+  //
+  // update_sensor_list was called without p_greenhouse_id, on the reasoning
+  // that the reading path "must never name a greenhouse" because it could
+  // overwrite a manager's assignment. True — but it meant the payload's
+  // greenhouse was DISCARDED rather than used as a first-time default, so a
+  // brand new sensor stayed permanently unassigned. Every subsequent reading
+  // was then refused by upsert_minute_aggregate with "sensor is not assigned
+  // to a greenhouse", and the aggregate tables stayed empty forever.
+  //
+  // The distinction that makes this safe: sensor_list is the authority, so
+  // the value passed here is read from the sensor's own row. A payload-only
+  // greenhouse (sensorRow.greenhouse_id === null) is what makes this a
+  // default rather than an overwrite.
+  const { handler, request, calls } = buildHandler({
+    stub: stubClient({ sensorRow: { greenhouse_id: null } }),
+    body: {
+      sensor_id: "ESP32-001",
+      lux: 5,
+      recorded_at: "2026-09-29T10:30:00.000Z",
+      phase_type: "dark",
+      greenhouse_id: "gh-new",
+    },
+  });
+
+  const response = await handler(request);
+  assertEquals(response.status, 200);
+
+  assertEquals(
+    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
+    "gh-new",
+    "a first reading must assign the sensor, or aggregates are refused forever",
+  );
+});
+
+Deno.test("a sensor already assigned elsewhere is not reassigned by a stale payload", async () => {
+  // The other half of the guarantee. sensor_list is authoritative, so a
+  // manager's reassignment to gh-002 wins over a Pi still reporting gh-001,
+  // and the value passed through is gh-002 -- never the payload's.
+  const { handler, request, calls } = buildHandler({
+    stub: stubClient({ sensorRow: { greenhouse_id: "gh-002" } }),
+    body: {
+      sensor_id: "ESP32-001",
+      lux: 5,
+      recorded_at: "2026-09-29T10:30:00.000Z",
+      phase_type: "dark",
+      greenhouse_id: "gh-stale",
+    },
+  });
+
+  await handler(request);
+  assertEquals(
+    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
+    "gh-002",
+    "the sensor's own assignment must win over a stale payload",
   );
 });
 
@@ -635,6 +735,53 @@ function violationAggregate(count: number) {
   };
 }
 
+Deno.test("a violation alert is sent through the gateway with the key in the header", async () => {
+  // The alert path is the reason this project needs SMS at all, so it is
+  // pinned here: one request, the key in a header, and the recipient
+  // normalized to E.164. There is no alphanumeric sender name any more —
+  // the gateway relays through the project's own prepaid SIM.
+  const { handler, request, spawner, fetchCalls } = buildHandler({
+    stub: stubClient({ aggregateRow: violationAggregate(3) }),
+    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
+  });
+
+  const response = await handler(request);
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).sms_triggered, true);
+  await spawner.settle();
+
+  assertEquals(fetchCalls.length, 1, "the alert should have been sent");
+  assertEquals(fetchCalls[0].url, "https://api.textbee.dev/api/v1/gateway/send-sms");
+
+  const payload = JSON.parse(String(fetchCalls[0].init.body));
+  assertEquals(payload.recipients, ["+639171234567"]);
+  assert((payload.message as string).includes("ALERT"), `expected an alert body, got: ${payload.message}`);
+  assert((payload.message as string).length <= 160, "an alert must stay one billable segment");
+
+  const headers = fetchCalls[0].init.headers as Record<string, string>;
+  assertEquals(headers["x-api-key"], "tb_key_value");
+});
+
+Deno.test("an unconfigured gateway does not silence reading ingestion", async () => {
+  // A monitoring system that stops recording because it cannot text anyone
+  // is worse than one that records silently. The reading must still land.
+  const { handler, request, spawner, fetchCalls, calls } = buildHandler({
+    stub: stubClient({ aggregateRow: violationAggregate(3) }),
+    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
+    readSettings: () => Promise.resolve({ sms_provider: "textbee", textbee_api_key: "", manager_phone: "+639171234567" }),
+  });
+
+  const response = await handler(request);
+  assertEquals(response.status, 200, "a missing SMS key must not fail the reading");
+  await spawner.settle();
+
+  assertEquals(fetchCalls.length, 0, "nothing may be sent without a key");
+  assert(
+    calls.some((c) => c.kind === "rpc" && c.name === "upsert_minute_aggregate"),
+    "the reading must still be recorded",
+  );
+});
+
 Deno.test("no SMS below the 3-reading confirmation threshold", async () => {
   for (const count of [1, 2]) {
     const { handler, request, spawner, fetchCalls } = buildHandler({
@@ -661,11 +808,9 @@ Deno.test("an SMS is fired when the merged violation_count reaches 3", async () 
 
   assertEquals(fetchCalls.length, 1);
   const call = fetchCalls[0];
-  assertEquals(call.url, "https://api.semaphore.co/api/v4/messages");
+  assertEquals(call.url, "https://api.textbee.dev/api/v1/gateway/send-sms");
   const sent = JSON.parse(String(call.init.body));
-  assertEquals(sent.apikey, "semi-key");
-  assertEquals(sent.number, "+639171234567");
-  assertEquals(sent.sendername, "LPMAS");
+  assertEquals(sent.recipients, ["+639171234567"]);
   assert(sent.message.includes("ESP32-001"));
   assert(sent.message.includes("30 lux"));
   assertEquals(call.init.method, "POST");
@@ -803,9 +948,13 @@ Deno.test("a cold start mid-breach does not re-notify (durable aggregate check)"
   assertEquals((await response.json()).sms_triggered, false);
   await spawner.settle();
   assertEquals(fetchCalls.length, 0);
-  const select = calls.find((c) => c.kind === "select");
-  assert(select !== undefined, "the durable check must query the prior buckets");
-  assertEquals(select.table, "sensor_minute_aggregates");
+  // Two selects happen now: the sensor_list assignment pre-read and the
+  // aggregate history the dedupe relies on. Assert on the latter by table.
+  const selects = calls.filter((c) => c.kind === "select") as SelectCall[];
+  assert(
+    selects.some((s) => s.table === "sensor_minute_aggregates"),
+    "the durable check must query the prior buckets",
+  );
 });
 
 Deno.test("a cold start on a genuinely new breach still notifies", async () => {

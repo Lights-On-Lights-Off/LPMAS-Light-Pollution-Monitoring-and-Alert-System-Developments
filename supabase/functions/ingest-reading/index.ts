@@ -118,7 +118,48 @@ export const CONSECUTIVE_VIOLATIONS_REQUIRED = 3;
  */
 export const PRIOR_BREACH_LOOKBACK_MINUTES = 10;
 
-const SEMAPHORE_ENDPOINT = "https://api.semaphore.co/api/v4/messages";
+/**
+ * Reads a sensor's current greenhouse assignment from sensor_list.
+ *
+ * Returns null when the sensor is unknown or unassigned. Never throws: a
+ * failed lookup must not stop a reading being recorded, so the caller falls
+ * back to treating the sensor as a first sighting.
+ *
+ * sensor_list is the authority on assignment, which is why this is read
+ * rather than taken from the payload. That distinction is what keeps a
+ * manager's reassignment safe from being overwritten by a Pi that is still
+ * configured for an older greenhouse.
+ */
+export async function lookupAssignedGreenhouse(
+  deps: Pick<HandlerDeps, "client" | "log">,
+  sensorId: string,
+): Promise<string | null> {
+  try {
+    const result = await deps.client.from("sensor_list").select("greenhouse_id").in("sensor_id", [sensorId]);
+    if (result.error) {
+      deps.log("error", `sensor_list lookup failed for sensor=${sensorId}: ${result.error.message}`);
+      return null;
+    }
+    const row = normalizeSensorRow(result.data);
+    const value = row?.greenhouse_id;
+    return typeof value === "string" && value !== "" ? value : null;
+  } catch (error) {
+    deps.log("error", `sensor_list lookup threw for sensor=${sensorId}: ${describe(error)}`);
+    return null;
+  }
+}
+
+// The SMS provider layer lives beside the send-test-sms function so both
+// callers share one definition of a valid configuration, one recipient
+// format and one way of reading a provider's verdict. Reaching across
+// function directories is deliberate: duplicating this logic is how the two
+// paths came to disagree before.
+import {
+  buildSendRequest,
+  interpretTextbeeResponse,
+  resolveProvider,
+  type SmsConfig,
+} from "../send-test-sms/sms-provider.ts";
 
 // ===========================================================================
 // Pure helpers
@@ -256,18 +297,15 @@ export function buildAggregateDelta(
 }
 
 /**
- * The service_role key check.
+ * The service_role key check — REMOVED, do not reintroduce it.
  *
- * Exact string comparison, no prefix matching: a valid user or anon JWT must
- * not be mistaken for the service key, and a key with a prefix of the real
- * one must not be accepted. An unconfigured key authenticates nobody.
+ * It compared the caller's bearer against Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
+ * and 401'd on any mismatch. The gateway has already verified the JWT, so a
+ * request arriving here is authenticated and the check could only produce a
+ * false rejection — which it did, stopping every reading and every alert. The
+ * two keys need not match as strings anyway: Supabase is migrating from legacy
+ * `eyJ…` JWTs to new-format secret keys.
  */
-export function isAuthorized(request: Request, serviceRoleKey: string): boolean {
-  if (!serviceRoleKey) return false;
-  const header = request.headers.get("authorization");
-  if (!header) return false;
-  return header === `Bearer ${serviceRoleKey}`;
-}
 
 /** Per-sensor "SMS already sent for this breach" flag. */
 export interface SmsGuard {
@@ -379,24 +417,22 @@ export function buildViolationMessage(
   return `ALERT: ${phase} phase light violation - Sensor ${sensorId} at ${greenhouseId}: ${lux} lux at ${when}`;
 }
 
-export interface SmsConfig {
-  apiKey: string;
-  senderName: string;
-  managerPhone: string;
-}
-
 /**
  * Resolves the SMS settings, or returns null when SMS is not configured or
  * the lookup failed. Never throws.
+ *
+ * Provider selection lives in send-test-sms/sms-provider.ts so this
+ * function and the test endpoint can never disagree about what a valid
+ * configuration is.
  */
 async function resolveSmsConfig(deps: HandlerDeps): Promise<SmsConfig | null> {
   try {
     const settings = await deps.readSettings();
-    const apiKey = (settings.semaphore_api_key ?? "").trim();
-    const senderName = (settings.semaphore_sender_name ?? "").trim();
-    const managerPhone = (settings.manager_phone ?? "").trim();
-    if (!apiKey || !senderName || !managerPhone) return null;
-    return { apiKey, senderName, managerPhone };
+    return resolveProvider({
+      sms_provider: settings.sms_provider,
+      textbee_api_key: settings.textbee_api_key,
+      manager_phone: settings.manager_phone,
+    });
   } catch (error) {
     deps.log("error", `SMS settings lookup failed: ${describe(error)}`);
     return null;
@@ -415,21 +451,37 @@ async function sendViolationSms(
   deps: HandlerDeps,
 ): Promise<void> {
   try {
-    await deps.fetchImpl(SEMAPHORE_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        apikey: config.apiKey,
-        number: config.managerPhone,
-        sendername: config.senderName,
-        message: buildViolationMessage(
-          reading.sensor_id,
-          greenhouseId,
-          reading.phase_type,
-          reading.lux,
-        ),
-      }),
-    });
+    // The recipient and the message length are both validated before the
+    // call. A number the carrier cannot deliver is still billed, so a
+    // violation alert that can never arrive must not be attempted.
+    const outbound = buildSendRequest(
+      config,
+      buildViolationMessage(
+        reading.sensor_id,
+        greenhouseId,
+        reading.phase_type,
+        reading.lux,
+      ),
+    );
+
+    if (!outbound.ok) {
+      deps.log("error", `Violation SMS not attempted: ${outbound.error}`);
+      return;
+    }
+
+    const response = await deps.fetchImpl(outbound.url, outbound.init);
+    const outcome = interpretTextbeeResponse(
+      responseStatus(response),
+      await responseText(response),
+      config.apiKey,
+    );
+
+    if (!outcome.ok) {
+      // The reason is logged with the key scrubbed: operators paste these
+      // into tickets, and a credential must not ride along.
+      deps.log("error", `Violation SMS rejected: ${outcome.detail}`);
+      return;
+    }
     deps.log("info", `SMS sent for sensor=${reading.sensor_id} greenhouse=${greenhouseId}`);
   } catch (error) {
     // Logged with the reason so a failed notification can be retried out of
@@ -440,6 +492,30 @@ async function sendViolationSms(
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Reads a status off an arbitrary Response-like value, degrading to 0. */
+function responseStatus(response: unknown): number {
+  if (response && typeof response === "object" && "status" in response) {
+    const status = (response as { status: unknown }).status;
+    if (typeof status === "number") return status;
+  }
+  return 0;
+}
+
+/** Reads a body off an arbitrary Response-like value, degrading to "". */
+async function responseText(response: unknown): Promise<string> {
+  if (response && typeof response === "object" && "text" in response) {
+    const text = (response as { text: unknown }).text;
+    if (typeof text === "function") {
+      try {
+        return await (text as () => Promise<string>).call(response);
+      } catch {
+        return "";
+      }
+    }
+  }
+  return "";
 }
 
 // ===========================================================================
@@ -459,10 +535,10 @@ function json(status: number, body: Record<string, unknown>): Response {
  */
 export function createHandler(deps: HandlerDeps): (request: Request) => Promise<Response> {
   return async function handle(request: Request): Promise<Response> {
-    // 1. Authenticate before doing any work. The key is never logged.
-    if (!isAuthorized(request, deps.serviceRoleKey)) {
-      return json(401, { ok: false, error: "Unauthorized: a valid service_role key is required" });
-    }
+    // 1. NO AUTH CHECK HERE, ON PURPOSE. The gateway verifies the caller's JWT
+    //    before this function runs, so a request arriving here is already
+    //    authenticated. The removed self-check only ever false-rejected.
+    //    Trust the gateway: it is the only layer holding the signing key.
 
     if (request.method !== "POST") {
       return json(405, { ok: false, error: "Method not allowed" });
@@ -484,16 +560,28 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
     const classification = classifyReading(reading.lux, reading.phase_type);
     const bucketStart = floorToMinute(reading.recorded_at);
 
-    // 3. Record the reading. This is what makes the sensor online, and it is
-    //    also the only authority on the greenhouse assignment.
+    // 3. Record the reading, which makes the sensor online.
     //
-    //    No p_greenhouse_id: on the reading path the RPC preserves whatever a
-    //    manager assigned. Any value sent here would overwrite it, and a
-    //    spoofed value from the payload would put the reading in the wrong
-    //    greenhouse's history.
+    //    p_greenhouse_id is sent only when sensor_list has no assignment yet,
+    //    because the RPC treats null as "preserve what is stored" and so could
+    //    never assign anything itself. Omitting it unconditionally left new
+    //    sensors permanently unassigned, and since upsert_minute_aggregate
+    //    refuses unassigned sensors, the aggregate tables stayed empty.
+    //
+    //    Once assigned the field is omitted, so a manager's reassignment is
+    //    never overwritten -- not even by a Pi still reporting the greenhouse
+    //    it was configured with earlier.
+    const assignedGreenhouseId = await lookupAssignedGreenhouse(deps, reading.sensor_id);
+    const payloadGreenhouseId = typeof reading.greenhouse_id === "string" && reading.greenhouse_id !== ""
+      ? reading.greenhouse_id
+      : null;
+
+    // sensor_list's own value when there is one, the payload's only as a
+    // first-sighting default. Never a third source.
     const sensorResult = await deps.client.rpc("update_sensor_list", {
       p_sensor_id: reading.sensor_id,
       p_lux: reading.lux,
+      p_greenhouse_id: assignedGreenhouseId ?? payloadGreenhouseId ?? undefined,
       p_reading: true,
     });
     if (sensorResult.error) {

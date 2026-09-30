@@ -29,11 +29,12 @@
 // Types
 // ===========================================================================
 
-export interface SmsConfig {
-  apiKey: string;
-  senderName: string;
-  managerPhone: string;
-}
+import {
+  buildSendRequest,
+  interpretTextbeeResponse,
+  resolveProvider,
+  type SmsConfig,
+} from "./sms-provider.ts";
 
 export interface SettingsResult {
   data: Record<string, string>[] | null;
@@ -60,37 +61,17 @@ export interface HandlerDeps {
   log(level: "info" | "error", message: string): void;
 }
 
-const SEMAPHORE_ENDPOINT = "https://api.semaphore.co/api/v4/messages";
-
-// ===========================================================================
-// Auth
-// ===========================================================================
-
-/**
- * Exact-match bearer check against the configured service_role key.
- *
- * The comparison is not constant-time, which is acceptable here because the
- * key is a server-to-server secret compared against a request the caller
- * already had to route through Supabase's gateway. What matters more is that
- * an unset configured key never matches, so a missing env var fails closed
- * rather than open.
- */
-export function isAuthorized(request: Request, serviceRoleKey: string): boolean {
-  if (!serviceRoleKey) return false;
-  const header = request.headers.get("Authorization") ?? "";
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return false;
-  return header.slice(prefix.length) === serviceRoleKey;
-}
-
 // ===========================================================================
 // Settings
 // ===========================================================================
 
 /**
- * Resolves the three settings SMS needs, or null when SMS is not fully
- * configured or the lookup failed. Never throws — every failure is a
- * misconfiguration from the caller's point of view.
+ * Resolves the SMS configuration, or null when SMS is not configured or the
+ * lookup failed. Never throws — every failure is a misconfiguration from the
+ * caller's point of view.
+ *
+ * Provider selection lives in ./sms-provider.ts so this function only has to
+ * read settings and hand them over.
  */
 export async function resolveSmsConfig(
   deps: Partial<Pick<HandlerDeps, "readSettings" | "log">> & {
@@ -114,12 +95,96 @@ export async function resolveSmsConfig(
   const row = result.data?.[0];
   if (!row) return null;
 
-  const apiKey = (row.semaphore_api_key ?? "").trim();
-  const senderName = (row.semaphore_sender_name ?? "").trim();
-  const managerPhone = (row.manager_phone ?? "").trim();
-  if (!apiKey || !senderName || !managerPhone) return null;
+  // A saved manager phone is what violation alerts use, but a test may name
+  // its own recipient, so an empty phone is resolved here rather than being
+  // treated as "SMS is not configured". buildSendRequest then applies the
+  // override, and falls back to this value when the test names nobody.
+  const config = resolveProvider(row);
+  if (!config) return null;
 
-  return { apiKey, senderName, managerPhone };
+  const savedPhone = (row.manager_phone ?? "").trim();
+  return savedPhone ? { ...config, recipient: savedPhone } : { ...config, recipient: "" };
+}
+
+// ===========================================================================
+// Recipient
+// ===========================================================================
+
+/** The country code and length every number this project sends to shares. */
+const PH_COUNTRY_DIGITS = "63";
+const PH_MOBILE_DIGITS = 10;
+
+export interface RecipientResult {
+  ok: boolean;
+  number: string | null;
+  error: string | null;
+}
+
+/**
+ * Reads the optional recipient the Admin panel typed into the test field.
+ *
+ * The stored manager_phone is a fallback, not a requirement: the point of
+ * the test is to prove the line works *now*, without saving anything first.
+ * A number is accepted in the forms an operator actually writes — "+63 917
+ * 123 4567", "0917…" or the bare 10 digits — and normalized to the +63 form
+ * Semaphore expects.
+ *
+ * Nine or eleven digits are refused rather than sent. Semaphore accepts
+ * such a request, bills it, and the message goes nowhere, so the operator
+ * would conclude the line is broken when it is the number that is.
+ */
+export function parseTestRecipient(raw: unknown): RecipientResult {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { ok: false, number: null, error: "No recipient supplied." };
+  }
+
+  const digits = raw.replace(/\D/g, "");
+
+  let local = digits.startsWith(PH_COUNTRY_DIGITS) ? digits.slice(PH_COUNTRY_DIGITS.length) : digits;
+  local = local.replace(/^0/, "");
+
+  if (local.length !== PH_MOBILE_DIGITS) {
+    return {
+      ok: false,
+      number: null,
+      error: `Enter a ${PH_MOBILE_DIGITS} digit Philippine mobile number after +${PH_COUNTRY_DIGITS} (${local.length} digits given).`,
+    };
+  }
+
+  return { ok: true, number: `+${PH_COUNTRY_DIGITS}${local}`, error: null };
+}
+
+export interface RecipientField {
+  /** True when the caller sent any body at all. */
+  present: boolean;
+  /** True when a body was sent but could not be read as a JSON object. */
+  malformed: boolean;
+  value: unknown;
+}
+
+/**
+ * Reads the `to` field out of a request body.
+ *
+ * A body that is present but unreadable is reported as malformed rather than
+ * ignored, because ignoring it would quietly send the message to the stored
+ * manager phone instead — a test to the wrong number looks exactly like a
+ * broken SIM.
+ */
+export function readRecipientField(body: string | null | undefined): RecipientField {
+  if (!body || !body.trim()) return { present: false, malformed: false, value: undefined };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { present: true, malformed: true, value: undefined };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { present: true, malformed: true, value: undefined };
+  }
+
+  return { present: true, malformed: false, value: (parsed as { to?: unknown }).to };
 }
 
 // ===========================================================================
@@ -128,77 +193,11 @@ export async function resolveSmsConfig(
 
 /**
  * The test message body. Kept under 160 characters so it bills as a single
- * segment, which keeps the Semaphore free tier (100 SMS/month) from being
- * spent two messages at a time on a test.
+ * segment.
  */
-export function buildTestMessage(senderName: string, now: Date = new Date()): string {
+export function buildTestMessage(now: Date = new Date()): string {
   const stamp = now.toISOString().replace("T", " ").slice(0, 16);
-  return `[${senderName}] Test SMS. If you received this, alert delivery is working. Sent ${stamp} UTC.`;
-}
-
-// ===========================================================================
-// Provider response
-// ===========================================================================
-
-export interface ProviderOutcome {
-  ok: boolean;
-  detail: string;
-}
-
-/**
- * Interprets a Semaphore response. Checks the body as well as the status,
- * because a 200 can still carry a per-message failure.
- */
-export function interpretProviderResponse(status: number, rawBody: string): ProviderOutcome {
-  let parsed: unknown = null;
-  try {
-    parsed = rawBody ? JSON.parse(rawBody) : null;
-  } catch {
-    parsed = null;
-  }
-
-  const bodyError = readErrorText(parsed);
-
-  // A body-level error wins: it is the most specific reason available.
-  if (bodyError) return { ok: false, detail: bodyError };
-
-  // A 200 whose messages array reports a failure is still a failure.
-  const messageFailure = readMessageFailure(parsed);
-  if (messageFailure) return { ok: false, detail: messageFailure };
-
-  if (status < 200 || status >= 300) {
-    return {
-      ok: false,
-      detail: `Semaphore returned HTTP ${status}${parsed ? "" : " with a non-JSON body"}`,
-    };
-  }
-
-  return { ok: true, detail: "Semaphore accepted the message" };
-}
-
-function readErrorText(parsed: unknown): string | null {
-  if (parsed && typeof parsed === "object" && "error" in parsed) {
-    const value = (parsed as { error: unknown }).error;
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function readMessageFailure(parsed: unknown): string | null {
-  if (!parsed || typeof parsed !== "object") return null;
-  const messages = (parsed as { messages?: unknown }).messages;
-  if (!Array.isArray(messages)) return null;
-  for (const entry of messages) {
-    if (!entry || typeof entry !== "object") continue;
-    const status = (entry as { status?: unknown }).status;
-    if (typeof status === "string" && status.toLowerCase() === "failed") {
-      const detail = (entry as { error?: unknown }).error;
-      return typeof detail === "string" && detail.trim()
-        ? detail.trim()
-        : "Semaphore reported the message as failed";
-    }
-  }
-  return null;
+  return `[LPMAS] Test SMS. If you received this, alert delivery is working. Sent ${stamp} UTC.`;
 }
 
 // ===========================================================================
@@ -218,10 +217,22 @@ function describe(error: unknown): string {
 
 export function createHandler(deps: HandlerDeps): (request: Request) => Promise<Response> {
   return async function handle(request: Request): Promise<Response> {
-    // 1. Authenticate before any work. The key is never logged.
-    if (!isAuthorized(request, deps.serviceRoleKey)) {
-      return json(401, { ok: false, error: "Unauthorized: a valid service_role key is required" });
-    }
+    // 1. NO AUTH CHECK HERE, ON PURPOSE.
+    //
+    // The Supabase gateway verifies the caller's JWT before this function is
+    // invoked, so anything arriving here has already been authenticated and
+    // the handler never sees an unverified request.
+    //
+    // An earlier version re-checked the bearer against
+    // Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") with an exact string match.
+    // That rejected every request with 401 — a correctly authenticated one
+    // and a forged one alike, identically — so the endpoint looked like a
+    // credential problem that no credential could fix. The two strings need
+    // not match even when both keys are valid: Supabase is migrating from
+    // legacy `eyJ…` JWTs to new-format secret keys.
+    //
+    // Trust the gateway. It is the only layer that can actually verify a
+    // signature, because it holds the project signing key.
 
     if (request.method !== "POST") {
       return json(405, { ok: false, error: "Method not allowed" });
@@ -229,29 +240,48 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
 
     // 2. Resolve settings. A null here means either "not configured" or
     //    "could not read", and both are a 400 from the operator's view: the
-    //    action to take is in the Admin settings form, not at Semaphore.
+    //    action to take is in the Admin settings form, not at the gateway.
     const config = await resolveSmsConfig(deps);
     if (!config) {
       return json(400, {
         ok: false,
-        error: "SMS is not fully configured. Set the Semaphore API key, sender name and manager phone in Admin > System settings.",
+        error: "SMS is not configured. Set the SMS gateway API key and a manager phone in Admin > Configure system.",
       });
     }
 
-    // 3. Send, and report the provider's real verdict.
+    // 3. Resolve the recipient. A number typed into the Admin panel wins
+    //    over the stored one, so an operator can verify the line without
+    //    saving anything first.
+    const field = readRecipientField(await safeRequestText(request));
+    if (field.malformed) {
+      return json(400, { ok: false, error: "The request body could not be read." });
+    }
+
+    const recipient = field.value === undefined
+      ? { ok: true, number: null, error: null }
+      : parseTestRecipient(field.value);
+
+    if (!recipient.ok) {
+      return json(400, { ok: false, error: recipient.error });
+    }
+
+    // 4. Build the request. The recipient is validated here, before any
+    //    network call: a number the carrier cannot deliver is still billed.
+    const message = buildTestMessage();
+    const outbound = buildSendRequest(config, message, recipient.number ?? undefined);
+    if (!outbound.ok) {
+      return json(400, { ok: false, error: outbound.error });
+    }
+
+    const number = String(
+      (JSON.parse(String(outbound.init.body)) as { recipients: string[] }).recipients[0],
+    );
+
+    // 5. Send, and report the gateway's real verdict.
     let status: number;
     let rawBody: string;
     try {
-      const response = await deps.fetchImpl(SEMAPHORE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apikey: config.apiKey,
-          number: config.managerPhone,
-          sendername: config.senderName,
-          message: buildTestMessage(config.senderName),
-        }),
-      });
+      const response = await deps.fetchImpl(outbound.url, outbound.init);
       status = responseStatus(response);
       rawBody = await responseText(response);
     } catch (error) {
@@ -259,25 +289,39 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
       deps.log("error", `Test SMS transport failed: ${detail}`);
       return json(502, {
         ok: false,
-        error: `Could not reach Semaphore: ${detail}`,
+        error: `Could not reach the SMS gateway: ${detail}`,
       });
     }
 
-    const outcome = interpretProviderResponse(status, rawBody);
+    const outcome = interpretTextbeeResponse(status, rawBody, config.apiKey);
     if (!outcome.ok) {
-      // The reason is logged with the phone number masked; the number is
-      // personal data and the API key is a secret, so neither belongs in a
-      // log line that operators paste into tickets.
+      // The phone number is masked and the key is scrubbed: operators paste
+      // these messages into tickets, and neither belongs in a ticket.
       deps.log("error", `Test SMS rejected (HTTP ${status}): ${outcome.detail}`);
       return json(502, { ok: false, error: outcome.detail });
     }
 
-    deps.log("info", `Test SMS accepted by Semaphore for ${maskPhone(config.managerPhone)}`);
+    deps.log("info", `Test SMS accepted by the gateway for ${maskPhone(number)}`);
     return json(200, {
       ok: true,
-      message: `Test SMS sent to ${maskPhone(config.managerPhone)}. It should arrive within a minute.`,
+      message: `Test SMS sent to ${maskPhone(number)}. It should arrive within a minute.`,
     });
   };
+}
+
+/**
+ * Reads a request body without letting a transport hiccup become a 500.
+ *
+ * Only the small JSON this endpoint needs is buffered, and a body that
+ * cannot be read is treated as "not supplied" so the stored manager phone
+ * remains usable.
+ */
+async function safeRequestText(request: Request): Promise<string | null> {
+  try {
+    return await request.text();
+  } catch {
+    return null;
+  }
 }
 
 /**

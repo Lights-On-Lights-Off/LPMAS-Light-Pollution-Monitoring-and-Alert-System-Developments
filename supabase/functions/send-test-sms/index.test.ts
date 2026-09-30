@@ -18,7 +18,8 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   buildTestMessage,
   createHandler,
-  isAuthorized,
+  parseTestRecipient,
+  readRecipientField,
   resolveSmsConfig,
   type HandlerDeps,
   type SettingsReader,
@@ -91,8 +92,8 @@ function stubFetch(
 
 function fullSettings(overrides: Record<string, string> = {}): Record<string, string> {
   return {
-    semaphore_api_key: "sem-key",
-    semaphore_sender_name: "LPMAS",
+    sms_provider: "textbee",
+    textbee_api_key: "tb_key_value",
     manager_phone: "+639171234567",
     ...overrides,
   };
@@ -130,7 +131,7 @@ function harness(options: {
   const fetchImpl = options.fetchThrows
     ? (url: string, init: RequestInit) => {
       calls.push({ url, init });
-      return Promise.reject(new Error("semaphore unreachable"));
+      return Promise.reject(new Error("gateway unreachable"));
     }
     : stubFetch(options.fetchResponse ?? {}, calls);
 
@@ -154,48 +155,55 @@ function harness(options: {
   };
 }
 
-function post(authHeader: string | null = `Bearer ${SERVICE_KEY}`): Request {
+function post(authHeader: string | null = `Bearer ${SERVICE_KEY}`, body: string = "{}"): Request {
   return new Request("http://localhost:54321/functions/v1/send-test-sms", {
     method: "POST",
     headers: authHeader ? { Authorization: authHeader } : {},
-    body: "{}",
+    body,
   });
 }
 
-// ---------------------------------------------------------------------------
-// isAuthorized
-// ---------------------------------------------------------------------------
+Deno.test("a valid request is not refused by a self-check against the function's own key", async () => {
+  // The regression this guards. The handler used to compare the caller's
+  // bearer against Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") and 401 on any
+  // mismatch — which rejected correctly authenticated callers exactly as hard
+  // as forged ones, so the button reported a credential error that no
+  // credential could clear. The gateway has already verified the JWT by the
+  // time a request reaches this code, so the handler must not re-check.
+  const h = harness({ serviceRoleKey: "" });
+  const res = await h.handler(post());
 
-Deno.test("isAuthorized requires an exact service_role bearer match", () => {
-  const req = post(`Bearer ${SERVICE_KEY}`);
-  assert(isAuthorized(req, SERVICE_KEY));
-
-  assert(!isAuthorized(post(`Bearer wrong-key`), SERVICE_KEY));
-  assert(!isAuthorized(post(`Basic ${SERVICE_KEY}`), SERVICE_KEY));
-  assert(!isAuthorized(post(`Bearer ${SERVICE_KEY}x`), SERVICE_KEY));
-  assert(!isAuthorized(post(null), SERVICE_KEY));
+  assertEquals(res.status, 200, "a valid request must not be refused by the function's own env");
+  assertEquals(h.calls.length, 1, "the message should have been sent");
 });
 
-Deno.test("an unconfigured service role key rejects everything rather than allowing all", () => {
-  // An empty configured key must not match an empty bearer header, which
-  // would otherwise fail open and let anyone trigger an SMS.
-  assert(!isAuthorized(post("Bearer "), ""));
-  assert(!isAuthorized(post(null), ""));
+Deno.test("the Authorization header does not change the outcome — the gateway owns auth", async () => {
+  // Asserted deliberately: "this function does not check auth" must never be
+  // mistaken for "this endpoint is open". It is not. The Supabase gateway
+  // rejects an unauthenticated call before this code runs, and only the
+  // gateway holds the signing key needed to verify one. What this test pins
+  // is the boundary: the header is irrelevant here, so the handler's own
+  // guards are the only thing left deciding the outcome.
+  for (const header of [null, "Bearer wrong-key", "Bearer total-nonsense"]) {
+    const h = harness({ serviceRoleKey: "" });
+    const res = await h.handler(post(header));
+    assertEquals(res.status, 200, `header ${header} should not change the outcome`);
+  }
 });
 
 // ---------------------------------------------------------------------------
 // resolveSmsConfig
 // ---------------------------------------------------------------------------
 
-Deno.test("resolveSmsConfig reads the three required settings", async () => {
+Deno.test("resolveSmsConfig reads the provider, key and recipient", async () => {
   const h = harness();
   const config = await resolveSmsConfig({
     readSettings: async () => ({ data: [fullSettings()], error: null }),
   });
   assertEquals(config, {
-    apiKey: "sem-key",
-    senderName: "LPMAS",
-    managerPhone: "+639171234567",
+    provider: "textbee",
+    apiKey: "tb_key_value",
+    recipient: "+639171234567",
   });
   assertEquals(h.reads, 0);
 });
@@ -204,39 +212,62 @@ Deno.test("resolveSmsConfig trims whitespace around every value", async () => {
   const config = await resolveSmsConfig({
     readSettings: async () => ({
       data: [fullSettings({
-        semaphore_api_key: "  sem-key  ",
-        semaphore_sender_name: "  LPMAS  ",
+        textbee_api_key: "  tb_key_value  ",
         manager_phone: "  +639171234567 ",
       })],
       error: null,
     }),
   });
-  assertEquals(config?.apiKey, "sem-key");
-  assertEquals(config?.senderName, "LPMAS");
-  assertEquals(config?.managerPhone, "+639171234567");
+  assertEquals(config?.apiKey, "tb_key_value");
+  assertEquals(config?.recipient, "+639171234567");
 });
 
-Deno.test("resolveSmsConfig returns null when any of the three settings is missing", async () => {
-  for (
-    const key of [
-      "semaphore_api_key",
-      "semaphore_sender_name",
-      "manager_phone",
-    ]
-  ) {
-    const missing = fullSettings();
-    delete missing[key];
+Deno.test("resolveSmsConfig returns null when the API key is missing", async () => {
+  const missing = fullSettings();
+  delete missing["textbee_api_key"];
+  const config = await resolveSmsConfig({
+    readSettings: async () => ({ data: [missing], error: null }),
+  });
+  assertEquals(config, null, "expected null when textbee_api_key is missing");
+});
+
+Deno.test("an unrecognised provider is refused rather than defaulted to one", async () => {
+  // Defaulting would send a credential to a URL nobody chose.
+  for (const provider of ["", "twilio", "semaphore", "TEXTBEE "]) {
     const config = await resolveSmsConfig({
-      readSettings: async () => ({ data: [missing], error: null }),
+      readSettings: async () => ({ data: [fullSettings({ sms_provider: provider })], error: null }),
     });
-    assertEquals(config, null, `expected null when ${key} is missing`);
+    assertEquals(config, null, `expected provider ${JSON.stringify(provider)} to be refused`);
   }
+});
+
+Deno.test("a blank sender name is not part of the configuration at all", async () => {
+  // The gateway relays through the project's own prepaid SIM, so there is no
+  // alphanumeric sender name to register or pay for. The earlier Semaphore
+  // requirement for one is gone, along with the field.
+  const config = await resolveSmsConfig({
+    readSettings: async () => ({
+      data: [fullSettings({ semaphore_sender_name: "LPMAS" })],
+      error: null,
+    }),
+  });
+  assertEquals(config?.apiKey, "tb_key_value", "a leftover sender name must not affect the config");
+});
+
+Deno.test("an unset manager phone still yields a usable config here", async () => {
+  // The test path supplies its own recipient, so a blank saved phone must
+  // not refuse the configuration outright.
+  const config = await resolveSmsConfig({
+    readSettings: async () => ({ data: [fullSettings({ manager_phone: "" })], error: null }),
+  });
+  assertEquals(config?.apiKey, "tb_key_value");
+  assertEquals(config?.recipient, "");
 });
 
 Deno.test("resolveSmsConfig returns null when a setting is present but blank", async () => {
   const config = await resolveSmsConfig({
     readSettings: async () => ({
-      data: [fullSettings({ semaphore_api_key: "   " })],
+      data: [fullSettings({ textbee_api_key: "   " })],
       error: null,
     }),
   });
@@ -264,25 +295,65 @@ Deno.test("resolveSmsConfig returns null when the settings read throws, without 
 // ---------------------------------------------------------------------------
 
 Deno.test("buildTestMessage identifies the system and the sender name", () => {
-  const message = buildTestMessage("LPMAS", new Date("2026-09-29T10:30:00.000Z"));
+  const message = buildTestMessage(new Date("2026-09-29T10:30:00.000Z"));
   assert(message.includes("LPMAS"));
   assert(/test/i.test(message), `expected the word "test" in: ${message}`);
   assert(message.length <= 160, `test SMS should fit one segment, got ${message.length}`);
 });
 
 // ---------------------------------------------------------------------------
+// parseTestRecipient
+// ---------------------------------------------------------------------------
+
+Deno.test("a recipient typed with the Philippine prefix is accepted in its written forms", () => {
+  assertEquals(parseTestRecipient("+639171234567"), { ok: true, number: "+639171234567", error: null });
+  assertEquals(parseTestRecipient("+63 917 123 4567").number, "+639171234567");
+  assertEquals(parseTestRecipient("  09171234567 ").number, "+639171234567");
+  assertEquals(parseTestRecipient("9171234567").number, "+639171234567");
+});
+
+Deno.test("a recipient that is not ten digits after the country code is rejected with a reason", () => {
+  // 0917 is the trunk prefix and the mobile number is 10 digits, so nine
+  // digits is a typo that Semaphore would bill and silently drop.
+  for (const value of ["+63917123456", "917123456", "", "   ", "+6391712345678"]) {
+    const result = parseTestRecipient(value);
+    assertEquals(result.ok, false, `expected "${value}" to be rejected`);
+    assert(result.error !== null, `expected a reason for "${value}"`);
+  }
+});
+
+Deno.test("a recipient from another country code is rejected rather than silently rewritten", () => {
+  const result = parseTestRecipient("+14155552671");
+  assertEquals(result.ok, false);
+  assert(result.error !== null);
+});
+
+Deno.test("a missing recipient field is a reason to say so, not a crash", () => {
+  assertEquals(parseTestRecipient(undefined), {
+    ok: false,
+    number: null,
+    error: "No recipient supplied.",
+  });
+});
+
+Deno.test("a body that is not a JSON object is reported as malformed, not ignored", () => {
+  // Silently ignoring it would send to the stored manager phone instead,
+  // which looks to the operator exactly like a dead SIM.
+  for (const body of ["not json at all", "[1,2,3]", '"a string"', "42"]) {
+    assertEquals(readRecipientField(body).malformed, true, `expected "${body}" to be malformed`);
+  }
+
+  // No body at all is a legitimate request: the stored phone is used.
+  assertEquals(readRecipientField(""), { present: false, malformed: false, value: undefined });
+  assertEquals(readRecipientField("{}"), { present: true, malformed: false, value: undefined });
+  assertEquals(readRecipientField('{"to":"9171234567"}').value, "9171234567");
+});
+
+// ---------------------------------------------------------------------------
 // Handler: authentication and method
 // ---------------------------------------------------------------------------
 
-Deno.test("a request without a service_role key is rejected with 401 before any work", async () => {
-  const h = harness();
-  const res = await h.handler(post(null));
-  assertEquals(res.status, 401);
-  assertEquals(h.calls.length, 0, "must not reach Semaphore");
-  assertEquals(h.reads, 0, "must not even read settings");
-});
-
-Deno.test("a non-POST request is rejected with 405 once authorized", async () => {
+Deno.test("a non-POST request is rejected with 405 and never reaches Semaphore", async () => {
   const h = harness();
   const res = await h.handler(
     new Request("http://localhost:54321/functions/v1/send-test-sms", {
@@ -294,14 +365,12 @@ Deno.test("a non-POST request is rejected with 405 once authorized", async () =>
   assertEquals(h.calls.length, 0);
 });
 
-Deno.test("an unauthenticated non-POST request is rejected with 401, not 405", async () => {
-  // Auth is checked before the method, so an unauthenticated caller learns
-  // nothing about which methods the endpoint supports.
+Deno.test("the method check runs before any settings read, so a wrong verb is cheap", async () => {
   const h = harness();
-  const res = await h.handler(
+  await h.handler(
     new Request("http://localhost:54321/functions/v1/send-test-sms", { method: "GET" }),
   );
-  assertEquals(res.status, 401);
+  assertEquals(h.reads, 0, "must not read settings for a request it will refuse anyway");
 });
 
 // ---------------------------------------------------------------------------
@@ -318,28 +387,105 @@ Deno.test("a configured, authorized request sends one SMS to the manager phone",
 
   assertEquals(h.calls.length, 1);
   const call = h.calls[0];
-  assertEquals(call.url, "https://api.semaphore.co/api/v4/messages");
+  assertEquals(call.url, "https://api.textbee.dev/api/v1/gateway/send-sms");
   assertEquals(call.init.method, "POST");
 
   const sent = JSON.parse(String(call.init.body));
-  assertEquals(sent.apikey, "sem-key");
-  assertEquals(sent.number, "+639171234567");
-  assertEquals(sent.sendername, "LPMAS");
+  assertEquals(sent.recipients, ["+639171234567"]);
   assert(typeof sent.message === "string" && sent.message.length > 0);
+  assert(sent.message.length <= 160, "the test message must stay one billable segment");
+
+  const headers = call.init.headers as Record<string, string>;
+  assertEquals(headers["x-api-key"], "tb_key_value");
 });
 
 Deno.test("the API key is never echoed back in the response", async () => {
   const h = harness();
   const res = await h.handler(post());
   const text = JSON.stringify(await res.clone().json());
-  assert(!text.includes("sem-key"), "the Semaphore key must not appear in the response");
+  assert(!text.includes("tb_key_value"), "the gateway key must not appear in the response");
 });
 
 Deno.test("the API key is never written to the log", async () => {
   const h = harness();
   await h.handler(post());
   const logged = h.logs.map((l) => l.message).join("\n");
-  assert(!logged.includes("sem-key"), `API key leaked into logs: ${logged}`);
+  assert(!logged.includes("tb_key_value"), `API key leaked into logs: ${logged}`);
+});
+
+// ---------------------------------------------------------------------------
+// Handler: misconfiguration
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Handler: the recipient
+// ---------------------------------------------------------------------------
+
+Deno.test("a typed recipient overrides the stored manager phone", async () => {
+  // This is the point of the change: an operator types their own number to
+  // prove the line works, without waiting on a violation.
+  const h = harness();
+  const res = await h.handler(post(`Bearer ${SERVICE_KEY}`, JSON.stringify({ to: "9171234567" })));
+
+  assertEquals(res.status, 200);
+  const sent = JSON.parse(String(h.calls[0].init.body));
+  assertEquals(sent.recipients, ["+639171234567"], "the typed number must win over the stored one");
+});
+
+Deno.test("with no typed recipient the stored manager phone is still used", async () => {
+  const h = harness();
+  const res = await h.handler(post());
+
+  assertEquals(res.status, 200);
+  const sent = JSON.parse(String(h.calls[0].init.body));
+  assertEquals(sent.recipients, ["+639171234567"]);
+});
+
+Deno.test("an invalid typed recipient is rejected with 400 and sends nothing", async () => {
+  const h = harness();
+  const res = await h.handler(post(`Bearer ${SERVICE_KEY}`, JSON.stringify({ to: "12345" })));
+
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.ok, false);
+  assert(typeof body.error === "string" && body.error.length > 0);
+  assertEquals(h.calls.length, 0, "must not send to a number known to be wrong");
+});
+
+Deno.test("a typed recipient works with no saved manager phone", async () => {
+  // A manager phone is required for real violation alerts, but not for a
+  // test: the whole point of the test button is to prove the line works
+  // before anything is saved. Requiring a stored phone first meant the
+  // button reported "not configured" while a perfectly good key sat in the
+  // settings, which is the message that started all this.
+  const h = harness({ settings: fullSettings({ manager_phone: "" }) });
+  const res = await h.handler(post(`Bearer ${SERVICE_KEY}`, JSON.stringify({ to: "9171234567" })));
+
+  assertEquals(res.status, 200, "a typed recipient must be enough");
+  const sent = JSON.parse(String(h.calls[0].init.body));
+  assertEquals(sent.recipients, ["+639171234567"]);
+});
+
+Deno.test("with no stored phone and no typed recipient, it says what is missing", async () => {
+  const h = harness({ settings: fullSettings({ manager_phone: "" }) });
+  const res = await h.handler(post());
+
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.ok, false);
+  assertEquals(h.calls.length, 0, "must not send anywhere");
+  assert(
+    /phone|recipient|manager/i.test(String(body.error)),
+    `expected a message about the missing phone, got: ${body.error}`,
+  );
+});
+
+Deno.test("a malformed body is a 400, not a 500", async () => {
+  const h = harness();
+  const res = await h.handler(post(`Bearer ${SERVICE_KEY}`, "not json at all"));
+
+  assertEquals(res.status, 400);
+  assertEquals(h.calls.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -347,7 +493,7 @@ Deno.test("the API key is never written to the log", async () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("unconfigured SMS settings return 400 and skip the send entirely", async () => {
-  const h = harness({ settings: { semaphore_api_key: "", semaphore_sender_name: "", manager_phone: "" } });
+  const h = harness({ settings: fullSettings({ textbee_api_key: "", manager_phone: "" }) });
   const res = await h.handler(post());
 
   assertEquals(res.status, 400);
