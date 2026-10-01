@@ -41,7 +41,7 @@ export function Login() {
 
     if (profileError || !profile) {
       console.error("Profile query error:", profileError);
-      setMessage(`Profile error: ${profileError?.message || "No profile record returned"}`);
+      setMessage("Your account profile is unavailable. Contact an administrator.");
       await supabase.auth.signOut();
       setLoading(false);
       return;
@@ -62,16 +62,16 @@ export function Login() {
       <img src="/Hayag-logo.png" alt="LPMAS" className="mx-auto h-14 w-14 object-contain" />
       <h1 className="mt-5 text-center text-2xl font-bold text-metal-50">Welcome to LPMAS</h1>
       <p className="mt-2 text-center text-sm text-metal-400">Sign in to access the Flowerland monitoring dashboard.</p>
-      <label className="mt-7 block text-sm font-semibold text-metal-200">Email</label>
+      <label htmlFor="login-email" className="mt-7 block text-sm font-semibold text-metal-200">Email</label>
       <div className="mt-2 flex items-center gap-2 rounded-xl border border-metal-600 bg-metal-900/60 px-3">
         <Mail size={18} className="text-metal-500" />
-        <input className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" />
+        <input id="login-email" className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" />
       </div>
-      <label className="mt-4 block text-sm font-semibold text-metal-200">Password</label>
+      <label htmlFor="login-password" className="mt-4 block text-sm font-semibold text-metal-200">Password</label>
       <div className="mt-2 flex items-center gap-2 rounded-xl border border-metal-600 bg-metal-900/60 px-3">
         <LockKeyhole size={18} className="text-metal-500" />
-        <input className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0" type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
-        <button type="button" onClick={() => setShowPassword(!showPassword)} className="text-metal-500 hover:text-metal-200" aria-label="Show password">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+        <input id="login-password" className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0" type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
+        <button type="button" onClick={() => setShowPassword(!showPassword)} className="text-metal-500 hover:text-metal-200" aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
       </div>
       {message && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{message}</p>}
       <button disabled={loading} className="mt-6 w-full rounded-xl bg-leaf-500 py-3 font-semibold text-ink hover:bg-leaf-100 disabled:opacity-60">{loading ? "Signing in..." : "Sign in"}</button>

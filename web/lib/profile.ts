@@ -16,7 +16,7 @@ export function useProfile() {
       if (!supabase) { setLoading(false); return; }
 
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { setLoading(false); return; }
+      if (!session) { if (active) {setProfile(null);setLoading(false);} return; }
 
       const { data, error } = await supabase
         .from("profiles")
@@ -27,7 +27,7 @@ export function useProfile() {
       if (active && !error && data) {
         setProfile({ ...data, email: session.user.email ?? null });
       }
-      if (active) setLoading(false);
+      if (active) {if(error) setProfile(null);setLoading(false);}
     }
 
     load();

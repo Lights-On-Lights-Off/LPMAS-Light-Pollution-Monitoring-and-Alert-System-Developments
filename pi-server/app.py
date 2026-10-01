@@ -6,6 +6,11 @@ from zoneinfo import ZoneInfo
 import sqlite3
 import os
 import json
+import math
+import uuid
+import hashlib
+import hmac
+from functools import wraps
 import threading
 import time
 import urllib.request
@@ -36,30 +41,8 @@ SUPABASE_SYNC_INTERVAL_SECONDS = 30
 _supabase_sync_thread = None
 _supabase_sync_running = False
 
-# Bounded retries. Three attempts with exponential backoff spans roughly
-# 7 seconds, which fits inside the ESP32's tolerance for a slow cloud
-# without holding the reading endpoint open indefinitely.
-FORWARD_MAX_ATTEMPTS = 3
 FORWARD_TIMEOUT_SECONDS = 5
-FORWARD_BACKOFF_BASE_SECONDS = 1
-
-# The retry queue is a plain JSONL file so a crash or power cut loses at
-# most the entry being written, and so it can be inspected by hand.
-RETRY_QUEUE_PATH = BASE_DIR / "failed_readings.jsonl"
-RETRY_FLUSH_INTERVAL_SECONDS = 60
-
-# Disk protection. A Pi SD card is small, so the queue is capped and the
-# OLDEST entries are dropped: during a long outage the newest readings are
-# the ones worth keeping.
-RETRY_MAX_ENTRIES = 10000
-RETRY_BATCH_SIZE = 500
-
-# A single entry larger than this is dropped rather than written. Such an
-# entry would never replay successfully and would otherwise be retried
-# forever, blocking the entries behind it.
-RETRY_MAX_ENTRY_BYTES = 4096
-
-_retry_lock = threading.Lock()
+RETRY_QUEUE_PATH = BASE_DIR / "failed_readings.jsonl"  # read-only upgrade source
 
 
 def load_env_file():
@@ -93,11 +76,16 @@ SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
 # device holding the secret, never a browser, so it bypasses RLS by design.
 EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/ingest-reading" if SUPABASE_URL else ""
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+DEVICE_KEY = os.getenv("LPMAS_DEVICE_KEY", "")
+_outbox_thread = None
+_outbox_wake = threading.Event()
 
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=FULL")
     return conn
 
 
@@ -107,6 +95,7 @@ def table_columns(conn, table):
 
 def init_db():
     conn = get_db()
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS greenhouses (
             id TEXT PRIMARY KEY,
@@ -160,8 +149,23 @@ def init_db():
             value TEXT NOT NULL
         );
     """)
+    conn.execute("CREATE TABLE IF NOT EXISTS delivery_outbox (delivery_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at REAL NOT NULL DEFAULT 0, last_error TEXT, created_at TEXT NOT NULL)")
+    for table, column, declaration in (
+        ("readings", "reading_uid", "TEXT"),
+        ("readings", "config_version", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("incidents", "incident_uid", "TEXT"),
+        ("incidents", "version", "INTEGER NOT NULL DEFAULT 1"),
+        ("incidents", "triggering_readings", "TEXT NOT NULL DEFAULT '[]'"),
+    ):
+        if column not in table_columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    for row in conn.execute("SELECT id FROM incidents WHERE incident_uid IS NULL").fetchall():
+        conn.execute("UPDATE incidents SET incident_uid=? WHERE id=?", (str(uuid.uuid4()), row["id"]))
     migrate_legacy_schema(conn)
     migrate_readings_nullable_metadata(conn)
+    for column, declaration in (("reading_uid", "TEXT"), ("config_version", "TEXT NOT NULL DEFAULT 'legacy'")):
+        if column not in table_columns(conn, "readings"):
+            conn.execute(f"ALTER TABLE readings ADD COLUMN {column} {declaration}")
     # A real sensor belongs to only one greenhouse assignment at a time.
     # Clean up legacy duplicates before enforcing the rule at the DB level.
     duplicate_sensors = conn.execute("""
@@ -179,10 +183,17 @@ def init_db():
         for mapping in mappings[1:]:
             conn.execute("DELETE FROM greenhouse_sensors WHERE rowid = ?", (mapping["rowid"],))
 
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS readings_uid_idx ON readings(reading_uid)")
     conn.execute("CREATE INDEX IF NOT EXISTS readings_sensor_time_idx ON readings(sensor_id, recorded_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS readings_greenhouse_time_idx ON readings(greenhouse_id, recorded_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS incidents_sensor_status_idx ON incidents(sensor_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS incidents_greenhouse_status_idx ON incidents(greenhouse_id, status)")
+    registry_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='registered_sensors'").fetchone()
+    conn.execute("CREATE TABLE IF NOT EXISTS registered_sensors (sensor_id TEXT PRIMARY KEY)")
+    if not registry_exists:
+        # Bootstrap an existing installation during an offline upgrade. Later
+        # successful cloud snapshots replace this cache, including removals.
+        conn.execute("INSERT OR IGNORE INTO registered_sensors SELECT DISTINCT sensor_id FROM readings")
     conn.commit()
     conn.close()
 
@@ -243,7 +254,7 @@ def parse_datetime(value):
 
 def parse_time(value):
     if not value: return None
-    try: return datetime.strptime(value, "%H:%M").time()
+    try: return datetime.strptime(value, "%H:%M:%S" if len(value) == 8 else "%H:%M").time() if len(value) in (5, 8) else None
     except ValueError: return None
 
 
@@ -325,7 +336,7 @@ def classify_reading(lux, phase):
         if lux <= DARK_SAFE_MAX: return "safe"
         if lux <= DARK_WARNING_MAX: return "warning"
         return "violation"
-    if not is_within_window(datetime.now(LPMAS_TIMEZONE).strftime("%H:%M"), phase["window_start"], phase["window_end"]): return "safe"
+    if not is_within_window(datetime.now(LPMAS_TIMEZONE).strftime("%H:%M"), phase["window_start"], phase["window_end"]): return "unclassified"
     if lux <= ILLUMINATION_VIOLATION_MAX: return "violation"
     if lux < ILLUMINATION_WARNING_MAX: return "warning"
     return "safe"
@@ -373,22 +384,22 @@ def violation_ready(conn, sensor_id, greenhouse_id, phase_type):
     return violation_sequence(conn, sensor_id, greenhouse_id, phase_type) is not None
 
 
-def get_open_incident(conn, sensor_id, phase_type):
+def get_open_incident(conn, sensor_id, phase_type, greenhouse_id=None):
     return conn.execute("""
         SELECT * FROM incidents
-        WHERE sensor_id = ? AND phase_type = ? AND status IN ('open', 'acknowledged')
+        WHERE sensor_id = ? AND phase_type = ? AND greenhouse_id IS ? AND status IN ('open', 'acknowledged')
         ORDER BY id DESC LIMIT 1
-    """, (sensor_id, phase_type)).fetchone()
+    """, (sensor_id, phase_type, greenhouse_id)).fetchone()
 
 
 def update_incident_values(conn, incident, lux):
     peak = max(float(incident["peak_lux"]) if incident["peak_lux"] is not None else lux, lux)
     lowest = min(float(incident["lowest_lux"]) if incident["lowest_lux"] is not None else lux, lux)
-    conn.execute("UPDATE incidents SET peak_lux = ?, lowest_lux = ? WHERE id = ?", (peak, lowest, incident["id"]))
+    conn.execute("UPDATE incidents SET peak_lux = ?, lowest_lux = ?, version = version + 1 WHERE id = ?", (peak, lowest, incident["id"]))
 
 
 def open_incident(conn, sensor_id, greenhouse_id, phase_type, lux, triggering_rows=None):
-    existing = get_open_incident(conn, sensor_id, phase_type)
+    existing = get_open_incident(conn, sensor_id, phase_type, greenhouse_id)
     if existing:
         update_incident_values(conn, existing, lux)
         return existing["id"], False
@@ -401,53 +412,32 @@ def open_incident(conn, sensor_id, greenhouse_id, phase_type, lux, triggering_ro
         INSERT INTO incidents(sensor_id, greenhouse_id, phase_type, opened_at, status, peak_lux, lowest_lux, reason)
         VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
     """, (sensor_id, greenhouse_id, phase_type, now_iso(), peak_lux, lowest_lux, f"{phase_type.title()} phase light violation"))
+    conn.execute("UPDATE incidents SET incident_uid=?, triggering_readings=? WHERE id=?", (
+        str(uuid.uuid4()), json.dumps([dict(row) for row in (triggering_rows or [])]), cursor.lastrowid))
     return cursor.lastrowid, True
 
 
 def resolve_incident(conn, incident):
-    conn.execute("UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?", (now_iso(), incident["id"]))
-
-
-def manager_phone():
-    if supabase_configured():
-        url = f"{SUPABASE_URL}/rest/v1/system_settings?key=eq.manager_phone&select=value&limit=1"
-        req = urllib.request.Request(url, method="GET")
-        req.add_header("apikey", SUPABASE_SECRET_KEY)
-        req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                rows = json.loads(response.read().decode("utf-8"))
-                value = str(rows[0].get("value", "")).strip() if rows else ""
-                if value: return value
-        except Exception as error:
-            print(f"[SMS SETTINGS ERROR] {error}")
-    return ""
-
-
-def fire_sms(sensor_id, greenhouse_id, phase_type, lux):
-    phone = manager_phone()
-    if not phone:
-        print(f"[SMS NOT CONFIGURED] sensor={sensor_id} greenhouse={greenhouse_id} phase={phase_type} lux={lux}")
-        return False
-    print(f"[SMS NOT SENT - PROVIDER NOT CONFIGURED] manager={phone} sensor={sensor_id} greenhouse={greenhouse_id} phase={phase_type} lux={lux}")
-    return False
+    conn.execute("UPDATE incidents SET status = 'resolved', resolved_at = ?, version = version + 1 WHERE id = ?", (now_iso(), incident["id"]))
 
 
 def handle_incident(conn, sensor_id, greenhouse_id, lux, classification, phase_type):
-    incident = get_open_incident(conn, sensor_id, phase_type)
+    incident = get_open_incident(conn, sensor_id, phase_type, greenhouse_id)
     if classification == "violation":
+        if incident:
+            update_incident_values(conn,incident,lux)
+            return incident["id"], incident["status"]
         sequence = violation_sequence(conn, sensor_id, greenhouse_id, phase_type)
         if sequence:
             incident_id, created = open_incident(
                 conn, sensor_id, greenhouse_id, phase_type, lux, triggering_rows=sequence
             )
-            if created: fire_sms(sensor_id, greenhouse_id, phase_type, lux)
             return incident_id, "open"
         return incident["id"] if incident else None, "pending"
     if incident and classification == "safe":
         resolve_incident(conn, incident)
         return incident["id"], "resolved"
-    if incident: update_incident_values(conn, incident, lux); return incident["id"], incident["status"]
+    if incident and classification != "unclassified": update_incident_values(conn, incident, lux); return incident["id"], incident["status"]
     return None, classification
 
 
@@ -465,76 +455,29 @@ def list_greenhouses():
 
 
 @app.route("/api/greenhouses", methods=["POST"])
-def create_greenhouse():
-    payload = request.get_json(silent=True) or {}
-    greenhouse_id = str(payload.get("id", "")).strip()
-    name = str(payload.get("name", "")).strip()
-    sensor_ids = [str(value).strip() for value in payload.get("sensor_ids", []) if str(value).strip()]
-    phase_start = str(payload.get("phase_start", "")).strip()
-    phase_end = str(payload.get("phase_end", "")).strip()
-    window_start = str(payload.get("window_start", "")).strip()
-    window_end = str(payload.get("window_end", "")).strip()
-    if not greenhouse_id or not name or not sensor_ids or not phase_start or not phase_end or not window_start or not window_end: return jsonify({"error": "id, name, sensor_ids, phase_start, phase_end, window_start and window_end are required"}), 400
-    start, end = parse_date(phase_start), parse_date(phase_end)
-    if not start or not end or end < start: return jsonify({"error": "Invalid phase dates"}), 400
-    if not parse_time(window_start) or not parse_time(window_end): return jsonify({"error": "Invalid monitoring time window"}), 400
-    conn = get_db()
-    try:
-        conn.execute("UPDATE greenhouses SET is_active = 0 WHERE id = ?", (greenhouse_id,))
-        conn.execute("""INSERT INTO greenhouses(id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, phase_start=excluded.phase_start, phase_end=excluded.phase_end, window_start=excluded.window_start, window_end=excluded.window_end, is_active=1, updated_at=excluded.updated_at""", (greenhouse_id, name, phase_start, phase_end, window_start, window_end, now_iso()))
-        conn.execute(
-            f"DELETE FROM greenhouse_sensors WHERE sensor_id IN ({','.join('?' for _ in sensor_ids)}) AND greenhouse_id != ?",
-            (*sensor_ids, greenhouse_id)
-        )
-        conn.execute("DELETE FROM greenhouse_sensors WHERE greenhouse_id = ?", (greenhouse_id,))
-        for sensor_id in sensor_ids:
-            conn.execute("INSERT OR IGNORE INTO greenhouse_sensors(greenhouse_id, sensor_id) VALUES (?, ?)", (greenhouse_id, sensor_id))
-        conn.commit()
-        row = conn.execute("SELECT * FROM greenhouses WHERE id = ?", (greenhouse_id,)).fetchone()
-        result = dict(row); result["sensor_ids"] = sensor_ids
-        return jsonify(result), 201
-    finally:
-        conn.close()
-
-
 @app.route("/api/greenhouses/<greenhouse_id>", methods=["DELETE"])
-def delete_greenhouse(greenhouse_id):
-    greenhouse_id = str(greenhouse_id).strip()
+def retired_configuration(greenhouse_id=None):
+    return jsonify({"error": "Configure greenhouses through the authenticated cloud dashboard."}), 410
 
-    if not greenhouse_id:
-        return jsonify({"error": "Greenhouse ID is required"}), 400
 
-    conn = get_db()
+def require_manager(handler):
+    @wraps(handler)
+    def checked(*args, **kwargs):
+        token = request.headers.get("Authorization", "")
+        if not token.startswith("Bearer ") or not supabase_configured():
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            req = urllib.request.Request(f"{SUPABASE_URL}/auth/v1/user", headers={"apikey": SUPABASE_SECRET_KEY, "Authorization": token})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                user = json.loads(response.read())
+            rows = supabase_select("profiles", {"select": "role", "id": f"eq.{user['id']}"})
+            if not rows or rows[0]["role"] not in ("admin", "manager"):
+                return jsonify({"error": "Manager or admin access required"}), 403
+        except Exception:
+            return jsonify({"error": "Unable to verify authentication"}), 401
+        return handler(*args, **kwargs)
+    return checked
 
-    try:
-        greenhouse = conn.execute(
-            "SELECT * FROM greenhouses WHERE id = ? AND is_active = 1",
-            (greenhouse_id,)
-        ).fetchone()
-
-        if not greenhouse:
-            return jsonify({"error": "Greenhouse not found"}), 404
-
-        # Remove the current configuration and sensor assignments only.
-        # Historical readings/incidents keep their greenhouse_id for reporting.
-        conn.execute(
-            "DELETE FROM greenhouse_sensors WHERE greenhouse_id = ?",
-            (greenhouse_id,)
-        )
-        conn.execute(
-            "DELETE FROM greenhouses WHERE id = ?",
-            (greenhouse_id,)
-        )
-        conn.commit()
-
-        return jsonify({"ok": True, "id": greenhouse_id})
-
-    except Exception as error:
-        conn.rollback()
-        return jsonify({"error": str(error)}), 500
-
-    finally:
-        conn.close()
 
 @app.route("/api/readings", methods=["GET"])
 def get_readings():
@@ -553,268 +496,180 @@ def get_readings():
 
 @app.route("/api/readings", methods=["POST"])
 def create_reading():
-    payload = request.get_json(silent=True) or {}; sensor_id = str(payload.get("sensor_id", "")).strip()
+    supplied = request.headers.get("X-LPMAS-Device-Key", "")
+    if DEVICE_KEY and not hmac.compare_digest(supplied.encode(), DEVICE_KEY.encode()):
+        return jsonify({"error": "Device authentication required"}), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict): return jsonify({"error": "JSON object required"}), 400
+    sensor_id = payload.get("sensor_id")
+    if not isinstance(sensor_id, str) or not sensor_id.strip() or sensor_id != sensor_id.strip() or len(sensor_id) > 100:
+        return jsonify({"error": "Valid sensor_id required"}), 400
     try: lux = float(payload.get("lux"))
     except (TypeError, ValueError): return jsonify({"error": "Invalid lux value"}), 400
-    if not sensor_id: return jsonify({"error": "sensor_id is required"}), 400
-    if lux < 0: return jsonify({"error": "lux cannot be negative"}), 400
-    conn = get_db(); greenhouse = get_sensor_greenhouse(conn, sensor_id); phase = get_phase_for_sensor(conn, sensor_id)
-    classification = classify_reading(lux, phase) or "unclassified"
-    phase_type = phase["phase_type"] if phase else "unconfigured"
-    greenhouse_id = greenhouse["id"] if greenhouse else None
-    recorded_at = now_iso()
-    cursor = conn.execute("INSERT INTO readings(sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type) VALUES (?, ?, ?, ?, ?, ?)", (sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type))
-    incident_id, incident_status = (None, "waiting")
-    if phase:
-        incident_id, incident_status = handle_incident(conn, sensor_id, greenhouse_id, lux, classification, phase_type)
-    conn.commit(); reading_id = cursor.lastrowid; conn.close()
+    if isinstance(payload.get("lux"), bool) or not math.isfinite(lux) or lux < 0 or lux > 65535:
+        return jsonify({"error": "lux must be finite and between 0 and 65535"}), 400
+    reading_uid = payload.get("reading_id")
+    if reading_uid is None and not DEVICE_KEY:
+        # Existing firmware sends only sensor_id/lux. Persist a Pi-generated
+        # identity once so cloud retries remain idempotent. Sensor-side retries
+        # cannot be distinguished from new captures without a device UUID.
+        reading_uid = str(uuid.uuid4())
+    try:
+        parsed_uid = uuid.UUID(reading_uid)
+        if parsed_uid.variant != uuid.RFC_4122 or not 1 <= parsed_uid.version <= 8:
+            raise ValueError("Unsupported UUID")
+        reading_uid = str(parsed_uid)
+    except (ValueError, TypeError, AttributeError): return jsonify({"error": "UUID reading_id required"}), 400
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if not DEVICE_KEY and not conn.execute(
+            "SELECT sensor_id FROM registered_sensors WHERE sensor_id=? UNION SELECT sensor_id FROM greenhouse_sensors WHERE sensor_id=?",
+            (sensor_id, sensor_id),
+        ).fetchone():
+            return jsonify({"error": "Sensor is not registered; wait for configuration sync or assign it in the dashboard"}), 403
+        existing = conn.execute("SELECT * FROM readings WHERE reading_uid=?", (reading_uid,)).fetchone()
+        if existing:
+            if existing["sensor_id"] != sensor_id or existing["lux"] != lux:
+                return jsonify({"error": "reading_id reused with different content"}), 409
+            return jsonify(dict(existing)), 200
+        greenhouse = get_sensor_greenhouse(conn, sensor_id)
+        phase = get_phase_for_sensor(conn, sensor_id)
+        classification = classify_reading(lux, phase) or "unclassified"
+        phase_type = phase["phase_type"] if phase else "unconfigured"
+        greenhouse_id = greenhouse["id"] if greenhouse else None
+        recorded_at = now_iso()
+        config = dict(greenhouse) if greenhouse else {}
+        config["dark_phase_days"] = DARK_PHASE_DAYS
+        config_version = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+        cursor = conn.execute("INSERT INTO readings(sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version) VALUES (?,?,?,?,?,?,?,?)",
+            (sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version))
+        incident_id, incident_status = (None, "waiting")
+        if phase:
+            incident_id, incident_status = handle_incident(conn,sensor_id,greenhouse_id,lux,classification,phase_type)
+        reading = dict(conn.execute("SELECT * FROM readings WHERE id=?", (cursor.lastrowid,)).fetchone())
+        delivery = reading_delivery(reading, incident_snapshot(conn, incident_id))
+        enqueue_delivery(conn, delivery)
+        conn.commit()
+        _outbox_wake.set()
+        return jsonify({**reading,"incident_id":incident_id,"incident_status":incident_status}), 201
+    finally:
+        conn.close()
 
-    # The local write above is the durable one and is already committed, so
-    # the cloud forward happens after it. Forwarding on a background thread
-    # keeps the ESP32's request fast even when Supabase is slow, which
-    # matters because the ESP32 retries on a timeout and a duplicate local
-    # insert would be visible as a second reading.
-    forward_in_background({
-        "sensor_id": sensor_id,
-        "lux": lux,
-        "recorded_at": recorded_at,
-        "phase_type": phase_type,
-        "greenhouse_id": greenhouse_id,
-    })
 
-    return jsonify({"id": reading_id, "sensor_id": sensor_id, "greenhouse_id": greenhouse_id, "lux": lux, "recorded_at": recorded_at, "classification": classification, "phase_type": phase_type, "incident_id": incident_id, "incident_status": incident_status}), 201
+def incident_snapshot(conn, incident_id):
+    if incident_id is None: return None
+    row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
+    if not row: return None
+    value = dict(row)
+    value["triggering_readings"] = json.loads(value["triggering_readings"])
+    if not value["triggering_readings"]: value["legacy"] = True
+    return value
 
 
-# ===========================================================================
-# Pi -> Edge Function forwarding
-# ===========================================================================
-#
-# The reading is already committed to SQLite by the time any of this runs.
-# Every function here is therefore best-effort with respect to the cloud and
-# MUST NOT raise into the ESP32 request path: losing a cloud reading is
-# recoverable from the local database, but a 500 to the ESP32 would lose the
-# reading entirely and make the hardware retry into the same failure.
+def reading_delivery(reading, incident=None):
+    return {
+        "kind": "reading", "delivery_id": reading["reading_uid"],
+        "sensor_id": reading["sensor_id"], "lux": reading["lux"],
+        "recorded_at": reading["recorded_at"], "greenhouse_id": reading["greenhouse_id"],
+        "phase_type": reading["phase_type"], "classification": reading["classification"],
+        "monitoring_active": reading["classification"] in ("safe","warning","violation"),
+        "config_version": reading["config_version"], "incident": incident,
+    }
 
 
+def enqueue_delivery(conn, payload):
+    conn.execute("INSERT OR IGNORE INTO delivery_outbox(delivery_id,payload,created_at) VALUES (?,?,?)",
+        (payload["delivery_id"],json.dumps(payload,allow_nan=False),now_iso()))
+
+
+def flush_outbox(post=None):
+    if not edge_function_configured(): return 0
+    post = post or default_post
+    conn = get_db()
+    entries = conn.execute("SELECT * FROM delivery_outbox WHERE next_attempt_at <= ? ORDER BY rowid LIMIT 100", (time.time(),)).fetchall()
+    conn.close()
+    delivered = 0
+    for entry in entries:
+        ok = _deliver(json.loads(entry["payload"]),post)
+        conn = get_db()
+        if ok:
+            conn.execute("DELETE FROM delivery_outbox WHERE delivery_id=?", (entry["delivery_id"],))
+            delivered += 1
+        else:
+            conn.execute("UPDATE delivery_outbox SET attempts=attempts+1,next_attempt_at=?,last_error=? WHERE delivery_id=?",
+                (time.time()+min(3600,2**min(entry["attempts"]+1,12)),"Cloud delivery failed",entry["delivery_id"]))
+        conn.commit(); conn.close()
+    # Durable SMS retries must also run while no sensors are posting.
+    _deliver({"retry_notifications":True},post)
+    return delivered
+
+
+def import_legacy_retry_queue():
+    # Upgrade only queued measurements that can be matched to durable local raw
+    # readings. Never invent a historical configuration for an unmatched entry.
+    entries = read_retry_queue()
+    conn = get_db()
+    for entry in entries:
+        row = conn.execute("SELECT * FROM readings WHERE sensor_id=? AND recorded_at=? AND lux=? ORDER BY id LIMIT 1",
+            (entry.get("sensor_id"),entry.get("recorded_at"),entry.get("lux"))).fetchone()
+        if not row: continue
+        reading = dict(row)
+        if not reading["reading_uid"]:
+            reading["reading_uid"] = str(uuid.uuid4())
+            conn.execute("UPDATE readings SET reading_uid=? WHERE id=?", (reading["reading_uid"],reading["id"]))
+        enqueue_delivery(conn,reading_delivery(reading))
+    conn.commit(); conn.close()
+    # Retain the original file for audit; imports are idempotent by reading_uid.
+
+
+def outbox_loop():
+    while True:
+        try: flush_outbox()
+        except Exception as error: print(f"[OUTBOX ERROR] {error}")
+        _outbox_wake.wait(15)
+        _outbox_wake.clear()
+
+
+def start_outbox():
+    global _outbox_thread
+    if _outbox_thread and _outbox_thread.is_alive(): return
+    import_legacy_retry_queue()
+    _outbox_thread = threading.Thread(target=outbox_loop,name="delivery-outbox",daemon=True)
+    _outbox_thread.start()
+
+
+# Delivery transport. The durable SQLite outbox is the only production sender.
 def default_post(url, body, headers, timeout):
-    """urllib POST. The default so tests can inject a stub."""
-    request = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
-    for name, value in headers.items(): request.add_header(name, value)
-    return urllib.request.urlopen(request, timeout=timeout)
+    request = urllib.request.Request(url,data=body.encode("utf-8"),method="POST",headers=headers)
+    return urllib.request.urlopen(request,timeout=timeout)
 
 
 def edge_function_configured(): return bool(EDGE_FUNCTION_URL and SERVICE_KEY)
 
 
-def build_forward_payload(reading):
-    """
-    Only the fields the Edge Function accepts.
-
-    Deliberately excludes `classification` and the local reading `id`: the
-    cloud re-derives both, and sending them would let a stale local decision
-    override the cloud's own. The greenhouse is forwarded as the Pi knows it
-    (possibly null); the Edge Function prefers its own sensor_list row and
-    falls back to this.
-    """
-    return {
-        "sensor_id": reading["sensor_id"],
-        "lux": float(reading["lux"]),
-        "recorded_at": reading["recorded_at"],
-        "phase_type": reading["phase_type"],
-        "greenhouse_id": reading.get("greenhouse_id"),
-    }
-
-
-def forward_to_supabase(reading, post=default_post):
-    """
-    POST one reading to the Edge Function with bounded retries.
-
-    Returns True once the reading is accepted, False when it has been queued
-    for a later attempt. Never raises.
-    """
-    if not edge_function_configured():
-        # An unconfigured Pi has nowhere to queue to; queueing locally would
-        # only fill the SD card with readings nobody will ever forward.
-        return False
-
-    payload = build_forward_payload(reading)
-    body = json.dumps(payload)
-    headers = {
-        "apikey": SERVICE_KEY,
-        "Authorization": f"Bearer {SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
-    dedupe_key = reading_dedupe_key(reading)
-
-    for attempt in range(FORWARD_MAX_ATTEMPTS):
-        if attempt: time.sleep(FORWARD_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
-        try:
-            with post(EDGE_FUNCTION_URL, body, headers, FORWARD_TIMEOUT_SECONDS) as response:
-                if 200 <= response.status < 300: return True
-                # A 4xx other than 429 is a contract error: retrying the same
-                # payload will fail identically, so stop early rather than
-                # burning the remaining attempts.
-                if 400 <= response.status < 500 and response.status != 429:
-                    print(f"[FORWARD REJECTED] status={response.status} sensor={payload['sensor_id']}")
-                    break
-        except Exception as error:
-            print(f"[FORWARD ATTEMPT {attempt + 1}/{FORWARD_MAX_ATTEMPTS} FAILED] sensor={payload['sensor_id']} error={error}")
-
-    queue_failed_reading(payload, dedupe_key=dedupe_key)
-    return False
-
-
-def forward_in_background(reading):
-    """Fire-and-forget forward so the ESP32 request never waits on the cloud."""
-    thread = threading.Thread(target=forward_to_supabase, args=(reading,), name="forward-reading", daemon=True)
-    thread.start()
-
-
-# --- retry queue -------------------------------------------------------------
-
-
-def reading_dedupe_key(reading):
-    """
-    Identity of a reading, used so a replayed entry is not sent twice.
-
-    The Edge Function folds per-reading deltas additively into a minute
-    bucket, so a duplicate POST inflates that minute's sample_count and
-    skews its average. sensor + timestamp + lux identifies a physical
-    reading; two genuinely distinct readings in the same minute differ in
-    lux, and the same lux from two sensors differs in sensor_id.
-    """
-    return "|".join([
-        str(reading.get("sensor_id", "")),
-        str(reading.get("recorded_at", "")),
-        str(reading.get("lux", "")),
-    ])
-
-
-def queue_failed_reading(payload, dedupe_key=None):
-    """
-    Append a reading to the retry queue. Never raises.
-
-    Two safeguards, both because this runs after the local write is already
-    committed: a full or read-only disk must not propagate, and an entry that
-    is already queued must not be queued again or it would be replayed
-    twice.
-    """
-    entry = dict(payload)
-    entry["dedupe_key"] = dedupe_key or reading_dedupe_key(payload)
+def _deliver(payload, post):
     try:
-        line = json.dumps(entry)
-    except (TypeError, ValueError) as error:
-        print(f"[RETRY QUEUE SKIP] unreadable reading: {error}")
-        return
-
-    if len(line.encode("utf-8")) > RETRY_MAX_ENTRY_BYTES:
-        print(f"[RETRY QUEUE SKIP] entry too large ({len(line)} bytes) sensor={payload.get('sensor_id')}")
-        return
-
-    with _retry_lock:
-        try:
-            _dedupe_retry_queue(entry["dedupe_key"])
-            with open(RETRY_QUEUE_PATH, "a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-            _trim_retry_queue()
-        except Exception as error:
-            # Losing a cloud reading is recoverable from SQLite; taking down
-            # the ESP32 endpoint is not.
-            print(f"[RETRY QUEUE ERROR] {error}")
+        with post(EDGE_FUNCTION_URL,json.dumps(payload,allow_nan=False),{
+            "apikey":SERVICE_KEY,"Authorization":f"Bearer {SERVICE_KEY}","Content-Type":"application/json"
+        },FORWARD_TIMEOUT_SECONDS) as response:
+            return 200 <= response.status < 300
+    except Exception as error:
+        print(f"[DELIVERY FAILED] {type(error).__name__}")
+        return False
 
 
 def read_retry_queue():
-    """Every queued entry, skipping corrupt lines. Never raises."""
+    # Read-only upgrade support for pre-pilot JSONL queues.
     if not RETRY_QUEUE_PATH.exists(): return []
-    entries = []
-    try:
-        with open(RETRY_QUEUE_PATH, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line: continue
-                try: entries.append(json.loads(line))
-                except ValueError: continue
-    except Exception as error:
-        print(f"[RETRY QUEUE READ ERROR] {error}")
-        return entries
+    entries=[]
+    with RETRY_QUEUE_PATH.open(encoding="utf-8") as source:
+        for line in source:
+            try:
+                entry=json.loads(line)
+                if isinstance(entry,dict): entries.append(entry)
+            except (ValueError,TypeError): pass
     return entries
-
-
-def _dedupe_retry_queue(keep_key):
-    """Rewrite the queue without any entry matching keep_key."""
-    entries = [e for e in read_retry_queue() if e.get("dedupe_key") != keep_key]
-    _rewrite_retry_queue(entries)
-
-
-def _trim_retry_queue():
-    """Keep only the newest RETRY_MAX_ENTRIES entries."""
-    entries = read_retry_queue()
-    if len(entries) <= RETRY_MAX_ENTRIES: return
-    _rewrite_retry_queue(entries[-RETRY_MAX_ENTRIES:])
-
-
-def _rewrite_retry_queue(entries):
-    temporary = RETRY_QUEUE_PATH.with_suffix(".tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        for entry in entries: handle.write(json.dumps(entry) + "\n")
-    os.replace(temporary, RETRY_QUEUE_PATH)
-
-
-def flush_retry_queue(post=default_post):
-    """
-    Replay queued readings, oldest first. Returns the number delivered.
-
-    Bounded by RETRY_BATCH_SIZE so one unreachable sensor cannot consume the
-    whole cycle. A failed entry stays queued; a delivered one is removed.
-    """
-    if not edge_function_configured(): return 0
-
-    with _retry_lock:
-        entries = read_retry_queue()[:RETRY_BATCH_SIZE]
-        if not entries: return 0
-
-        remaining = []
-        delivered = 0
-        for entry in entries:
-            payload = {k: v for k, v in entry.items() if k != "dedupe_key"}
-            if _deliver(payload, post): delivered += 1
-            else: remaining.append(entry)
-
-        # Entries beyond the batch are preserved untouched.
-        remaining.extend(read_retry_queue()[len(entries):])
-        try: _rewrite_retry_queue(remaining)
-        except Exception as error: print(f"[RETRY QUEUE FLUSH ERROR] {error}")
-
-    if delivered: print(f"[RETRY QUEUE] delivered={delivered} still_queued={len(remaining)}")
-    return delivered
-
-
-def _deliver(payload, post):
-    body = json.dumps(payload)
-    headers = {
-        "apikey": SERVICE_KEY,
-        "Authorization": f"Bearer {SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        with post(EDGE_FUNCTION_URL, body, headers, FORWARD_TIMEOUT_SECONDS) as response:
-            return 200 <= response.status < 300
-    except Exception as error:
-        print(f"[RETRY QUEUE DELIVERY FAILED] sensor={payload.get('sensor_id')} error={error}")
-        return False
-
-
-def retry_queue_loop():
-    """Background thread: replay the queue on a fixed interval."""
-    while True:
-        time.sleep(RETRY_FLUSH_INTERVAL_SECONDS)
-        try: flush_retry_queue()
-        except Exception as error: print(f"[RETRY QUEUE LOOP ERROR] {error}")
-
-
-def start_retry_queue():
-    thread = threading.Thread(target=retry_queue_loop, name="retry-queue", daemon=True)
-    thread.start()
 
 
 @app.route("/api/phase/active", methods=["GET"])
@@ -842,10 +697,22 @@ def get_incidents():
 
 
 @app.route("/api/incidents/<int:incident_id>/acknowledge", methods=["POST"])
+@require_manager
 def acknowledge_incident(incident_id):
-    conn = get_db(); row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
-    if not row: conn.close(); return jsonify({"error": "Incident not found"}), 404
-    conn.execute("UPDATE incidents SET status = 'acknowledged' WHERE id = ? AND status = 'open'", (incident_id,)); conn.commit(); conn.close(); return jsonify({"status": "acknowledged"})
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
+        if not row: return jsonify({"error":"Incident not found"}),404
+        supplied = (request.get_json(silent=True) or {}).get("incident_uid")
+        if supplied != row["incident_uid"]: return jsonify({"error":"Incident identity changed; refresh before acknowledging"}),409
+        if row["status"] == "resolved": return jsonify({"error":"Incident already resolved"}),409
+        if row["status"] == "open":
+            conn.execute("UPDATE incidents SET status='acknowledged',version=version+1 WHERE id=?",(incident_id,))
+            enqueue_delivery(conn,{"kind":"incident","delivery_id":str(uuid.uuid4()),"recorded_at":now_iso(),"incident":incident_snapshot(conn,incident_id)})
+        conn.commit(); _outbox_wake.set()
+        return jsonify({"status":"acknowledged"})
+    finally: conn.close()
 
 
 @app.route("/api/hardware-activity", methods=["GET"])
@@ -866,7 +733,12 @@ def dashboard():
     conn = get_db(); phase = get_active_phase(conn)
     rows = conn.execute("SELECT * FROM readings ORDER BY recorded_at DESC LIMIT 300").fetchall()
     incidents = conn.execute("SELECT * FROM incidents ORDER BY opened_at DESC LIMIT 100").fetchall(); conn.close()
-    return jsonify({"phase": phase, "readings": [dict(row) for row in reversed(rows)], "incidents": [dict(row) for row in incidents], "generatedAt": now_iso()})
+    health = get_db()
+    pending = health.execute("SELECT count(*) AS n, min(created_at) AS oldest FROM delivery_outbox").fetchone()
+    failures = health.execute("SELECT count(*) FROM delivery_outbox WHERE attempts > 0").fetchone()[0]
+    health.close()
+    return jsonify({"phase":phase,"readings":[dict(row) for row in reversed(rows)],"incidents":[dict(row) for row in incidents],"generatedAt":now_iso(),
+        "deliveryHealth":{"pending":pending["n"],"oldestPendingAt":pending["oldest"],"failedAttempts":failures,"configured":edge_function_configured()}})
 
 
 def get_sync_state(conn, key):
@@ -878,17 +750,6 @@ def set_sync_state(conn, key, value):
 
 
 def supabase_configured(): return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
-
-
-def supabase_request(table, payload, on_conflict):
-    if not supabase_configured(): raise RuntimeError("Supabase environment variables are not configured")
-    query = urllib.parse.urlencode({"on_conflict": on_conflict}); url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"; body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST"); req.add_header("apikey", SUPABASE_SECRET_KEY); req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}"); req.add_header("Content-Type", "application/json"); req.add_header("Prefer", "resolution=merge-duplicates,return=minimal")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response: return response.status
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace"); raise RuntimeError(f"Supabase HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
 
 
 def supabase_select(table, params):
@@ -932,14 +793,17 @@ def sync_greenhouses_from_supabase():
         "is_active": "eq.true"
     })
     sensors = supabase_select("greenhouse_sensors", {"select": "greenhouse_id,sensor_id"})
+    registry = supabase_select("sensor_list", {"select": "sensor_id"})
 
     conn = get_db()
     conn.execute("DELETE FROM greenhouse_sensors")
     conn.execute("DELETE FROM greenhouses")
+    conn.execute("DELETE FROM registered_sensors")
+    conn.executemany("INSERT OR IGNORE INTO registered_sensors(sensor_id) VALUES (?)", [(row["sensor_id"],) for row in registry])
     for row in greenhouses:
         conn.execute(
             "INSERT INTO greenhouses (id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-            (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"], row["window_end"], 1 if row["is_active"] else 0, row["updated_at"])
+            (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"][:5], row["window_end"][:5], 1 if row["is_active"] else 0, row["updated_at"])
         )
     for row in sensors:
         conn.execute(
@@ -948,67 +812,6 @@ def sync_greenhouses_from_supabase():
         )
     conn.commit(); conn.close()
     return len(greenhouses)
-
-
-def get_first_reading_bucket(conn):
-    row = conn.execute("SELECT MIN(recorded_at) AS first_reading FROM readings").fetchone()
-    parsed = parse_datetime(row["first_reading"]) if row and row["first_reading"] else None
-    return parsed.astimezone(LPMAS_TIMEZONE).replace(second=0, microsecond=0) if parsed else None
-
-
-def current_bucket(): return datetime.now(LPMAS_TIMEZONE).replace(second=0, microsecond=0)
-
-
-def aggregate_readings_to_supabase():
-    """
-    Retired: the Edge Function now owns sensor_minute_aggregates.
-
-    Two writers for one table is a double-count bug, not redundancy — the
-    cloud RPC folds deltas additively, so the Pi's batched rows and the
-    per-reading deltas would both land in the same minute bucket. Per-reading
-    forwarding (forward_to_supabase) is the only remaining writer.
-
-    The body is left in place rather than deleted because the SQL documents
-    how the buckets were originally derived, and because a rollback to the
-    pre-Edge-Function architecture should be a one-line change. It is no
-    longer called from run_supabase_sync.
-    """
-    return 0
-    if not supabase_configured(): return 0
-    conn = get_db(); state = get_sync_state(conn, "last_aggregate_bucket")
-    if state:
-        try: start = datetime.fromisoformat(state) + timedelta(minutes=1)
-        except ValueError: start = get_first_reading_bucket(conn)
-    else: start = get_first_reading_bucket(conn)
-    cutoff = current_bucket()
-    if not start or start >= cutoff: conn.close(); return 0
-    rows = conn.execute("""
-        SELECT sensor_id, greenhouse_id, substr(recorded_at, 1, 16) AS bucket_key, phase_type, COUNT(*) AS sample_count,
-               AVG(lux) AS avg_lux, MIN(lux) AS min_lux, MAX(lux) AS max_lux,
-               SUM(CASE WHEN classification='safe' THEN 1 ELSE 0 END) AS safe_count,
-               SUM(CASE WHEN classification='warning' THEN 1 ELSE 0 END) AS warning_count,
-               SUM(CASE WHEN classification='violation' THEN 1 ELSE 0 END) AS violation_count
-        FROM readings WHERE recorded_at >= ? AND recorded_at < ?
-          AND greenhouse_id IS NOT NULL
-          AND phase_type IS NOT NULL
-          AND phase_type != 'unconfigured'
-        GROUP BY sensor_id, greenhouse_id, bucket_key, phase_type ORDER BY bucket_key ASC
-    """, (start.isoformat(timespec="seconds"), cutoff.isoformat(timespec="seconds"))).fetchall()
-    payload = []
-    for row in rows:
-        bucket = datetime.strptime(row["bucket_key"], "%Y-%m-%dT%H:%M").replace(tzinfo=LPMAS_TIMEZONE)
-        payload.append({"sensor_id": row["sensor_id"], "greenhouse_id": row["greenhouse_id"], "bucket_start": bucket.isoformat(), "phase_type": row["phase_type"], "sample_count": int(row["sample_count"]), "avg_lux": round(float(row["avg_lux"]), 3), "min_lux": round(float(row["min_lux"]), 3), "max_lux": round(float(row["max_lux"]), 3), "safe_count": int(row["safe_count"]), "warning_count": int(row["warning_count"]), "violation_count": int(row["violation_count"]), "updated_at": now_iso()})
-    if payload: supabase_request("sensor_minute_aggregates", payload, "sensor_id,bucket_start")
-    set_sync_state(conn, "last_aggregate_bucket", (cutoff - timedelta(minutes=1)).isoformat(timespec="seconds")); conn.close(); return len(payload)
-
-
-def sync_incidents_to_supabase():
-    if not supabase_configured(): return 0
-    conn = get_db(); rows = conn.execute("SELECT * FROM incidents ORDER BY id ASC").fetchall(); payload = []
-    for row in rows:
-        payload.append({"pi_incident_id": int(row["id"]), "sensor_id": row["sensor_id"], "greenhouse_id": row["greenhouse_id"], "phase_type": row["phase_type"], "opened_at": row["opened_at"], "resolved_at": row["resolved_at"], "status": row["status"], "peak_lux": row["peak_lux"], "lowest_lux": row["lowest_lux"], "reason": row["reason"], "updated_at": now_iso()})
-    if payload: supabase_request("monitoring_incidents", payload, "pi_incident_id")
-    conn.close(); return len(payload)
 
 
 def run_supabase_sync():
@@ -1026,9 +829,8 @@ def run_supabase_sync():
         dark_phase_days = DARK_PHASE_DAYS
     # NOTE: aggregates are intentionally absent. The Edge Function writes
     # sensor_minute_aggregates per reading; the Pi must not also batch them.
-    # Incidents stay on the Pi because the Pi owns the incident state machine
-    # and no Edge Function writes monitoring_incidents yet.
-    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days} incidents={sync_incidents_to_supabase()}")
+    # Incident snapshots travel through the transactional delivery outbox.
+    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days}")
 
 
 def supabase_sync_loop():
@@ -1049,4 +851,6 @@ def start_supabase_sync():
 
 
 if __name__ == "__main__":
-    init_db(); start_supabase_sync(); start_retry_queue(); app.run(host="0.0.0.0", port=5000, debug=False)
+    if not DEVICE_KEY:
+        print("[DEVICE INPUT] Legacy registered-sensor compatibility enabled; device requests are not authenticated. Set LPMAS_DEVICE_KEY only after upgrading the firmware.")
+    init_db(); start_supabase_sync(); start_outbox(); app.run(host="0.0.0.0", port=5000, debug=False)

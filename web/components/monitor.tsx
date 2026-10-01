@@ -8,6 +8,9 @@ import { getGreenhouses } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
+import { MonitoringStatus } from "@/components/MonitoringStatus";
+import { sensorSeries } from "@/lib/chartData";
+import { sensorHealth,phaseForGreenhouse } from "@/lib/monitoring-state";
 import { AvailableSensors } from "@/components/AvailableSensors";
 
 type GreenhouseConfig = {
@@ -39,40 +42,20 @@ function getThresholdLines(phase: string | null): { value: number; color: string
 }
 
 export function Monitor() {
-  const { data } = useDashboardData();
-  const [greenhouses, setGreenhouses] = useState<(GreenhouseConfig | Greenhouse)[]>([]);
+  const { data, greenhouses, sensors: registry, sensorsFetchedAt, sensorError, policy, sources } = useDashboardData();
   const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [selectedSensor, setSelectedSensor] = useState("all");
 
   useEffect(() => {
-    async function loadConfiguration() {
-      try {
-        const remote = await getGreenhouses();
-        const configs = remote as Greenhouse[];
-        setGreenhouses(configs as any);
-        if (configs.length && !configs.some(g => g.id === selectedGreenhouse)) setSelectedGreenhouse(configs[0].id);
-        if (!configs.length) { setSelectedGreenhouse(""); setSelectedSensor("all"); }
-        localStorage.setItem(CONFIG_KEY, JSON.stringify(configs.map(g => ({ id: g.id, name: g.name, sensorIds: g.sensor_ids, phaseStart: g.phase_start, phaseEnd: g.phase_end, windowStart: g.window_start, windowEnd: g.window_end }))));
-      } catch {
-        try { const stored = localStorage.getItem(CONFIG_KEY); const parsed = stored ? JSON.parse(stored) : []; const configs = Array.isArray(parsed) ? parsed : []; setGreenhouses(configs); if (configs.length && !configs.some(g => g.id === selectedGreenhouse)) setSelectedGreenhouse(configs[0].id); } catch { setGreenhouses([]); setSelectedGreenhouse(""); setSelectedSensor("all"); }
-      }
+    if (!greenhouses.some(g => g.id === selectedGreenhouse)) {
+      setSelectedGreenhouse(greenhouses[0]?.id ?? "");
+      setSelectedSensor("all");
     }
-    loadConfiguration();
-
-    const handleStorage = () => loadConfiguration();
-    window.addEventListener("storage", handleStorage);
-
-    const interval = setInterval(loadConfiguration, 1000);
-
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-      clearInterval(interval);
-    };
-  }, [selectedGreenhouse]);
+  },[greenhouses,selectedGreenhouse]);
 
   const greenhouse = useMemo(() => greenhouses.find(g => g.id === selectedGreenhouse) ?? null, [greenhouses, selectedGreenhouse]);
 
-  const configuredSensorIds = useMemo(() => greenhouse ? ("sensor_ids" in greenhouse ? greenhouse.sensor_ids : greenhouse.sensorIds) : [], [greenhouse]);
+  const configuredSensorIds = useMemo(() => greenhouse?.sensor_ids ?? [], [greenhouse]);
 
   const sensorIds = useMemo(() => selectedSensor === "all" ? configuredSensorIds : configuredSensorIds.filter(id => id === selectedSensor), [configuredSensorIds, selectedSensor]);
 
@@ -80,61 +63,10 @@ export function Monitor() {
 
   const configuredReadings = useMemo(() => {
     if (!greenhouse || !configuredSensorIds.length) return [];
-    return data.readings.filter(reading => configuredSensorIds.includes(reading.sensor_id));
+    return data.readings.filter(reading => reading.greenhouse_id === greenhouse.id && configuredSensorIds.includes(reading.sensor_id));
   }, [data.readings, greenhouse, configuredSensorIds]);
 
-  // Fallback source so the dashboard is never blank: when the Pi is
-  // unreachable (or has sent nothing yet), fall back to the most recent
-  // 1-minute Supabase aggregates for this greenhouse instead of showing
-  // empty charts/tables.
-  const [fallbackAggregates, setFallbackAggregates] = useState<MinuteAggregate[]>([]);
-
-  useEffect(() => {
-    let active = true;
-    async function loadFallback() {
-      if (!supabase || !greenhouse || !configuredSensorIds.length) {
-        setFallbackAggregates([]);
-        return;
-      }
-      const { data: rows, error } = await supabase
-        .from("sensor_minute_aggregates")
-        .select("id, sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at")
-        .eq("greenhouse_id", greenhouse.id)
-        .order("bucket_start", { ascending: false })
-        .limit(60);
-      if (!active) return;
-      setFallbackAggregates(error ? [] : ((rows ?? []) as MinuteAggregate[]));
-    }
-    loadFallback();
-    const interval = setInterval(loadFallback, 30_000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, [greenhouse, configuredSensorIds]);
-
-  function classificationFromAggregate(row: MinuteAggregate): Reading["classification"] {
-    if (row.violation_count > 0) return "violation";
-    if (row.warning_count > 0) return "warning";
-    return "safe";
-  }
-
-  // Live Pi readings win when present; otherwise the chart/table/KPIs below
-  // fall back to the recent Supabase aggregates so nothing renders blank.
-  const effectiveReadings = useMemo(() => {
-    if (configuredReadings.length) return configuredReadings;
-    return fallbackAggregates
-      .filter(row => configuredSensorIds.includes(row.sensor_id))
-      .map(row => ({
-        id: row.id,
-        sensor_id: row.sensor_id,
-        greenhouse_id: row.greenhouse_id,
-        lux: row.avg_lux,
-        recorded_at: row.bucket_start,
-        classification: classificationFromAggregate(row),
-        phase_type: row.phase_type
-      }));
-  }, [configuredReadings, fallbackAggregates, configuredSensorIds]);
+  const effectiveReadings = configuredReadings;
 
   const latest = useMemo(() => {
     const map = new Map<string, Reading>();
@@ -160,17 +92,13 @@ export function Monitor() {
       .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
       .slice(-30);
 
-    // Keyed by numeric epoch (rounded to the nearest 5s so near-simultaneous
-    // readings from different sensors share a point) rather than a formatted
-    // string, so points space proportionally to real elapsed time instead of
-    // evenly by array index — a long gap between readings now shows as a
-    // long gap on the axis instead of being compressed to the same width as
-    // a 10-second gap.
+    // Numeric epoch preserves actual elapsed time. Each plotted sensor has
+    // its own timestamps and explicit gaps; asynchronous devices stay distinct.
     const map = new Map<number, Record<string, number>>();
 
     for (const reading of rows) {
       const raw = new Date(reading.recorded_at).getTime();
-      const time = Math.round(raw / 5000) * 5000;
+      const time = raw;
       const row = map.get(time) ?? { time };
       row[reading.sensor_id] = reading.lux;
       map.set(time, row);
@@ -183,25 +111,21 @@ export function Monitor() {
     const counts = { safe: 0, warning: 0, violation: 0 };
 
     for (const reading of latest.values()) {
-      counts[reading.classification]++;
+      if (reading.classification !== "unclassified") counts[reading.classification]++;
     }
 
     return Object.entries(counts).filter(([, value]) => value > 0).map(([name, value]) => ({ name, value }));
   }, [latest]);
 
-  const onlineCount = useMemo(() => {
-    if (!greenhouse) return 0;
-
-    return Array.from(latest.values()).filter(reading => Date.now() - new Date(reading.recorded_at).getTime() < ONLINE_WINDOW).length;
-  }, [latest, greenhouse]);
+  const onlineCount = configuredSensorIds.filter(id => !sensorError && sensorHealth(registry.find(s => s.sensor_id === id),sensorsFetchedAt,Date.now(),policy.offline_threshold_seconds) === "Online").length;
 
   const totalSensors = greenhouse ? configuredSensorIds.length : 0;
-  const offlineCount = Math.max(0, totalSensors - onlineCount);
+  const offlineCount = configuredSensorIds.filter(id => !sensorError && sensorHealth(registry.find(s => s.sensor_id === id),sensorsFetchedAt,Date.now(),policy.offline_threshold_seconds) === "Offline").length;
 
   const incidentCount = useMemo(() => {
     if (!greenhouse) return 0;
 
-    return data.incidents.filter(incident => incident.status !== "resolved" && configuredSensorIds.includes(incident.sensor_id)).length;
+    return data.incidents.filter(incident => incident.status !== "resolved" && incident.greenhouse_id === greenhouse.id).length;
   }, [data.incidents, configuredSensorIds, greenhouse]);
 
   const selectedReadings = useMemo(() => {
@@ -213,10 +137,10 @@ export function Monitor() {
       .slice(0, 3);
   }, [effectiveReadings, sensorIds, greenhouse]);
 
-  const phase = latest.values().next().value?.phase_type ?? data.phase?.phase_type ?? null;
+  const phase = phaseForGreenhouse(greenhouse ?? undefined,policy.dark_phase_days);
   const phaseLabel = phase === "illumination" ? "Illumination" : phase === "dark" ? "Dark" : phase ?? "—";
-  const phaseWindow = greenhouse ? (("phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart) && ("phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd) ? `${"phase_start" in greenhouse ? greenhouse.phase_start : greenhouse.phaseStart} - ${"phase_end" in greenhouse ? greenhouse.phase_end : greenhouse.phaseEnd}` : "—") : "—";
-  const target = phase === "illumination" ? "≥ 50 safe · 31–49 warning · ≤ 30 violation" : phase === "dark" ? "0–15 safe · 16–29 warning · ≥ 30 incident" : "—";
+  const phaseWindow = greenhouse ? `${greenhouse.phase_start} - ${greenhouse.phase_end}` : "—";
+  const target = phase === "illumination" ? "≥ 50 safe · > 30 and < 50 warning · ≤ 30 violation" : phase === "dark" ? "0–15 safe · > 15 to 29 warning · > 29 violation" : "—";
 
   const thresholdLines = useMemo(() => getThresholdLines(phase), [phase]);
 
@@ -255,6 +179,7 @@ export function Monitor() {
     <PublicNavbar />
 
     <div className="p-5 md:p-8">
+      <MonitoringStatus />
       <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
         <Card className="h-full min-h-[34rem]">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -267,11 +192,11 @@ export function Monitor() {
             </div>
 
             {greenhouses.length > 0 && <div className="flex flex-wrap items-center gap-2">
-              <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
+              <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} aria-label="Select greenhouse" className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
 
-              <select value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
+              <select aria-label="Select sensor" value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
                 <option value="all">All Sensors</option>
                 {sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}
               </select>
@@ -328,15 +253,17 @@ export function Monitor() {
                 />)}
                 {sensors.map((sensor, i) => <Area
                   key={sensor.id}
-                  type="monotone"
+                  type="linear"
+                  data={sensorSeries(chart,sensor.id,sources[sensor.id] === "minute" ? 90_000 : 15_000)}
+                  isAnimationActive={false}
                   dataKey={sensor.id}
-                  name={sensor.name}
+                  name={`${sensor.name} (${sources[sensor.id] === "minute" ? "minute avg" : "raw"})`}
                   stroke={LINE_COLORS[i % LINE_COLORS.length]}
                   strokeWidth={2}
                   fill={`url(#lux-fill-${sensor.id})`}
                   dot={false}
                   activeDot={{ r: 4 }}
-                  connectNulls
+                  connectNulls={false}
                 />)}
               </AreaChart>
             </ResponsiveContainer>}
@@ -390,7 +317,7 @@ export function Monitor() {
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
 
-              <select value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
+              <select aria-label="Select sensor" value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
                 <option value="all">All Sensors</option>
                 {sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}
               </select>
