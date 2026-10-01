@@ -52,6 +52,7 @@ run "Web typecheck" \
   bash -c 'cd web && npx tsc --noEmit'
 run "Pi tests — delivery, history, lifecycle, monitoring windows and tunnel retries" \
   bash -c "cd pi-server && '$PY' -m pytest -q"
+run "Firmware network validation, storage and timer checks" bash scripts/verify-firmware.sh
 
 run "Migration SQL parses" "$PY" scripts/check_sql_syntax.py
 run "RPC contract (SQL vs TypeScript)" \

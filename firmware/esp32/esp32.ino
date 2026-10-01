@@ -18,6 +18,9 @@ TwoWire I2C_2 = TwoWire(1);
 // Copy ESP32-config.example.h to ESP32-config.h and provision locally.
 #include "ESP32-config.h"
 #include "root-certificates.h"
+#include "wifi_setup.h"
+
+WifiSetup networkSetup;
 
 // Permanent Vercel URL. Used to look up the Pi's current tunnel address,
 // since that address rotates and can no longer be hardcoded.
@@ -50,29 +53,6 @@ float readBH1750(TwoWire &bus) {
   }
 
   return -1;
-}
-
-void connectWiFi() {
-  Serial.print("Connecting to WiFi");
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println();
-  Serial.println("WiFi connected");
-  Serial.print("ESP32 IP: ");
-  Serial.println(WiFi.localIP());
-
-  // Certificate validity checks need a real clock. NTP continues in the
-  // background; a failed initial sync leaves HTTPS failing closed.
-  configTime(0, 0, "pool.ntp.org", "time.google.com");
-  unsigned long clockStarted = millis();
-  while (time(nullptr) < 1704067200 && millis() - clockStarted < 15000) delay(250);
-  if (time(nullptr) < 1704067200) Serial.println("Clock not synchronized; HTTPS may fail until NTP succeeds");
 }
 
 // Extracts a "field":"value" string from a small flat JSON response.
@@ -189,10 +169,7 @@ int postReadingOnce(const String &baseUrl, const String &payload) {
 }
 
 void sendReading(const char* sensorId, float lux) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected");
-    connectWiFi();
-  }
+  if (!networkSetup.connected() || time(nullptr) < 1704067200) return;
 
   if (lux < 0) {
     Serial.print(sensorId);
@@ -263,8 +240,7 @@ void setup() {
   Serial.println("I2C Bus 2: SDA D21 / SCL D22");
   Serial.println();
 
-  connectWiFi();
-  resolvePiBaseUrl(true);
+  networkSetup.begin(LPMAS_SETUP_PASSWORD);
 
   Serial.println();
   Serial.println("LPMAS hardware monitoring started");
@@ -273,7 +249,14 @@ void setup() {
 }
 
 void loop() {
-  const unsigned long sampleStarted = millis();
+  networkSetup.tick();
+  static unsigned long lastSample = 0;
+  static bool previouslyConnected = false;
+  const bool connected = networkSetup.connected();
+  if (connected && !previouslyConnected) { cachedPiBaseUrl = ""; piUrlCachedAt = 0; }
+  previouslyConnected = connected;
+  if (networkSetup.configuring() || !lpmas::elapsed(millis(), lastSample, 10000)) { delay(10); return; }
+  lastSample = millis();
   float light1 = readBH1750(I2C_1);
   float light2 = readBH1750(I2C_2);
 
@@ -305,6 +288,6 @@ void loop() {
   sendReading(SENSOR_2_ID, light2);
 
   Serial.println("Next reading in 10 seconds...");
-  const unsigned long elapsed = millis() - sampleStarted;
-  if (elapsed < 10000) delay(10000 - elapsed);
+  if (!connected) Serial.println("Wi-Fi unavailable; reconnecting in the background");
+  else if (time(nullptr) < 1704067200) Serial.println("Waiting for time synchronization before HTTPS delivery");
 }
