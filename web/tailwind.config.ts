@@ -13,7 +13,7 @@ export default {
         metal: {
           50: "var(--theme-text)",
           100: "var(--theme-text-secondary)",
-          200: "#c6c8cd",
+          200: "var(--theme-text-secondary)",
           300: "var(--theme-text-secondary)",
           400: "var(--theme-text-muted)",
           500: "var(--theme-text-subtle)",

@@ -1,3 +1,4 @@
+import { backendAuthorized } from "../_shared/backend-auth.ts";
 /**
  * LPMAS — `send-test-sms` Supabase Edge Function.
  *
@@ -217,22 +218,9 @@ function describe(error: unknown): string {
 
 export function createHandler(deps: HandlerDeps): (request: Request) => Promise<Response> {
   return async function handle(request: Request): Promise<Response> {
-    // 1. NO AUTH CHECK HERE, ON PURPOSE.
-    //
-    // The Supabase gateway verifies the caller's JWT before this function is
-    // invoked, so anything arriving here has already been authenticated and
-    // the handler never sees an unverified request.
-    //
-    // An earlier version re-checked the bearer against
-    // Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") with an exact string match.
-    // That rejected every request with 401 — a correctly authenticated one
-    // and a forged one alike, identically — so the endpoint looked like a
-    // credential problem that no credential could fix. The two strings need
-    // not match even when both keys are valid: Supabase is migrating from
-    // legacy `eyJ…` JWTs to new-format secret keys.
-    //
-    // Trust the gateway. It is the only layer that can actually verify a
-    // signature, because it holds the project signing key.
+    if (!backendAuthorized(request.headers.get("Authorization"),deps.serviceRoleKey)) {
+      return json(401,{ok:false,error:"Backend authorization required"});
+    }
 
     if (request.method !== "POST") {
       return json(405, { ok: false, error: "Method not allowed" });
@@ -304,7 +292,7 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
     deps.log("info", `Test SMS accepted by the gateway for ${maskPhone(number)}`);
     return json(200, {
       ok: true,
-      message: `Test SMS sent to ${maskPhone(number)}. It should arrive within a minute.`,
+      message: `Test SMS accepted by the provider for ${maskPhone(number)}. Handset delivery is unconfirmed.`,
     });
   };
 }
@@ -373,7 +361,7 @@ export async function serve(): Promise<void> {
 
   const deps: HandlerDeps = {
     client: client as unknown as SupabaseLike,
-    serviceRoleKey,
+    serviceRoleKey: Deno.env.get("LPMAS_BACKEND_JWT") ?? serviceRoleKey,
     async readSettings() {
       const { data, error } = await client
         .from("system_settings")

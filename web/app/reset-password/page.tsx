@@ -34,6 +34,8 @@ export default function ResetPasswordPage() {
         return;
       }
 
+      const recoveryError = new URLSearchParams(window.location.hash.slice(1)).get("error") || new URLSearchParams(window.location.search).get("error");
+      if (recoveryError) {setStatus("error");setMessage("This reset link has expired or has already been used. Request a new one.");return;}
       const { data } = await supabase.auth.getSession();
       if (!active) return;
 
@@ -58,7 +60,7 @@ export default function ResetPasswordPage() {
 
     const check = validateNewPassword(password, confirm);
     if (!check.ok) {
-      setStatus("error");
+      setStatus("ready");
       setMessage(check.error ?? "Choose a valid password.");
       return;
     }
@@ -74,15 +76,15 @@ export default function ResetPasswordPage() {
     const { error } = await supabase.auth.updateUser({ password });
 
     if (error) {
-      setStatus("error");
+      setStatus("ready");
       setMessage(describeResetError(error.message));
       return;
     }
 
     // The recovery session is spent; signing out guarantees the next visit
     // needs a real password rather than riding the reset session.
-    await supabase.auth.signOut();
     await logActivity("PASSWORD_RESET", "authentication", undefined, {});
+    await supabase.auth.signOut();
     setStatus("done");
 
     router.replace("/login");
@@ -119,10 +121,10 @@ export default function ResetPasswordPage() {
           <p className="mt-6 text-center text-sm text-metal-400">Password updated. Redirecting…</p>
         ) : (
           <form onSubmit={submit}>
-            <label className="mt-7 block text-sm font-semibold text-metal-200">New password</label>
+            <label htmlFor="new-password" className="mt-7 block text-sm font-semibold text-metal-200">New password</label>
             <div className="mt-2 flex items-center gap-2 rounded-xl border border-metal-600 bg-metal-900/60 px-3">
               <LockKeyhole size={18} className="text-metal-500" />
-              <input
+              <input id="new-password"
                 className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0"
                 type={showPassword ? "text" : "password"}
                 value={password}
@@ -131,16 +133,16 @@ export default function ResetPasswordPage() {
                 autoComplete="new-password"
                 autoFocus
               />
-              <button type="button" onClick={() => setShowPassword(!showPassword)} className="text-metal-500 hover:text-metal-200" aria-label="Show password">
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="text-metal-500 hover:text-metal-200" aria-label={showPassword ? "Hide password" : "Show password"}>
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
             <p className="mt-1.5 text-xs text-metal-500">At least 8 characters.</p>
 
-            <label className="mt-4 block text-sm font-semibold text-metal-200">Confirm new password</label>
+            <label htmlFor="confirm-password" className="mt-4 block text-sm font-semibold text-metal-200">Confirm new password</label>
             <div className="mt-2 flex items-center gap-2 rounded-xl border border-metal-600 bg-metal-900/60 px-3">
               <LockKeyhole size={18} className="text-metal-500" />
-              <input
+              <input id="confirm-password"
                 className="w-full border-0 bg-transparent px-0 text-metal-50 focus:ring-0"
                 type={showPassword ? "text" : "password"}
                 value={confirm}

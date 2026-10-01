@@ -1,0 +1,12 @@
+project_id = "lpmas"
+
+# Backend service-role JWT required at the gateway and in each handler.
+[functions.ingest-reading]
+verify_jwt = true
+
+[functions.send-test-sms]
+verify_jwt = true
+
+# Accounts are created through the admin API; public monitoring needs no login.
+[auth]
+enable_signup = false

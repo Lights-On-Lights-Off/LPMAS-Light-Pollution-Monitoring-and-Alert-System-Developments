@@ -4,7 +4,7 @@
  * Semaphore, the previous provider, meters every message against a credit
  * balance and refuses to send without a registered sender name, so a free
  * account could not deliver a single alert. textbee relays through the
- * project's own prepaid SIM, so a message costs nothing and needs no credit.
+ * project's own prepaid SIM, using the SIM's carrier plan; carrier charges still apply.
  *
  * Both Edge Functions import this so they cannot disagree about what a valid
  * configuration is, how a number is formatted, or what a provider's verdict
@@ -82,10 +82,7 @@ export function normalizePhilippineNumber(raw: string): string | null {
   // Counting digits alone let "+1234567890" through — it is ten digits long,
   // so it looked valid and would have been re-prefixed into a Philippine
   // number that belongs to somebody else.
-  if (digits.startsWith("+")) {
-    const explicitCode = raw.trim().startsWith("+");
-    if (explicitCode && !digits.startsWith(PH_COUNTRY_DIGITS)) return null;
-  }
+  if (raw.trim().startsWith("+") && !digits.startsWith(PH_COUNTRY_DIGITS)) return null;
   if (!digits.startsWith(PH_COUNTRY_DIGITS) && !digits.startsWith("0") &&
       digits.length > PH_MOBILE_DIGITS) {
     return null;
@@ -206,6 +203,10 @@ export function interpretTextbeeResponse(status: number, rawBody: string, apiKey
     );
   }
 
+  const envelope = parsed && typeof parsed === "object" ? parsed as Record<string,unknown> : null;
+  const data = envelope?.data && typeof envelope.data === "object" ? envelope.data as Record<string,unknown> : envelope;
+  if (data?.success === false) return finish("SMS gateway refused the message");
+  if (typeof data?.smsBatchId !== "string" || !data.smsBatchId) return finish("SMS gateway did not confirm batch acceptance");
   return { ok: true, detail: null };
 }
 

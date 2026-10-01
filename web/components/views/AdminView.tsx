@@ -6,6 +6,8 @@ import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, X
 import { Card, Badge } from "../ui";
 import { Modal } from "../Modal";
 import { ExportCsvButton } from "../ExportCsvButton";
+import { MonitoringStatus } from "../MonitoringStatus";
+import { sensorHealth } from "@/lib/monitoring-state";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { getGreenhouses, type Greenhouse } from "@/lib/api";
 import { listAdminUsers, createAdminUser, updateAdminUserRole, deleteAdminUser, type AdminUser } from "@/lib/adminUsers";
@@ -49,6 +51,7 @@ export function AdminView({ section }: { section: string }) {
   const [greenhouses, setGreenhouses] = useState<Greenhouse[]>([]);
   const [greenhouseLoading, setGreenhouseLoading] = useState(true);
   const [greenhouseError, setGreenhouseError] = useState<string | null>(null);
+  const monitoring = useDashboardData();
   const [team, setTeam] = useState<AdminUser[] | null>(null);
   const [teamError, setTeamError] = useState<string | null>(null);
   const [teamLoading, setTeamLoading] = useState(true);
@@ -93,11 +96,7 @@ export function AdminView({ section }: { section: string }) {
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsEditOpen, setDefaultsEditOpen] = useState(false);
   const [monitoringEditOpen, setMonitoringEditOpen] = useState(false);
-  const [smsAddOpen, setSmsAddOpen] = useState(false);
-  const [smsEditTarget, setSmsEditTarget] = useState<{ id: string; name: string; phone: string } | null>(null);
-  const [smsManagerId, setSmsManagerId] = useState("");
-  const [smsPhone, setSmsPhone] = useState("");
-  const [smsRecipients, setSmsRecipients] = useState<{ id: string; name: string; phone: string }[]>([]);
+
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
@@ -145,34 +144,12 @@ export function AdminView({ section }: { section: string }) {
     return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
   }, [overviewActivity, overviewAggregates]);
 
-  const reportingSensors = Array.from(latest.values()).filter(row => {
-    const updatedAt = row.updated_at || row.bucket_start;
-    return !!updatedAt && Date.now() - new Date(updatedAt).getTime() <= 120_000;
-  }).length;
+  const reportingSensors = monitoring.sensors.filter(s => !monitoring.sensorError && sensorHealth(s,monitoring.sensorsFetchedAt,Date.now(),monitoring.policy.offline_threshold_seconds) === "Online").length;
 
   const openIncidents = overviewIncidents.filter(incident => incident.status !== "resolved").length;
   const activeGreenhouses = greenhouses.filter(greenhouse => greenhouse.is_active === 1).length;
   const activeGreenhouseSensorIds = useMemo(() => new Set(greenhouses.filter(g => g.is_active === 1).flatMap(g => g.sensor_ids)), [greenhouses]);
-  const connectedSensors = useMemo(() => {
-    const now = Date.now();
-    const latestBySensor = new Map<string, { sensor_id: string; lux: number; recorded_at: string }>();
-    data.readings.forEach(reading => {
-      if (!activeGreenhouseSensorIds.has(reading.sensor_id)) return;
-      const current = latestBySensor.get(reading.sensor_id);
-      if (!current || new Date(reading.recorded_at).getTime() > new Date(current.recorded_at).getTime()) {
-        latestBySensor.set(reading.sensor_id, { sensor_id: reading.sensor_id, lux: reading.lux, recorded_at: reading.recorded_at });
-      }
-    });
-    const live = Array.from(latestBySensor.values()).filter(reading => now - new Date(reading.recorded_at).getTime() <= 60_000);
-    if (live.length) return live.sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
-
-    // No fresh live readings: show the most recent Supabase aggregate per
-    // sensor instead of an empty table.
-    return Array.from(latest.values())
-      .filter(row => activeGreenhouseSensorIds.has(row.sensor_id))
-      .map(row => ({ sensor_id: row.sensor_id, lux: row.avg_lux, recorded_at: row.bucket_start }))
-      .sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
-  }, [activeGreenhouseSensorIds, data.readings, latest]);
+  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => ({sensor_id:s.sensor_id,lux:s.lux,recorded_at:s.last_reading_at ?? "",health:monitoring.sensorError ? "Data stale" : sensorHealth(s,monitoring.sensorsFetchedAt,Date.now(),monitoring.policy.offline_threshold_seconds)}));
   const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
   const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
 
@@ -209,20 +186,6 @@ export function AdminView({ section }: { section: string }) {
       setTeamError(e instanceof Error ? e.message : "Failed to load team.");
     } finally {
       setTeamLoading(false);
-    }
-  }
-
-  async function refreshGreenhouses() {
-    setGreenhouseLoading(true);
-
-    try {
-      const result = await getGreenhouses();
-      setGreenhouses(result);
-      setGreenhouseError(null);
-    } catch (e) {
-      setGreenhouseError(e instanceof Error ? e.message : "Failed to load greenhouses.");
-    } finally {
-      setGreenhouseLoading(false);
     }
   }
 
@@ -402,7 +365,10 @@ export function AdminView({ section }: { section: string }) {
     if (showLoading) setActivityLoading(false);
   }
 
-  useEffect(() => { refreshTeam(); refreshGreenhouses(); }, []);
+  useEffect(() => { refreshTeam(); }, []);
+  useEffect(() => {
+    setGreenhouses(monitoring.greenhouses);setGreenhouseLoading(monitoring.loading);setGreenhouseError(monitoring.configError);
+  },[monitoring.greenhouses,monitoring.loading,monitoring.configError]);
   useEffect(() => { loadOverviewData(); }, []);
   useEffect(() => {
     if (section !== "Overview") return;
@@ -413,11 +379,6 @@ export function AdminView({ section }: { section: string }) {
     if (section === "System settings") loadManagerPhone();
     if (section === "Activity Logs") loadActivityLogs();
   }, [section]);
-  useEffect(() => {
-    if (!managerPhone || !team?.length || smsRecipients.length) return;
-    const manager = team.find(user => user.role === "manager");
-    if (manager) setSmsRecipients([{ id: manager.id, name: manager.full_name || manager.email, phone: managerPhone }]);
-  }, [managerPhone, smsRecipients.length, team]);
   useEffect(() => {
     if (section !== "Activity Logs") return;
     const interval = setInterval(loadActivityLogs, 5000);
@@ -528,6 +489,7 @@ export function AdminView({ section }: { section: string }) {
 
   return (
     <div className="space-y-5 p-5 md:p-7">
+      <MonitoringStatus />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-theme-text">{meta.title}</h1>
@@ -814,7 +776,7 @@ export function AdminView({ section }: { section: string }) {
                               <button
                                 type="button"
                                 disabled={isCurrentUser}
-                                onClick={() => setDeleteTarget(user)}
+                                aria-label="Delete user" onClick={() => setDeleteTarget(user)}
                                 className="rounded-lg border border-theme-danger/30 px-3 py-2 text-xs font-semibold text-theme-danger transition hover:bg-theme-danger/10 disabled:cursor-not-allowed disabled:opacity-30"
                                 title={isCurrentUser ? "You cannot delete your own account" : "Delete account"}
                               >
@@ -873,17 +835,11 @@ export function AdminView({ section }: { section: string }) {
               <div className="mb-5 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2"><Phone size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">SMS configuration</p></div>
-                  <p className="mt-1 text-xs leading-5 text-theme-muted">Manager recipients for confirmed violation notifications.</p>
+                  <p className="mt-1 text-xs leading-5 text-theme-muted">One recipient for confirmed violation notifications.</p>
                 </div>
-                <button type="button" onClick={() => { setSmsManagerId(""); setSmsPhone(""); setSmsAddOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent-foreground transition hover:bg-theme-accent-hover"><Plus size={14} /> Add</button>
               </div>
-              {phoneError && <div className="mb-3 rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{phoneError}</div>}
-              <div className="overflow-x-auto rounded-xl border border-theme-border/70">
-                <table className="w-full min-w-[460px] border-collapse text-sm">
-                  <thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-accent/30"><th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-text">User name</th><th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-text">Phone</th><th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-theme-text">Actions</th></tr></thead>
-                  <tbody>{smsRecipients.length ? smsRecipients.map(recipient => <tr key={recipient.id} className="border-b border-theme-border last:border-0"><td className="px-4 py-3.5 text-theme-text">{recipient.name}</td><td className="px-4 py-3.5 font-mono text-xs text-theme-secondary-text">{recipient.phone}</td><td className="px-4 py-3.5"><div className="flex justify-end gap-2"><button type="button" onClick={() => { setSmsEditTarget(recipient); setSmsPhone(toLocalDigits(recipient.phone)); }} className="rounded-lg border border-theme-accent/60 px-2.5 py-1.5 text-xs font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent"><Pencil size={13} /></button><button type="button" onClick={() => setSmsRecipients(current => current.filter(item => item.id !== recipient.id))} className="rounded-lg border border-theme-danger/30 px-2.5 py-1.5 text-xs font-semibold text-theme-danger hover:bg-theme-danger/10"><Trash2 size={13} /></button></div></td></tr>) : <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-theme-muted">No SMS recipients configured.</td></tr>}</tbody>
-                </table>
-              </div>
+              {phoneError && <p role="alert" className="mb-3 text-sm text-theme-danger">{phoneError}</p>}
+              <PhNumberField id="alert-recipient" label="Alert recipient" value={toLocalDigits(managerPhone)} onChange={value => setManagerPhone(value ? toInternationalNumber(value) : "")} hint="One persisted recipient for all greenhouse incident alerts. Save system configuration to apply changes." />
               <div className="mt-3 flex items-center justify-between gap-3 text-xs">
                 <span className="text-theme-muted">Provider status</span>
                 <span
@@ -1027,10 +983,10 @@ export function AdminView({ section }: { section: string }) {
           </Modal>
 
           <Card>
-            <div className="mb-5"><p className="font-bold text-theme-text">Connected sensors</p><p className="mt-1 text-sm text-theme-muted">Only active greenhouse sensors currently sending real lux values are shown.</p></div>
+            <div className="mb-5"><p className="font-bold text-theme-text">Assigned sensors</p><p className="mt-1 text-sm text-theme-muted">Assigned sensors, including offline devices. Status comes from the shared sensor registry.</p></div>
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
               <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
-                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux.toFixed(2)} lx</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">Reporting</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(reading.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
+                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux.toFixed(2)} lx</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(reading.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
               </table>
             </div>
           </Card>
@@ -1039,9 +995,7 @@ export function AdminView({ section }: { section: string }) {
             {data.phase ? <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><SettingRow label="Current phase" value={data.phase.phase_type} /><SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} /><SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} /><SettingRow label="Confirmation" value="3 consecutive readings" /></div><div className="rounded-xl border border-theme-accent/20 bg-theme-accent-soft p-4"><p className="text-sm font-semibold text-theme-text">System-defined thresholds</p><div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs"><div><p className="text-theme-muted">Illumination</p><p className="mt-1 font-medium text-theme-text">≥ 50 safe · 31–49 warning · ≤ 30 violation</p></div><div><p className="text-theme-muted">Dark</p><p className="mt-1 font-medium text-theme-text">0–15 safe · 16–29 warning · ≥ 30 violation</p></div></div></div><p className="text-xs text-theme-muted">Thresholds are fixed by the monitoring service and are intentionally not editable here.</p></div> : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
           </Modal>
 
-          <Modal open={smsAddOpen || !!smsEditTarget} onClose={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} title={smsEditTarget ? "Edit SMS recipient" : "Add SMS recipient"} description="Select a manager account and provide the mobile number used for incident notifications." footer={<><button onClick={() => { setSmsAddOpen(false); setSmsEditTarget(null); }} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent">Cancel</button><button onClick={() => { const manager = team?.find(user => user.id === smsManagerId); const phone = toInternationalNumber(smsPhone); if (!smsEditTarget && manager) setSmsRecipients(current => [...current.filter(item => item.id !== manager.id), { id: manager.id, name: manager.full_name || manager.email, phone }]); if (smsEditTarget) setSmsRecipients(current => current.map(item => item.id === smsEditTarget.id ? { ...item, phone } : item)); setSmsAddOpen(false); setSmsEditTarget(null); }} disabled={(!smsEditTarget && !smsManagerId) || validateLocalDigits(smsPhone) !== null} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{smsEditTarget ? "Save" : "Add"}</button></>}>
-            <div className="space-y-4">{!smsEditTarget && <label className="block"><span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">Manager</span><select value={smsManagerId} onChange={e => setSmsManagerId(e.target.value)} className={controlClassName}><option value="" className="bg-theme-surface-secondary text-theme-text">Select manager</option>{(team ?? []).filter(user => user.role === "manager").map(user => <option key={user.id} value={user.id} className="bg-theme-surface-secondary text-theme-text">{user.full_name || user.email}</option>)}</select></label>}<PhNumberField id="sms-recipient-phone" label="Mobile number" value={smsPhone} onChange={setSmsPhone} hint="Ten digits after the +63. A number that is one digit short is never delivered." /></div>
-          </Modal>
+
         </div>
       )}
       {section === "Activity Logs" && (

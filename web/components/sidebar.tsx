@@ -1,5 +1,6 @@
 // components/sidebar.tsx
 "use client";
+import { DialogFrame } from "./Modal";
 import { useState } from "react";
 import { Activity, BellRing, Gauge, LogOut, Menu, Settings, ShieldCheck, House, Paintbrush, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -52,7 +53,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
     <nav className="relative space-y-2">
       {visibleNav.map(([Icon, label]) => {
         const selected = active === label;
-        return <button key={label} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
+        return <button key={label} aria-current={selected ? "page" : undefined} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
           <Icon size={19} className={selected ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
           <span>{label}</span>
           {selected && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
@@ -106,7 +107,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
 
     {/* Mobile: backdrop + slide-in drawer, reusing the same nav content, theme-aware + safe-area padded */}
     {mobileOpen && (
-      <div className="fixed inset-0 z-50 lg:hidden">
+      <DialogFrame title="Dashboard navigation" onClose={() => setMobileOpen(false)} className="fixed inset-0 z-50 lg:hidden">
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
         <aside className="glass-card-strong relative flex h-full w-72 max-w-[82vw] flex-col overflow-hidden px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] text-[var(--foreground)]">
           {isGlass && <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />}
@@ -119,7 +120,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
           </button>
           {navContent}
         </aside>
-      </div>
+      </DialogFrame>
     )}
   </>;
 }

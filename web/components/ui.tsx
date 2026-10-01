@@ -8,11 +8,18 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 
 export function Badge({ children, tone = "green" }: { children: ReactNode; tone?: BadgeTone }) {
   const colors = {
-    green: "bg-emerald-500/12 text-emerald-700 ring-emerald-500/25",
-    amber: "bg-amber-500/12 text-amber-700 ring-amber-500/25",
-    red: "bg-red-500/12 text-red-700 ring-red-500/25",
-    slate: "bg-slate-500/10 text-slate-600 ring-slate-500/20"
+    green: "bg-emerald-500/12 text-theme-success ring-emerald-500/25",
+    amber: "bg-amber-500/12 text-theme-warning ring-amber-500/25",
+    red: "bg-red-500/12 text-theme-danger ring-red-500/25",
+    slate: "bg-slate-500/10 text-theme-muted ring-slate-500/20"
   };
 
   return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${colors[tone]}`}>{children}</span>;
+}
+export function EmptyRow({ colSpan, text }: { colSpan: number; text: string }) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="p-6 text-center text-sm text-[var(--muted-foreground)]">{text}</td>
+    </tr>
+  );
 }

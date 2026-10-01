@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --background: ;
+  --background: #eef3f8;
   --foreground: #142033;
   --surface: rgba(255, 255, 255, 0.42);
   --surface-strong: rgba(255, 255, 255, 0.64);
@@ -251,6 +251,8 @@ textarea {
 }
 
 [data-theme="dark"] {
+  --background: #0b1420;
+  --theme-accent-foreground: #102033;
     background-color: var(--background);
     background-image: url("/bgd.png");
   --foreground: #edf5ff;
@@ -279,7 +281,7 @@ textarea {
   --theme-accent-hover: var(--accent-hover);
   --theme-accent-soft: var(--accent-soft);
   --theme-accent-border: var(--accent-border);
-  --theme-accent-foreground: #ffffff;
+  --theme-accent-foreground: #102033;
   --theme-success: var(--success);
   --theme-warning: var(--warning);
   --theme-danger: var(--danger);
@@ -466,4 +468,9 @@ textarea {
   --accent-hover: #626a74;
   --accent-soft: rgba(116, 123, 132, 0.12);
   --accent-border: rgba(116, 123, 132, 0.28);
+}
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
