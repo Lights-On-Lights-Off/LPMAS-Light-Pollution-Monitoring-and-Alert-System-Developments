@@ -7,6 +7,10 @@ verify_jwt = true
 [functions.send-test-sms]
 verify_jwt = true
 
+# A non-JWT Pi credential is checked by the handler before any operation.
+[functions.pi-gateway]
+verify_jwt = false
+
 # Accounts are created through the admin API; public monitoring needs no login.
 [auth]
 enable_signup = false

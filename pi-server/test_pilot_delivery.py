@@ -9,7 +9,8 @@ import app as pi
 @pytest.fixture
 def system(tmp_path, monkeypatch):
     monkeypatch.setattr(pi, 'DB_PATH', tmp_path / 'test.db')
-    monkeypatch.setattr(pi, 'DEVICE_KEY', 'device-key')
+    monkeypatch.setattr(pi, 'DEVICE_KEY', 'd' * 40)
+    monkeypatch.setattr(pi, 'limiter', pi.RequestLimiter())
     monkeypatch.setattr(pi, 'RETRY_QUEUE_PATH', tmp_path / 'legacy.jsonl')
     pi.init_db()
     conn = pi.get_db()
@@ -20,7 +21,7 @@ def system(tmp_path, monkeypatch):
     return pi.app.test_client()
 
 def post(client, lux=20, reading_id=None, **kwargs):
-    return client.post('/api/readings', json={'sensor_id':'S1','lux':lux,'reading_id':reading_id or str(uuid.uuid4())},headers={'X-LPMAS-Device-Key':'device-key'}, **kwargs)
+    return client.post('/api/readings', json={'sensor_id':'S1','lux':lux,'reading_id':reading_id or str(uuid.uuid4())},headers={'X-LPMAS-Device-Key':'d' * 40}, **kwargs)
 
 def test_supabase_time_format_is_normalized():
     assert pi.parse_time('18:30:00') == pi.parse_time('18:30')
@@ -115,13 +116,13 @@ def test_dark_monitoring_is_continuous_and_illumination_outside_window_unclassif
 def test_verified_operator_acknowledges_uuid_once(system,monkeypatch,role):
     monkeypatch.setattr(pi,'supabase_configured',lambda:True)
     monkeypatch.setattr(pi,'SUPABASE_URL','https://example.invalid')
-    monkeypatch.setattr(pi,'SUPABASE_SECRET_KEY','test-only-key')
+    monkeypatch.setattr(pi,'PI_TOKEN','test-only-key')
     class AuthResponse:
         def __enter__(self): return self
         def __exit__(self,*_): pass
         def read(self): return b'{"id":"test-operator"}'
     monkeypatch.setattr(pi.urllib.request,'urlopen',lambda *_args,**_kwargs:AuthResponse())
-    monkeypatch.setattr(pi,'supabase_select',lambda *_:[{'role':role}])
+    monkeypatch.setattr(pi,'authorize_operator',lambda _: role in ('manager','admin'))
     conn=pi.get_db()
     seed_sequence(conn,['2026-10-01T00:00:00+08:00','2026-10-01T00:00:10+08:00','2026-10-01T00:00:20+08:00'])
     incident_id,_=pi.handle_incident(conn,'S1','G1',40,'violation','dark')
@@ -145,13 +146,13 @@ def test_verified_operator_acknowledges_uuid_once(system,monkeypatch,role):
 def test_valid_session_without_operator_role_cannot_acknowledge(system,monkeypatch):
     monkeypatch.setattr(pi,'supabase_configured',lambda:True)
     monkeypatch.setattr(pi,'SUPABASE_URL','https://example.invalid')
-    monkeypatch.setattr(pi,'SUPABASE_SECRET_KEY','test-only-key')
+    monkeypatch.setattr(pi,'PI_TOKEN','test-only-key')
     class AuthResponse:
         def __enter__(self): return self
         def __exit__(self,*_): pass
         def read(self): return b'{"id":"test-user"}'
     monkeypatch.setattr(pi.urllib.request,'urlopen',lambda *_args,**_kwargs:AuthResponse())
-    monkeypatch.setattr(pi,'supabase_select',lambda *_:[])
+    monkeypatch.setattr(pi,'authorize_operator',lambda _:False)
     assert system.post('/api/incidents/1/acknowledge',json={},headers={'Authorization':'Bearer test-user-jwt'}).status_code == 403
 
 @pytest.mark.parametrize('patch',[
@@ -160,42 +161,29 @@ def test_valid_session_without_operator_role_cannot_acknowledge(system,monkeypat
 ])
 def test_device_validation_matches_cloud_contract(system,patch):
     payload={'sensor_id':'S1','lux':20,'reading_id':str(uuid.uuid4()),**patch}
-    assert system.post('/api/readings',json=payload,headers={'X-LPMAS-Device-Key':'device-key'}).status_code == 400
+    assert system.post('/api/readings',json=payload,headers={'X-LPMAS-Device-Key':'d' * 40}).status_code == 400
     conn=pi.get_db()
     assert conn.execute('SELECT count(*) FROM readings').fetchone()[0] == 0
     conn.close()
 
 
-def test_existing_firmware_uses_durable_pi_generated_identity(system,monkeypatch):
+def test_unprovisioned_device_input_fails_closed(system,monkeypatch):
     monkeypatch.setattr(pi,'DEVICE_KEY','')
-    payload={'sensor_id':'S1','lux':20}
-    first=system.post('/api/readings',json=payload)
-    second=system.post('/api/readings',json=payload)
-    assert first.status_code == second.status_code == 201
-    assert first.json['reading_uid'] != second.json['reading_uid']
-    conn=pi.get_db()
-    queued=[json.loads(row[0]) for row in conn.execute('SELECT payload FROM delivery_outbox')]
-    assert {row['delivery_id'] for row in queued} == {first.json['reading_uid'],second.json['reading_uid']}
-    conn.close()
+    assert post(system).status_code == 503
 
 
-def test_legacy_firmware_cannot_register_an_unknown_sensor(system,monkeypatch):
-    monkeypatch.setattr(pi,'DEVICE_KEY','')
-    assert system.post('/api/readings',json={'sensor_id':'unknown','lux':20}).status_code == 403
-    conn=pi.get_db()
-    assert conn.execute('SELECT count(*) FROM readings').fetchone()[0] == 0
-    conn.close()
+def test_known_sensor_still_requires_device_authentication(system):
+    assert system.post('/api/readings',json={'sensor_id':'S1','lux':20}).status_code == 401
 
 
 def test_legacy_registry_revocations_survive_restart(system,monkeypatch):
-    monkeypatch.setattr(pi,'DEVICE_KEY','')
     monkeypatch.setattr(pi,'supabase_configured',lambda:True)
     monkeypatch.setattr(pi,'supabase_select',lambda table,_: [{'sensor_id':'S2'}] if table=='sensor_list' else [])
     pi.sync_greenhouses_from_supabase()
-    assert system.post('/api/readings',json={'sensor_id':'S1','lux':20}).status_code == 403
-    accepted=system.post('/api/readings',json={'sensor_id':'S2','lux':20})
+    assert post(system).status_code == 403
+    accepted=system.post('/api/readings',json={'sensor_id':'S2','lux':20,'reading_id':str(uuid.uuid4())},headers={'X-LPMAS-Device-Key':'d'*40})
     assert accepted.status_code == 201
     assert accepted.json['classification'] == 'unclassified'
     pi.init_db()
-    assert system.post('/api/readings',json={'sensor_id':'S1','lux':20}).status_code == 403
-    assert system.post('/api/readings',json={'sensor_id':'S2','lux':20}).status_code == 201
+    assert post(system).status_code == 403
+    assert system.post('/api/readings',json={'sensor_id':'S2','lux':20,'reading_id':str(uuid.uuid4())},headers={'X-LPMAS-Device-Key':'d'*40}).status_code == 201

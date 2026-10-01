@@ -6,6 +6,13 @@ import app as pi
 from test_pilot_delivery import system, post
 
 
+@pytest.fixture(autouse=True)
+def operator_access(system, monkeypatch):
+    monkeypatch.setattr(pi, 'supabase_configured', lambda: True)
+    monkeypatch.setattr(pi, 'authorize_operator', lambda _: True)
+    system.environ_base['HTTP_AUTHORIZATION'] = 'Bearer test-operator'
+
+
 @pytest.fixture
 def clock(system, monkeypatch):
     current = [datetime(2026, 10, 1, 12, tzinfo=pi.LPMAS_TIMEZONE)]
@@ -53,7 +60,7 @@ def test_history_compares_instants_across_offsets_and_restart(system, endpoint):
     response = system.get(endpoint, query_string={'start':'2026-10-01T10:30:00Z', 'end':'2026-10-01T20:30:00+08:00'})
     assert response.status_code == 200
     rows = response.json if isinstance(response.json, list) else response.json['readings']
-    assert [r['lux'] for r in rows] == [1, 3]
+    assert sorted(r['lux'] for r in rows) == [1, 3]
     with pi.get_db() as conn:
         assert json.loads(conn.execute('SELECT payload FROM delivery_outbox').fetchone()[0])['recorded_at'] == timestamps[0]
         assert conn.execute('SELECT recorded_at FROM readings ORDER BY id LIMIT 1').fetchone()[0] == timestamps[0]

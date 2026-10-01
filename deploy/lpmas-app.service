@@ -10,6 +10,13 @@ WorkingDirectory=/home/pi/lpmas/pi-server
 ExecStart=/usr/bin/python3 /home/pi/lpmas/pi-server/app.py
 Restart=on-failure
 RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target

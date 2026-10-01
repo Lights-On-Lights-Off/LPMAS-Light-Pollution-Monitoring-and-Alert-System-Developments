@@ -32,3 +32,14 @@ __pycache__/
 # them look like they do not exist. The pre-commit hook at
 # scripts/git-hooks/pre-commit refuses to stage them instead, so they stay
 # visible and stay out of commits at the same time.
+
+# Hardware provisioning and SQLite journal files
+docs/ESP32-config.h
+pi-server/lpmas.db-wal
+pi-server/lpmas.db-shm
+
+# Private deployment backups (may contain credentials and personal data)
+deploy/backups/
+
+# Provisioned hardware credentials
+firmware/**/ESP32-config.h

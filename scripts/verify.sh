@@ -42,8 +42,10 @@ run "Edge Function tests — ingest-reading" \
   bash -c 'cd supabase/functions/ingest-reading && deno test index.test.ts'
 run "Edge Function tests — send-test-sms" \
   bash -c 'cd supabase/functions/send-test-sms && deno test index.test.ts sms-provider.test.ts'
+run "Edge Function tests — scoped Pi gateway" \
+  bash -c 'cd supabase/functions/pi-gateway && deno test index.test.ts'
 run "Edge Function typecheck" \
-  bash -c 'cd supabase/functions/ingest-reading && deno check index.ts index.test.ts && cd ../send-test-sms && deno check index.ts index.test.ts'
+  bash -c 'cd supabase/functions/ingest-reading && deno check index.ts index.test.ts && cd ../send-test-sms && deno check index.ts index.test.ts && cd ../pi-gateway && deno check index.ts index.test.ts'
 run "Web tests" \
   bash -c 'cd web && deno test lib/*.test.ts'
 run "Web typecheck" \

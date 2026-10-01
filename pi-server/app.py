@@ -16,9 +16,12 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+import ipaddress
+from security import load_security_config, RequestLimiter
+from cloud_gateway import gateway_request
 
 app = Flask(__name__)
-CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 32_768
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "lpmas.db"
@@ -54,6 +57,7 @@ def load_env_file():
                 if not line or line.startswith("#") or "=" not in line: continue
                 key, value = line.split("=", 1)
                 key, value = key.strip(), value.strip()
+                if key not in ('SUPABASE_URL', 'LPMAS_TIMEZONE', 'LPMAS_DEVICE_KEY', 'LPMAS_PI_TOKEN', 'LPMAS_SECURITY_FILE'): continue
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'): value = value[1:-1]
                 os.environ.setdefault(key, value)
     except Exception as error:
@@ -63,7 +67,13 @@ def load_env_file():
 load_env_file()
 LPMAS_TIMEZONE = ZoneInfo(os.getenv("LPMAS_TIMEZONE", "Asia/Manila"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
+SECURITY = load_security_config()
+PI_TOKEN = os.getenv("LPMAS_PI_TOKEN", SECURITY.get("pi_token", ""))
+DEVICE_KEY = os.getenv("LPMAS_DEVICE_KEY", SECURITY.get("device_key", ""))
+ALLOWED_ORIGINS = SECURITY.get("allowed_origins", [])
+CORS(app, origins=ALLOWED_ORIGINS, methods=['GET', 'POST', 'OPTIONS'],
+     allow_headers=['Authorization', 'Content-Type', 'X-LPMAS-Device-Key'])
+limiter = RequestLimiter()
 
 # --- Pi -> Edge Function forwarding -----------------------------------------
 #
@@ -72,13 +82,45 @@ SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
 # than batch-aggregating, so a sensor that goes offline shows up in the cloud
 # within seconds instead of up to one sync interval later.
 #
-# SERVICE_KEY is the service_role key: this is a server-to-server call from a
-# device holding the secret, never a browser, so it bypasses RLS by design.
-EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/ingest-reading" if SUPABASE_URL else ""
-SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-DEVICE_KEY = os.getenv("LPMAS_DEVICE_KEY", "")
+# The gateway accepts a dedicated Pi credential with a fixed operation allowlist.
+# Existing Supabase administrator credentials are never used or sent by the Pi.
+EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/pi-gateway" if SUPABASE_URL else ""
 _outbox_thread = None
 _outbox_wake = threading.Event()
+
+
+@app.before_request
+def admit_request():
+    if request.method == 'OPTIONS': return None
+    category = 'ingest' if request.path == '/api/readings' and request.method == 'POST' else 'api'
+    peer = request.remote_addr or 'unknown'
+    # The listener binds loopback; only the local tunnel can supply this header.
+    if peer in ('127.0.0.1', '::1'):
+        try: peer = str(ipaddress.ip_address(request.headers.get('CF-Connecting-IP', peer)))
+        except ValueError: pass
+    rate = 120 if category == 'ingest' else 240
+    if not limiter.allow(('global', category), 1200) or not limiter.allow((peer, category), rate):
+        return jsonify({'error':'Too many requests; retry shortly'}), 429, {'Retry-After':'5'}
+    origin = request.headers.get('Origin')
+    if origin and origin not in ALLOWED_ORIGINS:
+        return jsonify({'error':'Origin not permitted'}), 403
+
+
+@app.after_request
+def response_security(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    return response
+
+
+def cloud_request(action, **values):
+    return gateway_request(EDGE_FUNCTION_URL, PI_TOKEN, action, **values)
+
+
+def authorize_operator(token):
+    result = cloud_request('authorize-operator', access_token=token)
+    return result.get('role') in ('manager', 'admin')
 
 
 def get_db():
@@ -601,11 +643,7 @@ def require_manager(handler):
         if not token.startswith("Bearer ") or not supabase_configured():
             return jsonify({"error": "Authentication required"}), 401
         try:
-            req = urllib.request.Request(f"{SUPABASE_URL}/auth/v1/user", headers={"apikey": SUPABASE_SECRET_KEY, "Authorization": token})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                user = json.loads(response.read())
-            rows = supabase_select("profiles", {"select": "role", "id": f"eq.{user['id']}"})
-            if not rows or rows[0]["role"] not in ("admin", "manager"):
+            if not authorize_operator(token[7:]):
                 return jsonify({"error": "Manager or admin access required"}), 403
         except Exception:
             return jsonify({"error": "Unable to verify authentication"}), 401
@@ -614,11 +652,12 @@ def require_manager(handler):
 
 
 @app.route("/api/readings", methods=["GET"])
+@require_manager
 def get_readings():
     try: start, end = history_bounds()
     except ValueError as error: return jsonify({"error": str(error)}), 400
     conn = get_db(); sensor_id = request.args.get("sensor_id"); greenhouse_id = request.args.get("greenhouse_id")
-    try: limit = max(1, min(int(request.args.get("limit", 100)), 100000))
+    try: limit = max(1, min(int(request.args.get("limit", 100)), 1000))
     except ValueError: limit = 100
     query = "SELECT * FROM readings WHERE 1=1"; params = []
     if sensor_id: query += " AND sensor_id = ?"; params.append(sensor_id)
@@ -633,7 +672,9 @@ def get_readings():
 @app.route("/api/readings", methods=["POST"])
 def create_reading():
     supplied = request.headers.get("X-LPMAS-Device-Key", "")
-    if DEVICE_KEY and not hmac.compare_digest(supplied.encode(), DEVICE_KEY.encode()):
+    if len(DEVICE_KEY) < 32:
+        return jsonify({"error": "Device authentication is not provisioned"}), 503
+    if not hmac.compare_digest(supplied.encode(), DEVICE_KEY.encode()):
         return jsonify({"error": "Device authentication required"}), 401
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict): return jsonify({"error": "JSON object required"}), 400
@@ -645,11 +686,6 @@ def create_reading():
     if isinstance(payload.get("lux"), bool) or not math.isfinite(lux) or lux < 0 or lux > 65535:
         return jsonify({"error": "lux must be finite and between 0 and 65535"}), 400
     reading_uid = payload.get("reading_id")
-    if reading_uid is None and not DEVICE_KEY:
-        # Existing firmware sends only sensor_id/lux. Persist a Pi-generated
-        # identity once so cloud retries remain idempotent. Sensor-side retries
-        # cannot be distinguished from new captures without a device UUID.
-        reading_uid = str(uuid.uuid4())
     try:
         parsed_uid = uuid.UUID(reading_uid)
         if parsed_uid.variant != uuid.RFC_4122 or not 1 <= parsed_uid.version <= 8:
@@ -659,7 +695,7 @@ def create_reading():
     conn = get_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        if not DEVICE_KEY and not conn.execute(
+        if not conn.execute(
             "SELECT sensor_id FROM registered_sensors WHERE sensor_id=? UNION SELECT sensor_id FROM greenhouse_sensors WHERE sensor_id=?",
             (sensor_id, sensor_id),
         ).fetchone():
@@ -786,13 +822,13 @@ def default_post(url, body, headers, timeout):
     return urllib.request.urlopen(request,timeout=timeout)
 
 
-def edge_function_configured(): return bool(EDGE_FUNCTION_URL and SERVICE_KEY)
+def edge_function_configured(): return bool(EDGE_FUNCTION_URL and PI_TOKEN)
 
 
 def _deliver(payload, post):
     try:
-        with post(EDGE_FUNCTION_URL,json.dumps(payload,allow_nan=False),{
-            "apikey":SERVICE_KEY,"Authorization":f"Bearer {SERVICE_KEY}","Content-Type":"application/json"
+        with post(EDGE_FUNCTION_URL,json.dumps({"action":"ingest","delivery":payload},allow_nan=False),{
+            "Authorization":f"Bearer {PI_TOKEN}","Content-Type":"application/json"
         },FORWARD_TIMEOUT_SECONDS) as response:
             return 200 <= response.status < 300
     except Exception as error:
@@ -834,7 +870,7 @@ def get_incidents():
     query = "SELECT * FROM incidents WHERE 1=1"; params = []
     if status: query += " AND status = ?"; params.append(status)
     if greenhouse_id: query += " AND greenhouse_id = ?"; params.append(greenhouse_id)
-    query += " ORDER BY opened_at DESC"; rows = conn.execute(query, params).fetchall(); conn.close(); return jsonify([dict(row) for row in rows])
+    query += " ORDER BY opened_at DESC LIMIT 100"; rows = conn.execute(query, params).fetchall(); conn.close(); return jsonify([dict(row) for row in rows])
 
 
 @app.route("/api/incidents/<int:incident_id>/acknowledge", methods=["POST"])
@@ -857,18 +893,31 @@ def acknowledge_incident(incident_id):
 
 
 @app.route("/api/hardware-activity", methods=["GET"])
+@require_manager
 def hardware_activity():
     try: start, end = history_bounds()
     except ValueError as error: return jsonify({"error": str(error)}), 400
+    if start is None or end is None or end-start > 31*86400:
+        return jsonify({"error":"Choose a history range of at most 31 days"}), 400
+    try:
+        after_id = int(request.args.get('after_id', '0'))
+        if after_id < 0: raise ValueError()
+    except ValueError: return jsonify({'error':'Invalid history cursor'}), 400
     conn = get_db(); greenhouse_id = request.args.get("greenhouse_id"); sensor_ids = request.args.getlist("sensor_id")
+    if len(sensor_ids) > 100:
+        conn.close()
+        return jsonify({'error':'Too many sensor filters'}), 400
     query = "SELECT * FROM readings WHERE 1=1"; params = []
     if greenhouse_id: query += " AND greenhouse_id = ?"; params.append(greenhouse_id)
     if sensor_ids:
         query += f" AND sensor_id IN ({','.join('?' for _ in sensor_ids)})"; params.extend(sensor_ids)
     if start is not None: query += " AND recorded_at_epoch >= ?"; params.append(start)
     if end is not None: query += " AND recorded_at_epoch <= ?"; params.append(end)
-    query += " ORDER BY recorded_at_epoch ASC, id ASC"; rows = conn.execute(query, params).fetchall(); conn.close()
-    return jsonify({"readings": [dict(row) for row in rows], "count": len(rows)})
+    query += " AND id > ? ORDER BY id ASC LIMIT 1001"; params.append(after_id)
+    rows = conn.execute(query, params).fetchall(); conn.close()
+    page = rows[:1000]
+    return jsonify({"readings": [dict(row) for row in page], "count": len(page),
+        "next_after_id": page[-1]['id'] if len(rows) > 1000 else None})
 
 
 @app.route("/api/dashboard", methods=["GET"])
@@ -892,27 +941,25 @@ def set_sync_state(conn, key, value):
     conn.execute("INSERT INTO supabase_sync_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value)); conn.commit()
 
 
-def supabase_configured(): return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
+def supabase_configured(): return bool(SUPABASE_URL and PI_TOKEN)
 
 
 def supabase_select(table, params):
-    if not supabase_configured(): raise RuntimeError("Supabase environment variables are not configured")
-    query = urllib.parse.urlencode(params); url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"
-    req = urllib.request.Request(url, method="GET"); req.add_header("apikey", SUPABASE_SECRET_KEY); req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response: return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace"); raise RuntimeError(f"Supabase HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
+    # Compatibility adapter for callers/tests; no arbitrary table or setting access.
+    snapshot = cloud_request('configuration')
+    if table == 'system_settings': return [{'value': snapshot['dark_phase_days']}]
+    if table not in ('greenhouses', 'greenhouse_sensors', 'sensor_list'):
+        raise ValueError('Table is not available to the Pi')
+    return snapshot[table]
 
 
-def sync_dark_phase_duration_from_supabase():
+def sync_dark_phase_duration_from_supabase(snapshot=None):
     # Admin-configurable via AdminView.tsx -> web/app/api/admin/settings ->
     # system_settings.dark_phase_duration_days. Falls back to the original
     # fixed default if unset, invalid, or Supabase is unreachable.
     global DARK_PHASE_DAYS
     if not supabase_configured(): return DARK_PHASE_DAYS
-    rows = supabase_select("system_settings", {"key": "eq.dark_phase_duration_days", "select": "value", "limit": 1})
+    rows = [{'value':snapshot['dark_phase_days']}] if snapshot else supabase_select("system_settings", {"key": "eq.dark_phase_duration_days", "select": "value", "limit": 1})
     try:
         parsed = int(str(rows[0].get("value", "")).strip()) if rows else DARK_PHASE_DAYS_DEFAULT
         new_days = parsed if parsed >= 1 else DARK_PHASE_DAYS_DEFAULT
@@ -936,19 +983,19 @@ def sync_dark_phase_duration_from_supabase():
     return DARK_PHASE_DAYS
 
 
-def sync_greenhouses_from_supabase():
+def sync_greenhouses_from_supabase(snapshot=None):
     # Supabase is now the source of truth for greenhouse configuration
     # (see 0006_greenhouse_config.sql). This mirrors it into local SQLite
     # so classify_reading()/get_phase_for_sensor() keep working without a
     # live Supabase round-trip on every 10-second ESP32 reading. If the
     # fetch fails, local data is left untouched rather than wiped.
     if not supabase_configured(): return 0
-    greenhouses = supabase_select("greenhouses", {
+    greenhouses = snapshot['greenhouses'] if snapshot else supabase_select("greenhouses", {
         "select": "id,name,phase_start,phase_end,window_start,window_end,is_active,updated_at",
         "is_active": "eq.true"
     })
-    sensors = supabase_select("greenhouse_sensors", {"select": "greenhouse_id,sensor_id"})
-    registry = supabase_select("sensor_list", {"select": "sensor_id"})
+    sensors = snapshot['greenhouse_sensors'] if snapshot else supabase_select("greenhouse_sensors", {"select": "greenhouse_id,sensor_id"})
+    registry = snapshot['sensor_list'] if snapshot else supabase_select("sensor_list", {"select": "sensor_id"})
 
     conn = get_db()
     try:
@@ -977,15 +1024,16 @@ def sync_greenhouses_from_supabase():
 
 
 def run_supabase_sync():
+    snapshot = cloud_request('configuration')
     # Each piece is isolated: a failure in one shouldn't block the others
     # from still syncing this cycle.
     try:
-        greenhouse_count = sync_greenhouses_from_supabase()
+        greenhouse_count = sync_greenhouses_from_supabase(snapshot)
     except Exception as error:
         print(f"[SUPABASE SYNC ERROR] greenhouses: {error}")
         greenhouse_count = None
     try:
-        dark_phase_days = sync_dark_phase_duration_from_supabase()
+        dark_phase_days = sync_dark_phase_duration_from_supabase(snapshot)
     except Exception as error:
         print(f"[SUPABASE SYNC ERROR] dark phase duration: {error}")
         dark_phase_days = DARK_PHASE_DAYS
@@ -1013,6 +1061,10 @@ def start_supabase_sync():
 
 
 if __name__ == "__main__":
-    if not DEVICE_KEY:
-        print("[DEVICE INPUT] Legacy registered-sensor compatibility enabled; device requests are not authenticated. Set LPMAS_DEVICE_KEY only after upgrading the firmware.")
-    init_db(); start_supabase_sync(); start_outbox(); app.run(host="0.0.0.0", port=5000, debug=False)
+    if len(DEVICE_KEY) < 32 or len(PI_TOKEN) < 32 or not ALLOWED_ORIGINS:
+        raise SystemExit('Provision device authentication, scoped cloud access, and allowed web origins before starting the service.')
+    from waitress import serve
+    init_db(); start_supabase_sync(); start_outbox()
+    serve(app, host='127.0.0.1', port=5000, threads=8, connection_limit=64,
+          channel_timeout=30, max_request_body_size=32768, max_request_header_size=16384,
+          expose_tracebacks=False, clear_untrusted_proxy_headers=True, ident='')

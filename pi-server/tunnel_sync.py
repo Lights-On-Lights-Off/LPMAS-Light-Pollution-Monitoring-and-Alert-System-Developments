@@ -10,6 +10,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from security import load_security_config
+from cloud_gateway import gateway_request
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
@@ -27,6 +29,7 @@ def load_env_file():
                 if not line or line.startswith("#") or "=" not in line: continue
                 key, value = line.split("=", 1)
                 key, value = key.strip(), value.strip()
+                if key not in ('SUPABASE_URL', 'LPMAS_TIMEZONE', 'LPMAS_PI_TOKEN', 'LPMAS_SECURITY_FILE'): continue
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'): value = value[1:-1]
                 os.environ.setdefault(key, value)
     except Exception as error:
@@ -36,22 +39,20 @@ def load_env_file():
 load_env_file()
 LPMAS_TIMEZONE = ZoneInfo(os.getenv("LPMAS_TIMEZONE", "Asia/Manila"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
+SECURITY = load_security_config()
+PI_TOKEN = os.getenv("LPMAS_PI_TOKEN", SECURITY.get("pi_token", ""))
 
 
 def now_iso(): return datetime.now(LPMAS_TIMEZONE).isoformat(timespec="seconds")
-def supabase_configured(): return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
+def supabase_configured(): return bool(SUPABASE_URL and PI_TOKEN)
 
 
 def supabase_request(table, payload, on_conflict):
-    if not supabase_configured(): raise RuntimeError("Supabase environment variables are not configured")
-    query = urllib.parse.urlencode({"on_conflict": on_conflict}); url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"; body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST"); req.add_header("apikey", SUPABASE_SECRET_KEY); req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}"); req.add_header("Content-Type", "application/json"); req.add_header("Prefer", "resolution=merge-duplicates,return=minimal")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response: return response.status
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace"); raise RuntimeError(f"Supabase HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
+    if not supabase_configured(): raise RuntimeError("Scoped Pi cloud access is not provisioned")
+    if table != 'system_settings' or len(payload) != 1 or payload[0].get('key') != 'pi_api_url':
+        raise ValueError('Only tunnel publication is permitted')
+    gateway_request(f'{SUPABASE_URL}/functions/v1/pi-gateway', PI_TOKEN, 'publish-tunnel', url=payload[0]['value'])
+    return 200
 
 
 def push_tunnel_url(url):

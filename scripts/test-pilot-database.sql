@@ -18,6 +18,8 @@ do $$
 declare
   p jsonb; r jsonb; n integer; j jsonb; v_stamp timestamptz;
 begin
+  if public.pi_configuration() ? 'textbee_api_key' or public.pi_configuration() ? 'profiles' then raise exception 'Pi configuration leaked private data'; end if;
+  if not (public.pi_configuration() ?& array['greenhouses','greenhouse_sensors','sensor_list','dark_phase_days']) then raise exception 'Pi configuration incomplete'; end if;
   p := jsonb_build_object('kind','reading','delivery_id','11111111-1111-4111-8111-111111111111',
     'sensor_id','pilot-S1','lux',40,'recorded_at',now()-interval '1 day',
     'greenhouse_id','pilot-G1','phase_type','dark','classification','violation',
@@ -141,6 +143,8 @@ set local role anon;
 do $$
 begin
   if has_function_privilege('public.ingest_pilot_delivery(jsonb)','execute') then raise exception 'Anon can ingest'; end if;
+  if has_function_privilege('public.pi_configuration()','execute') then raise exception 'Anon can read private Pi configuration'; end if;
+  if exists(select 1 from public.sensor_minute_aggregates where bucket_start < now()-interval '24 hours') then raise exception 'Anonymous archive access remains'; end if;
   if has_function_privilege('public.update_sensor_list(text,numeric,text,boolean,boolean)','execute') then raise exception 'Anon can assign'; end if;
   if has_table_privilege('public.notification_jobs','select') then raise exception 'Public can read notification recipients'; end if;
   if not has_table_privilege('public.sensor_minute_aggregates','select') then raise exception 'Public cloud history unavailable'; end if;
