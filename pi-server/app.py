@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import sqlite3
@@ -94,6 +94,7 @@ def table_columns(conn, table):
 
 
 def init_db():
+    global DARK_PHASE_DAYS
     conn = get_db()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
@@ -156,6 +157,9 @@ def init_db():
         ("incidents", "incident_uid", "TEXT"),
         ("incidents", "version", "INTEGER NOT NULL DEFAULT 1"),
         ("incidents", "triggering_readings", "TEXT NOT NULL DEFAULT '[]'"),
+        ("incidents", "config_version", "TEXT"),
+        ("incidents", "context_version", "TEXT"),
+        ("incidents", "resolution_reason", "TEXT"),
     ):
         if column not in table_columns(conn, table):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
@@ -166,6 +170,29 @@ def init_db():
     for column, declaration in (("reading_uid", "TEXT"), ("config_version", "TEXT NOT NULL DEFAULT 'legacy'")):
         if column not in table_columns(conn, "readings"):
             conn.execute(f"ALTER TABLE readings ADD COLUMN {column} {declaration}")
+    if "recorded_at_epoch" not in table_columns(conn, "readings"):
+        conn.execute("ALTER TABLE readings ADD COLUMN recorded_at_epoch REAL")
+    # Preserve original timestamps and queued payloads: receipts compare exact
+    # payloads on replay. A numeric index normalizes old offsets without changing
+    # historical delivery identities. Naive legacy dates use the site's timezone.
+    last_id = 0
+    while True:
+        batch = conn.execute("SELECT id, recorded_at FROM readings WHERE recorded_at_epoch IS NULL AND id>? ORDER BY id LIMIT 1000", (last_id,)).fetchall()
+        if not batch: break
+        for row in batch:
+            stamp = parse_datetime(row["recorded_at"])
+            if stamp is not None:
+                conn.execute("UPDATE readings SET recorded_at_epoch=? WHERE id=?", (stamp.timestamp(), row["id"]))
+        last_id = batch[-1]["id"]
+    # Incident metadata is not an immutable receipt. Canonicalize it once so
+    # old local offsets and new UTC values sort identically in every endpoint.
+    for row in conn.execute("SELECT id, opened_at, resolved_at FROM incidents").fetchall():
+        for field in ("opened_at", "resolved_at"):
+            stamp = parse_datetime(row[field])
+            if stamp:
+                normalized = stamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+                if normalized != row[field]:
+                    conn.execute(f"UPDATE incidents SET {field}=? WHERE id=?", (normalized, row["id"]))
     # A real sensor belongs to only one greenhouse assignment at a time.
     # Clean up legacy duplicates before enforcing the rule at the DB level.
     duplicate_sensors = conn.execute("""
@@ -178,7 +205,7 @@ def init_db():
             FROM greenhouse_sensors gs
             JOIN greenhouses g ON g.id = gs.greenhouse_id
             WHERE gs.sensor_id = ?
-            ORDER BY g.is_active DESC, g.updated_at DESC, gs.rowid DESC
+            ORDER BY g.is_active DESC, julianday(g.updated_at) DESC, gs.rowid DESC
         """, (duplicate["sensor_id"],)).fetchall()
         for mapping in mappings[1:]:
             conn.execute("DELETE FROM greenhouse_sensors WHERE rowid = ?", (mapping["rowid"],))
@@ -186,6 +213,9 @@ def init_db():
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS readings_uid_idx ON readings(reading_uid)")
     conn.execute("CREATE INDEX IF NOT EXISTS readings_sensor_time_idx ON readings(sensor_id, recorded_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS readings_greenhouse_time_idx ON readings(greenhouse_id, recorded_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS readings_epoch_idx ON readings(recorded_at_epoch, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS readings_sensor_epoch_idx ON readings(sensor_id, recorded_at_epoch)")
+    conn.execute("CREATE INDEX IF NOT EXISTS readings_greenhouse_epoch_idx ON readings(greenhouse_id, recorded_at_epoch)")
     conn.execute("CREATE INDEX IF NOT EXISTS incidents_sensor_status_idx ON incidents(sensor_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS incidents_greenhouse_status_idx ON incidents(greenhouse_id, status)")
     registry_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='registered_sensors'").fetchone()
@@ -194,6 +224,9 @@ def init_db():
         # Bootstrap an existing installation during an offline upgrade. Later
         # successful cloud snapshots replace this cache, including removals.
         conn.execute("INSERT OR IGNORE INTO registered_sensors SELECT DISTINCT sensor_id FROM readings")
+    cached_days = conn.execute("SELECT value FROM supabase_sync_state WHERE key='dark_phase_days'").fetchone()
+    if cached_days:
+        DARK_PHASE_DAYS = int(cached_days[0])
     conn.commit()
     conn.close()
 
@@ -224,18 +257,20 @@ def migrate_readings_nullable_metadata(conn):
             lux REAL NOT NULL,
             recorded_at TEXT NOT NULL,
             classification TEXT,
-            phase_type TEXT
+            phase_type TEXT,
+            reading_uid TEXT,
+            config_version TEXT NOT NULL DEFAULT 'legacy'
         )
     """)
     conn.execute("""
-        INSERT INTO readings_new(id, sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type)
-        SELECT id, sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type FROM readings
+        INSERT INTO readings_new(id, sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type, reading_uid, config_version)
+        SELECT id, sensor_id, greenhouse_id, lux, recorded_at, classification, phase_type, reading_uid, config_version FROM readings
     """)
     conn.execute("DROP TABLE readings")
     conn.execute("ALTER TABLE readings_new RENAME TO readings")
 
 
-def now_iso(): return datetime.now(LPMAS_TIMEZONE).isoformat(timespec="seconds")
+def now_iso(): return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 def today(): return datetime.now(LPMAS_TIMEZONE).date()
 
 
@@ -247,9 +282,27 @@ def parse_date(value):
 def parse_datetime(value):
     if not value: return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed.replace(tzinfo=LPMAS_TIMEZONE) if parsed.tzinfo is None else parsed
-    except ValueError: return None
+    except (ValueError, TypeError, AttributeError): return None
+
+
+def history_bounds():
+    """Validate API bounds and compare instants, never offset-bearing text."""
+    bounds = []
+    for name in ("start", "end"):
+        raw = request.args.get(name)
+        stamp = None
+        if raw is not None:
+            try:
+                stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if "T" not in raw or stamp.tzinfo is None: raise ValueError()
+            except ValueError:
+                raise ValueError(f"{name} must be an ISO timestamp with timezone") from None
+        bounds.append(stamp.timestamp() if stamp else None)
+    if all(value is not None for value in bounds) and bounds[0] > bounds[1]:
+        raise ValueError("start must be before or equal to end")
+    return bounds
 
 
 def parse_time(value):
@@ -276,15 +329,16 @@ def get_sensor_greenhouse(conn, sensor_id):
         SELECT g.* FROM greenhouses g
         JOIN greenhouse_sensors gs ON gs.greenhouse_id = g.id
         WHERE gs.sensor_id = ? AND g.is_active = 1
-        ORDER BY g.updated_at DESC LIMIT 1
+        ORDER BY julianday(g.updated_at) DESC LIMIT 1
     """, (sensor_id,)).fetchone()
 
 
-def get_illumination_phase(conn, greenhouse):
+def get_illumination_phase(conn, greenhouse, at=None):
     if not greenhouse: return None
     start = parse_date(greenhouse["phase_start"])
     end = parse_date(greenhouse["phase_end"])
-    if not start or not end or not (start <= today() <= end): return None
+    local_day = at.astimezone(LPMAS_TIMEZONE).date() if at else today()
+    if not start or not end or not (start <= local_day <= end): return None
     return {
         "id": None,
         "greenhouse_id": greenhouse["id"],
@@ -297,13 +351,14 @@ def get_illumination_phase(conn, greenhouse):
     }
 
 
-def get_dark_phase(conn, greenhouse):
+def get_dark_phase(conn, greenhouse, at=None):
     if not greenhouse: return None
     illumination_end = parse_date(greenhouse["phase_end"])
     if not illumination_end: return None
     dark_start = illumination_end + timedelta(days=1)
     dark_end = dark_start + timedelta(days=DARK_PHASE_DAYS - 1)
-    if not (dark_start <= today() <= dark_end): return None
+    local_day = at.astimezone(LPMAS_TIMEZONE).date() if at else today()
+    if not (dark_start <= local_day <= dark_end): return None
     return {
         "id": None,
         "greenhouse_id": greenhouse["id"],
@@ -316,30 +371,51 @@ def get_dark_phase(conn, greenhouse):
     }
 
 
-def get_phase_for_sensor(conn, sensor_id):
+def get_phase_for_sensor(conn, sensor_id, at=None):
     greenhouse = get_sensor_greenhouse(conn, sensor_id)
     if not greenhouse: return None
-    return get_illumination_phase(conn, greenhouse) or get_dark_phase(conn, greenhouse)
+    return get_illumination_phase(conn, greenhouse, at) or get_dark_phase(conn, greenhouse, at)
 
 
 def get_active_phase(conn):
-    rows = conn.execute("SELECT * FROM greenhouses WHERE is_active = 1 ORDER BY updated_at DESC").fetchall()
+    rows = conn.execute("SELECT * FROM greenhouses WHERE is_active = 1 ORDER BY julianday(updated_at) DESC").fetchall()
     for greenhouse in rows:
         phase = get_illumination_phase(conn, greenhouse) or get_dark_phase(conn, greenhouse)
         if phase: return phase
     return None
 
 
-def classify_reading(lux, phase):
+def classify_reading(lux, phase, at=None):
     if not phase: return None
     if phase["phase_type"] == "dark":
         if lux <= DARK_SAFE_MAX: return "safe"
         if lux <= DARK_WARNING_MAX: return "warning"
         return "violation"
-    if not is_within_window(datetime.now(LPMAS_TIMEZONE).strftime("%H:%M"), phase["window_start"], phase["window_end"]): return "unclassified"
+    local_time = (at or datetime.now(LPMAS_TIMEZONE)).astimezone(LPMAS_TIMEZONE)
+    if not is_within_window(local_time.strftime("%H:%M"), phase["window_start"], phase["window_end"]): return "unclassified"
     if lux <= ILLUMINATION_VIOLATION_MAX: return "violation"
     if lux < ILLUMINATION_WARNING_MAX: return "warning"
     return "safe"
+
+
+def configuration_version(greenhouse):
+    # Names and update timestamps do not alter monitoring. Canonicalize time
+    # strings so a cloud refresh of HH:MM:SS versus HH:MM cannot split a run.
+    config = {key: greenhouse[key] for key in ("id", "phase_start", "phase_end")} if greenhouse else {}
+    if greenhouse:
+        config.update({key: greenhouse[key][:5] for key in ("window_start", "window_end")})
+    config["dark_phase_days"] = DARK_PHASE_DAYS
+    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+
+
+def illumination_session(phase, at):
+    """Identify a daily window, including its after-midnight continuation."""
+    start, end = phase["window_start"][:5], phase["window_end"][:5]
+    if start == "00:00" and end == "23:59": return "continuous"
+    local = at.astimezone(LPMAS_TIMEZONE)
+    day = local.date()
+    if start > end and local.strftime("%H:%M") <= end: day -= timedelta(days=1)
+    return day.isoformat()
 
 
 def recent_readings(conn, sensor_id, limit=CONSECUTIVE_READINGS_REQUIRED):
@@ -363,14 +439,22 @@ def violation_sequence(conn, sensor_id, greenhouse_id, phase_type):
 
     # recent_readings() is newest-first; evaluate chronologically.
     rows = list(reversed(rows))
+    config_version = rows[-1]["config_version"]
     for row in rows:
         if (row["classification"] != "violation" or
                 row["phase_type"] != phase_type or
-                row["greenhouse_id"] != greenhouse_id):
+                row["greenhouse_id"] != greenhouse_id or
+                row["config_version"] != config_version):
             return None
 
     timestamps = [parse_datetime(row["recorded_at"]) for row in rows]
     if any(ts is None for ts in timestamps):
+        return None
+    # A sensor can leave and return to the same assignment between captures.
+    # Even an identical configuration must start a new confirmation after closure.
+    latest_closed = conn.execute("SELECT resolved_at FROM incidents WHERE sensor_id=? AND status='resolved' ORDER BY resolved_at DESC, id DESC LIMIT 1", (sensor_id,)).fetchone()
+    boundary = parse_datetime(latest_closed["resolved_at"]) if latest_closed else None
+    if boundary and timestamps[0] < boundary:
         return None
     for previous, current in zip(timestamps, timestamps[1:]):
         gap = (current - previous).total_seconds()
@@ -414,11 +498,61 @@ def open_incident(conn, sensor_id, greenhouse_id, phase_type, lux, triggering_ro
     """, (sensor_id, greenhouse_id, phase_type, now_iso(), peak_lux, lowest_lux, f"{phase_type.title()} phase light violation"))
     conn.execute("UPDATE incidents SET incident_uid=?, triggering_readings=? WHERE id=?", (
         str(uuid.uuid4()), json.dumps([dict(row) for row in (triggering_rows or [])]), cursor.lastrowid))
+    if triggering_rows:
+        conn.execute("UPDATE incidents SET config_version=? WHERE id=?", (triggering_rows[-1]["config_version"], cursor.lastrowid))
     return cursor.lastrowid, True
 
 
-def resolve_incident(conn, incident):
-    conn.execute("UPDATE incidents SET status = 'resolved', resolved_at = ?, version = version + 1 WHERE id = ?", (now_iso(), incident["id"]))
+def resolve_incident(conn, incident, reason="safe_reading", at=None):
+    stamp = at.astimezone(timezone.utc).isoformat(timespec="microseconds") if at else now_iso()
+    conn.execute("UPDATE incidents SET status='resolved', resolved_at=?, resolution_reason=?, version=version+1 WHERE id=?", (stamp, reason, incident["id"]))
+
+
+def reconcile_incidents(conn, at=None, sensor_id=None):
+    """Close obsolete monitoring contexts atomically with their cloud delivery.
+
+    A context closure does not claim the light returned to a safe level. The
+    reason travels with the versioned incident, and the next context starts fresh.
+    """
+    at = at or datetime.now(timezone.utc)
+    query = "SELECT * FROM incidents WHERE status IN ('open','acknowledged')"
+    rows = conn.execute(query + (" AND sensor_id=?" if sensor_id else ""), (sensor_id,) if sensor_id else ()).fetchall()
+    for incident in rows:
+        greenhouse = get_sensor_greenhouse(conn, incident["sensor_id"])
+        phase = get_phase_for_sensor(conn, incident["sensor_id"], at)
+        reason = None
+        version = configuration_version(greenhouse)
+        if not greenhouse or greenhouse["id"] != incident["greenhouse_id"]:
+            reason = "assignment_changed"
+        elif not phase or phase["phase_type"] != incident["phase_type"]:
+            reason = "phase_ended"
+        elif (incident["context_version"] or incident["config_version"]) and (incident["context_version"] or incident["config_version"]) != version:
+            reason = "configuration_changed"
+        elif phase["phase_type"] == "illumination":
+            opened = parse_datetime(incident["opened_at"])
+            if classify_reading(0, phase, at) == "unclassified" or (opened and illumination_session(phase, opened) != illumination_session(phase, at)):
+                reason = "monitoring_window_ended"
+        if reason:
+            resolve_incident(conn, incident, reason, at)
+        else:
+            if not incident["context_version"]:
+                # Legacy confirmations have no fingerprint. Establish a local
+                # lifecycle baseline without rewriting their triggering evidence.
+                conn.execute("UPDATE incidents SET context_version=? WHERE id=?", (version, incident["id"]))
+            continue
+        enqueue_delivery(conn, {"kind": "incident", "delivery_id": str(uuid.uuid4()),
+            "recorded_at": at.astimezone(timezone.utc).isoformat(timespec="microseconds"),
+            "incident": incident_snapshot(conn, incident["id"])})
+
+
+def reconcile_incident_lifecycle():
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        reconcile_incidents(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def handle_incident(conn, sensor_id, greenhouse_id, lux, classification, phase_type):
@@ -481,15 +615,17 @@ def require_manager(handler):
 
 @app.route("/api/readings", methods=["GET"])
 def get_readings():
-    conn = get_db(); sensor_id = request.args.get("sensor_id"); greenhouse_id = request.args.get("greenhouse_id"); start = request.args.get("start"); end = request.args.get("end")
+    try: start, end = history_bounds()
+    except ValueError as error: return jsonify({"error": str(error)}), 400
+    conn = get_db(); sensor_id = request.args.get("sensor_id"); greenhouse_id = request.args.get("greenhouse_id")
     try: limit = max(1, min(int(request.args.get("limit", 100)), 100000))
     except ValueError: limit = 100
     query = "SELECT * FROM readings WHERE 1=1"; params = []
     if sensor_id: query += " AND sensor_id = ?"; params.append(sensor_id)
     if greenhouse_id: query += " AND greenhouse_id = ?"; params.append(greenhouse_id)
-    if start: query += " AND recorded_at >= ?"; params.append(start)
-    if end: query += " AND recorded_at <= ?"; params.append(end)
-    query += " ORDER BY recorded_at ASC LIMIT ?"; params.append(limit)
+    if start is not None: query += " AND recorded_at_epoch >= ?"; params.append(start)
+    if end is not None: query += " AND recorded_at_epoch <= ?"; params.append(end)
+    query += " ORDER BY recorded_at_epoch ASC, id ASC LIMIT ?"; params.append(limit)
     rows = conn.execute(query, params).fetchall(); conn.close()
     return jsonify([dict(row) for row in rows])
 
@@ -533,17 +669,17 @@ def create_reading():
             if existing["sensor_id"] != sensor_id or existing["lux"] != lux:
                 return jsonify({"error": "reading_id reused with different content"}), 409
             return jsonify(dict(existing)), 200
+        recorded_at = now_iso()
+        captured_at = parse_datetime(recorded_at)
+        reconcile_incidents(conn, captured_at, sensor_id)
         greenhouse = get_sensor_greenhouse(conn, sensor_id)
-        phase = get_phase_for_sensor(conn, sensor_id)
-        classification = classify_reading(lux, phase) or "unclassified"
+        phase = get_phase_for_sensor(conn, sensor_id, captured_at)
+        classification = classify_reading(lux, phase, captured_at) or "unclassified"
         phase_type = phase["phase_type"] if phase else "unconfigured"
         greenhouse_id = greenhouse["id"] if greenhouse else None
-        recorded_at = now_iso()
-        config = dict(greenhouse) if greenhouse else {}
-        config["dark_phase_days"] = DARK_PHASE_DAYS
-        config_version = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-        cursor = conn.execute("INSERT INTO readings(sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version) VALUES (?,?,?,?,?,?,?,?)",
-            (sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version))
+        config_version = configuration_version(greenhouse)
+        cursor = conn.execute("INSERT INTO readings(sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version,recorded_at_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
+            (sensor_id,greenhouse_id,lux,recorded_at,classification,phase_type,reading_uid,config_version,captured_at.timestamp()))
         incident_id, incident_status = (None, "waiting")
         if phase:
             incident_id, incident_status = handle_incident(conn,sensor_id,greenhouse_id,lux,classification,phase_type)
@@ -562,6 +698,7 @@ def incident_snapshot(conn, incident_id):
     row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
     if not row: return None
     value = dict(row)
+    value.pop("context_version", None)
     value["triggering_readings"] = json.loads(value["triggering_readings"])
     if not value["triggering_readings"]: value["legacy"] = True
     return value
@@ -591,6 +728,8 @@ def flush_outbox(post=None):
     conn.close()
     delivered = 0
     for entry in entries:
+        # A long offline backlog must not delay time-based incident closure.
+        reconcile_incident_lifecycle()
         ok = _deliver(json.loads(entry["payload"]),post)
         conn = get_db()
         if ok:
@@ -625,7 +764,9 @@ def import_legacy_retry_queue():
 
 def outbox_loop():
     while True:
-        try: flush_outbox()
+        try:
+            reconcile_incident_lifecycle()
+            flush_outbox()
         except Exception as error: print(f"[OUTBOX ERROR] {error}")
         _outbox_wake.wait(15)
         _outbox_wake.clear()
@@ -717,24 +858,26 @@ def acknowledge_incident(incident_id):
 
 @app.route("/api/hardware-activity", methods=["GET"])
 def hardware_activity():
-    conn = get_db(); greenhouse_id = request.args.get("greenhouse_id"); sensor_ids = request.args.getlist("sensor_id"); start = request.args.get("start"); end = request.args.get("end")
+    try: start, end = history_bounds()
+    except ValueError as error: return jsonify({"error": str(error)}), 400
+    conn = get_db(); greenhouse_id = request.args.get("greenhouse_id"); sensor_ids = request.args.getlist("sensor_id")
     query = "SELECT * FROM readings WHERE 1=1"; params = []
     if greenhouse_id: query += " AND greenhouse_id = ?"; params.append(greenhouse_id)
     if sensor_ids:
         query += f" AND sensor_id IN ({','.join('?' for _ in sensor_ids)})"; params.extend(sensor_ids)
-    if start: query += " AND recorded_at >= ?"; params.append(start)
-    if end: query += " AND recorded_at <= ?"; params.append(end)
-    query += " ORDER BY recorded_at ASC"; rows = conn.execute(query, params).fetchall(); conn.close()
+    if start is not None: query += " AND recorded_at_epoch >= ?"; params.append(start)
+    if end is not None: query += " AND recorded_at_epoch <= ?"; params.append(end)
+    query += " ORDER BY recorded_at_epoch ASC, id ASC"; rows = conn.execute(query, params).fetchall(); conn.close()
     return jsonify({"readings": [dict(row) for row in rows], "count": len(rows)})
 
 
 @app.route("/api/dashboard", methods=["GET"])
 def dashboard():
     conn = get_db(); phase = get_active_phase(conn)
-    rows = conn.execute("SELECT * FROM readings ORDER BY recorded_at DESC LIMIT 300").fetchall()
+    rows = conn.execute("SELECT * FROM readings ORDER BY recorded_at_epoch DESC, id DESC LIMIT 300").fetchall()
     incidents = conn.execute("SELECT * FROM incidents ORDER BY opened_at DESC LIMIT 100").fetchall(); conn.close()
     health = get_db()
-    pending = health.execute("SELECT count(*) AS n, min(created_at) AS oldest FROM delivery_outbox").fetchone()
+    pending = health.execute("SELECT count(*) AS n, (SELECT created_at FROM delivery_outbox ORDER BY julianday(created_at) LIMIT 1) AS oldest FROM delivery_outbox").fetchone()
     failures = health.execute("SELECT count(*) FROM delivery_outbox WHERE attempts > 0").fetchone()[0]
     health.close()
     return jsonify({"phase":phase,"readings":[dict(row) for row in reversed(rows)],"incidents":[dict(row) for row in incidents],"generatedAt":now_iso(),
@@ -770,14 +913,26 @@ def sync_dark_phase_duration_from_supabase():
     global DARK_PHASE_DAYS
     if not supabase_configured(): return DARK_PHASE_DAYS
     rows = supabase_select("system_settings", {"key": "eq.dark_phase_duration_days", "select": "value", "limit": 1})
-    if not rows:
-        DARK_PHASE_DAYS = DARK_PHASE_DAYS_DEFAULT
-        return DARK_PHASE_DAYS
     try:
-        parsed = int(str(rows[0].get("value", "")).strip())
-        DARK_PHASE_DAYS = parsed if parsed >= 1 else DARK_PHASE_DAYS_DEFAULT
+        parsed = int(str(rows[0].get("value", "")).strip()) if rows else DARK_PHASE_DAYS_DEFAULT
+        new_days = parsed if parsed >= 1 else DARK_PHASE_DAYS_DEFAULT
     except (TypeError, ValueError):
-        DARK_PHASE_DAYS = DARK_PHASE_DAYS_DEFAULT
+        new_days = DARK_PHASE_DAYS_DEFAULT
+    conn = get_db()
+    previous = DARK_PHASE_DAYS
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        reconcile_incidents(conn)
+        DARK_PHASE_DAYS = new_days
+        conn.execute("INSERT INTO supabase_sync_state(key,value) VALUES ('dark_phase_days',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(new_days),))
+        reconcile_incidents(conn)
+        conn.commit()
+    except Exception:
+        DARK_PHASE_DAYS = previous
+        raise
+    finally:
+        conn.close()
+    _outbox_wake.set()
     return DARK_PHASE_DAYS
 
 
@@ -796,21 +951,28 @@ def sync_greenhouses_from_supabase():
     registry = supabase_select("sensor_list", {"select": "sensor_id"})
 
     conn = get_db()
-    conn.execute("DELETE FROM greenhouse_sensors")
-    conn.execute("DELETE FROM greenhouses")
-    conn.execute("DELETE FROM registered_sensors")
-    conn.executemany("INSERT OR IGNORE INTO registered_sensors(sensor_id) VALUES (?)", [(row["sensor_id"],) for row in registry])
-    for row in greenhouses:
-        conn.execute(
-            "INSERT INTO greenhouses (id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-            (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"][:5], row["window_end"][:5], 1 if row["is_active"] else 0, row["updated_at"])
-        )
-    for row in sensors:
-        conn.execute(
-            "INSERT INTO greenhouse_sensors (greenhouse_id, sensor_id) VALUES (?,?)",
-            (row["greenhouse_id"], row["sensor_id"])
-        )
-    conn.commit(); conn.close()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        reconcile_incidents(conn)
+        conn.execute("DELETE FROM greenhouse_sensors")
+        conn.execute("DELETE FROM greenhouses")
+        conn.execute("DELETE FROM registered_sensors")
+        conn.executemany("INSERT OR IGNORE INTO registered_sensors(sensor_id) VALUES (?)", [(row["sensor_id"],) for row in registry])
+        for row in greenhouses:
+            conn.execute(
+                "INSERT INTO greenhouses (id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"][:5], row["window_end"][:5], 1 if row["is_active"] else 0, row["updated_at"])
+            )
+        for row in sensors:
+            conn.execute(
+                "INSERT INTO greenhouse_sensors (greenhouse_id, sensor_id) VALUES (?,?)",
+                (row["greenhouse_id"], row["sensor_id"])
+            )
+        reconcile_incidents(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    _outbox_wake.set()
     return len(greenhouses)
 
 

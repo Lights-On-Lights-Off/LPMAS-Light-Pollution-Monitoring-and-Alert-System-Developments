@@ -5,7 +5,7 @@ import json
 import os
 import re
 import subprocess
-import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -58,8 +58,71 @@ def push_tunnel_url(url):
     try:
         status = supabase_request("system_settings", [{"key": "pi_api_url", "value": url, "updated_at": now_iso()}], "key")
         print(f"[TUNNEL SYNC] pushed pi_api_url={url} status={status}")
+        return True
     except RuntimeError as error:
         print(f"[TUNNEL SYNC ERROR] {error}")
+        return False
+
+
+class TunnelPublisher:
+    """Retry the latest discovered URL independently of cloudflared output.
+
+    One worker serializes publications. Rotation replaces the pending URL, and
+    shutdown joins the worker before another tunnel can start publishing.
+    """
+    def __init__(self, publish=None, clock=None):
+        self.publish = publish or push_tunnel_url
+        self.clock = clock or time.monotonic
+        self.condition = threading.Condition()
+        self.url = None
+        self.next_attempt = None
+        self.attempts = 0
+        self.stopped = False
+        self.thread = None
+
+    def set_url(self, url):
+        with self.condition:
+            if url == self.url or self.stopped: return
+            self.url = url
+            self.attempts = 0
+            self.next_attempt = self.clock()
+            self.condition.notify_all()
+
+    def publish_due(self):
+        with self.condition:
+            if self.stopped or self.next_attempt is None or self.clock() < self.next_attempt:
+                return False
+            url = self.url
+        try:
+            accepted = self.publish(url)
+        except Exception as error:
+            print(f"[TUNNEL SYNC ERROR] publication failed: {type(error).__name__}")
+            accepted = False
+        with self.condition:
+            if self.url == url:
+                self.attempts += 1
+                self.next_attempt = None if accepted else self.clock() + min(60, 5 * 2 ** min(self.attempts - 1, 4))
+        return True
+
+    def run(self):
+        while True:
+            with self.condition:
+                if self.stopped: return
+                delay = None if self.next_attempt is None else max(0, self.next_attempt - self.clock())
+                if delay is None or delay > 0:
+                    self.condition.wait(delay)
+                    continue
+            self.publish_due()
+
+    def start(self):
+        self.thread = threading.Thread(target=self.run, name="tunnel-publication", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        with self.condition:
+            self.stopped = True
+            self.condition.notify_all()
+        if self.thread: self.thread.join()
 
 
 def run_tunnel_once():
@@ -75,19 +138,19 @@ def run_tunnel_once():
         text=True,
         bufsize=1,
     )
-    last_url = None
+    publisher = TunnelPublisher()
+    publisher.start()
     try:
         for line in process.stdout:
             print(line, end="")
             match = TUNNEL_URL_PATTERN.search(line)
             if match:
                 url = match.group(0)
-                if url != last_url:
-                    last_url = url
+                if url != publisher.url:
                     print(f"[TUNNEL SYNC] detected new tunnel URL: {url}")
-                    if supabase_configured(): push_tunnel_url(url)
-                    else: print("[TUNNEL SYNC ERROR] SUPABASE_URL/SUPABASE_SECRET_KEY missing, cannot publish URL")
+                    publisher.set_url(url)
     finally:
+        publisher.stop()
         process.wait()
     return process.returncode
 

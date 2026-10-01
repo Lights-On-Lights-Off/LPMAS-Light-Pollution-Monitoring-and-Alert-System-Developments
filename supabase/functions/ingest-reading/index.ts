@@ -23,6 +23,9 @@ export interface IncidentSnapshot {
   peak_lux: number;
   lowest_lux: number;
   reason: string;
+  config_version?: string | null;
+  resolution_reason?: "safe_reading" | "phase_ended" | "assignment_changed" |
+    "configuration_changed" | "monitoring_window_ended" | null;
   triggering_readings: Array<
     {
       sensor_id: string;
@@ -31,6 +34,7 @@ export interface IncidentSnapshot {
       classification: string;
       recorded_at: string;
       lux: number;
+      config_version?: string;
     }
   >;
 }
@@ -134,10 +138,21 @@ export function validateDelivery(
         ? !timestamp(i.resolved_at)
         : i.resolved_at !== null)
     ) return fail("Invalid incident snapshot");
+    if (i.config_version != null && !identifier(i.config_version)) {
+      return fail("Invalid incident configuration");
+    }
+    if (i.resolution_reason != null && (
+      i.status !== "resolved" ||
+      !["safe_reading", "phase_ended", "assignment_changed", "configuration_changed", "monitoring_window_ended"].includes(i.resolution_reason)
+    )) return fail("Invalid incident resolution reason");
+    if (i.resolved_at && Date.parse(i.resolved_at) < Date.parse(i.opened_at)) {
+      return fail("Incident resolution precedes opening");
+    }
     if (
       p.kind === "reading" &&
       (i.sensor_id !== p.sensor_id || i.greenhouse_id !== p.greenhouse_id ||
-        i.phase_type !== p.phase_type)
+        i.phase_type !== p.phase_type ||
+        (i.config_version != null && i.config_version !== p.config_version))
     ) return fail("Incident context differs from reading");
     if (
       !Array.isArray(i.triggering_readings) ||
@@ -153,6 +168,9 @@ export function validateDelivery(
         classifyReading(r.lux, i.phase_type) !== "violation" ||
         !timestamp(r.recorded_at)
       ) return fail("Invalid triggering sequence");
+      if (i.config_version != null && r.config_version !== i.config_version) {
+        return fail("Triggering sequence crosses configurations");
+      }
       const current = Date.parse(r.recorded_at);
       if (previous && (current <= previous || current - previous > 15_000)) {
         return fail("Triggering sequence interrupted");

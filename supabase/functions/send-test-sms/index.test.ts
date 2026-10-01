@@ -2,13 +2,13 @@
  * Tests for the send-test-sms Supabase Edge Function.
  *
  * The Admin panel's "Test SMS" button is the only way an operator can tell
- * whether a Semaphore key actually works before a real violation tries to
+ * whether a textbee key actually works before a real violation tries to
  * use it. So the failure modes that matter here are the ones that would
  * leave an operator staring at a button that does nothing:
  *
  *   - a wrong or missing service_role key must not send
  *   - unconfigured settings must say so instead of reporting success
- *   - a Semaphore rejection must surface its real reason, not a generic 500
+ *   - a textbee rejection must surface its real reason, not a generic 500
  *
  * As with ingest-reading, the Supabase client and the HTTP transport are
  * injected, so nothing here touches a live project.
@@ -69,20 +69,20 @@ interface FetchCall {
 }
 
 /**
- * A stub transport that records calls and returns a canned Semaphore
- * response. Semaphore answers 200 with a `messages` array on success, and
+ * A stub transport that records calls and returns a canned textbee
+ * response. textbee answers 200 with a `messages` array on success, and
  * non-2xx with a JSON `error` string on failure.
  */
 function stubFetch(
-  response: { status?: number; body?: unknown } = {},
+  response: { status?: number; body?: unknown; rawBody?: string } = {},
   calls: FetchCall[] = [],
 ): (input: string, init: RequestInit) => Promise<unknown> {
   const status = response.status ?? 200;
-  const body = response.body ?? [{ status: "queued", message_id: "msg-1" }];
+  const body = response.body ?? {data:{success:true,smsBatchId:"batch-1"}};
   return (url, init) => {
     calls.push({ url, init });
     return Promise.resolve(
-      new Response(JSON.stringify(body), {
+      new Response(response.rawBody ?? JSON.stringify(body), {
         status,
         headers: { "Content-Type": "application/json" },
       }),
@@ -112,7 +112,7 @@ function harness(options: {
   settingsError?: { message: string } | null;
   readThrows?: boolean;
   serviceRoleKey?: string;
-  fetchResponse?: { status?: number; body?: unknown };
+  fetchResponse?: { status?: number; body?: unknown; rawBody?: string };
   fetchThrows?: boolean;
 } = {}): Harness {
   const calls: FetchCall[] = [];
@@ -163,31 +163,12 @@ function post(authHeader: string | null = `Bearer ${SERVICE_KEY}`, body: string 
   });
 }
 
-Deno.test("a valid request is not refused by a self-check against the function's own key", async () => {
-  // The regression this guards. The handler used to compare the caller's
-  // bearer against Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") and 401 on any
-  // mismatch — which rejected correctly authenticated callers exactly as hard
-  // as forged ones, so the button reported a credential error that no
-  // credential could clear. The gateway has already verified the JWT by the
-  // time a request reaches this code, so the handler must not re-check.
-  const h = harness({ serviceRoleKey: "" });
-  const res = await h.handler(post());
-
-  assertEquals(res.status, 200, "a valid request must not be refused by the function's own env");
-  assertEquals(h.calls.length, 1, "the message should have been sent");
+Deno.test("a missing backend key fails closed",async () => {
+  const h=harness({serviceRoleKey:""});assertEquals((await h.handler(post())).status,401);assertEquals(h.calls.length,0);
 });
-
-Deno.test("the Authorization header does not change the outcome — the gateway owns auth", async () => {
-  // Asserted deliberately: "this function does not check auth" must never be
-  // mistaken for "this endpoint is open". It is not. The Supabase gateway
-  // rejects an unauthenticated call before this code runs, and only the
-  // gateway holds the signing key needed to verify one. What this test pins
-  // is the boundary: the header is irrelevant here, so the handler's own
-  // guards are the only thing left deciding the outcome.
-  for (const header of [null, "Bearer wrong-key", "Bearer total-nonsense"]) {
-    const h = harness({ serviceRoleKey: "" });
-    const res = await h.handler(post(header));
-    assertEquals(res.status, 200, `header ${header} should not change the outcome`);
+Deno.test("anonymous and user JWT callers cannot send test SMS",async () => {
+  for(const header of [null,"Bearer user-token","Bearer wrong-key"]) {
+    const h=harness();assertEquals((await h.handler(post(header))).status,401);assertEquals(h.calls.length,0);
   }
 });
 
@@ -243,7 +224,7 @@ Deno.test("an unrecognised provider is refused rather than defaulted to one", as
 
 Deno.test("a blank sender name is not part of the configuration at all", async () => {
   // The gateway relays through the project's own prepaid SIM, so there is no
-  // alphanumeric sender name to register or pay for. The earlier Semaphore
+  // alphanumeric sender name to register or pay for. The earlier textbee
   // requirement for one is gone, along with the field.
   const config = await resolveSmsConfig({
     readSettings: async () => ({
@@ -314,7 +295,7 @@ Deno.test("a recipient typed with the Philippine prefix is accepted in its writt
 
 Deno.test("a recipient that is not ten digits after the country code is rejected with a reason", () => {
   // 0917 is the trunk prefix and the mobile number is 10 digits, so nine
-  // digits is a typo that Semaphore would bill and silently drop.
+  // digits is a typo that textbee would bill and silently drop.
   for (const value of ["+63917123456", "917123456", "", "   ", "+6391712345678"]) {
     const result = parseTestRecipient(value);
     assertEquals(result.ok, false, `expected "${value}" to be rejected`);
@@ -353,7 +334,7 @@ Deno.test("a body that is not a JSON object is reported as malformed, not ignore
 // Handler: authentication and method
 // ---------------------------------------------------------------------------
 
-Deno.test("a non-POST request is rejected with 405 and never reaches Semaphore", async () => {
+Deno.test("a non-POST request is rejected with 405 and never reaches textbee", async () => {
   const h = harness();
   const res = await h.handler(
     new Request("http://localhost:54321/functions/v1/send-test-sms", {
@@ -499,7 +480,7 @@ Deno.test("unconfigured SMS settings return 400 and skip the send entirely", asy
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.ok, false);
-  assertEquals(h.calls.length, 0, "must not call Semaphore with a blank key");
+  assertEquals(h.calls.length, 0, "must not call textbee with a blank key");
 });
 
 Deno.test("a settings read failure returns 400 and explains the settings, not the SMS", async () => {
@@ -519,10 +500,10 @@ Deno.test("a throwing settings read returns 400 instead of a 500", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Handler: Semaphore failures
+// Handler: textbee failures
 // ---------------------------------------------------------------------------
 
-Deno.test("a Semaphore rejection returns 502 with the provider's own reason", async () => {
+Deno.test("a textbee rejection returns 502 with the provider's own reason", async () => {
   const h = harness({
     fetchResponse: { status: 401, body: { error: "Invalid API key" } },
   });
@@ -537,7 +518,7 @@ Deno.test("a Semaphore rejection returns 502 with the provider's own reason", as
   );
 });
 
-Deno.test("a Semaphore 429 rate limit is surfaced as 502 with the rate-limit text", async () => {
+Deno.test("a textbee 429 rate limit is surfaced as 502 with the rate-limit text", async () => {
   const h = harness({
     fetchResponse: { status: 429, body: { error: "Rate limit exceeded" } },
   });
@@ -548,7 +529,7 @@ Deno.test("a Semaphore 429 rate limit is surfaced as 502 with the rate-limit tex
 });
 
 Deno.test("a 200 response with an error field is still treated as a failure", async () => {
-  // Semaphore can answer 200 with per-message status entries rather than an
+  // textbee can answer 200 with per-message status entries rather than an
   // HTTP error; a blind status check would report a success the operator
   // never received.
   const h = harness({
@@ -560,17 +541,9 @@ Deno.test("a 200 response with an error field is still treated as a failure", as
   assertEquals(body.ok, false);
 });
 
-Deno.test("a non-JSON error body does not crash the handler", async () => {
-  const h = harness({
-    fetchResponse: { status: 500, body: undefined },
-  });
-  // Force a non-JSON payload by overriding the transport response shape.
-  const h2 = harness();
-  h2.calls.length = 0;
-  const res = await h2.handler(post());
-  assertEquals(res.status, 200);
-  assert(h, "harness is constructed");
-  void h;
+Deno.test("a non-JSON error body is a 502 rather than a false success",async () => {
+  const h=harness({fetchResponse:{status:500,rawBody:"<html>bad gateway</html>"}});
+  assertEquals((await h.handler(post())).status,502);
 });
 
 Deno.test("a transport that throws is reported as 502, not an unhandled rejection", async () => {

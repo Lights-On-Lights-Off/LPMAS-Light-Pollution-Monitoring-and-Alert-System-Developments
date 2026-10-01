@@ -4,6 +4,7 @@ import { Badge, Card } from "./ui";
 import { acknowledgeIncident, type Reading } from "@/lib/api";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { supabase } from "@/lib/supabase";
+import { incidentOutcome } from "@/lib/monitoring-state";
 type Job = {
   incident_uid: string;
   status: string;
@@ -79,14 +80,15 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
     <Card>
       <h2 className="font-bold text-theme-text">Incidents and notifications</h2>
       <p className="mt-1 text-sm text-theme-muted">
-        Three consecutive violation samples confirm an incident. A safe reading
-        resolves it.
+        Three consecutive violation samples under the same configuration confirm
+        an incident. A safe reading resolves it; an ended monitoring context closes it.
       </p>
       {error && (
         <p role="alert" className="mt-3 text-sm text-theme-danger">{error}</p>
       )}
       <div className="mt-4 space-y-3">
         {incidents.slice(0, 30).map((i) => {
+          const outcome = incidentOutcome(i);
           const job = jobs.find((j) => j.incident_uid === i.incident_uid);
           let trigger: Reading[] = [];
           try {
@@ -104,22 +106,23 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
                   {i.sensor_id} · {i.phase_type}
                 </p>
                 <Badge
-                  tone={i.status === "resolved"
+                  tone={outcome.label === "closed" ? "amber" : i.status === "resolved"
                     ? "green"
                     : i.status === "acknowledged"
                     ? "amber"
                     : "red"}
                 >
-                  {i.status}
+                  {outcome.label}
                 </Badge>
               </div>
               <p className="mt-2 text-xs text-theme-muted">
                 Opened {new Date(i.opened_at).toLocaleString()}
                 {i.resolved_at &&
-                  ` · Resolved ${new Date(i.resolved_at).toLocaleString()}`} ·
+                  ` · ${outcome.label === "closed" ? "Closed" : "Resolved"} ${new Date(i.resolved_at).toLocaleString()}`} ·
                 {" "}
                 {i.lowest_lux}–{i.peak_lux} lux
               </p>
+              {outcome.detail && <p className="mt-1 text-sm text-theme-muted">{outcome.detail}</p>}
               <p className="mt-2 text-sm text-theme-muted">
                 SMS: {job?.status === "accepted"
                   ? "Accepted by provider; handset delivery unconfirmed"

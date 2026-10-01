@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs every check in the project. Safe to run at any time; touches nothing.
+# Runs every check in the project. Local checks write temporary caches. Database checks are opt-in and isolated.
 #
 #   ./scripts/verify.sh
 #
@@ -41,35 +41,25 @@ PY="$VENV/bin/python"
 run "Edge Function tests — ingest-reading" \
   bash -c 'cd supabase/functions/ingest-reading && deno test index.test.ts'
 run "Edge Function tests — send-test-sms" \
-  bash -c 'cd supabase/functions/send-test-sms && deno test index.test.ts'
+  bash -c 'cd supabase/functions/send-test-sms && deno test index.test.ts sms-provider.test.ts'
 run "Edge Function typecheck" \
   bash -c 'cd supabase/functions/ingest-reading && deno check index.ts index.test.ts && cd ../send-test-sms && deno check index.ts index.test.ts'
 run "Web tests" \
   bash -c 'cd web && deno test lib/*.test.ts'
 run "Web typecheck" \
   bash -c 'cd web && npx tsc --noEmit'
-run "Pi forwarding tests" \
-  bash -c "cd pi-server && '$PY' -m pytest test_forwarding.py -q"
-# The monitoring time window's rules — including the overnight wrap that
-# migration 0015 mirrors in SQL — live in their own suite.
-run "Pi monitoring window tests" \
-  bash -c "cd pi-server && '$PY' -m pytest test_monitoring_window.py -q"
+run "Pi tests — delivery, history, lifecycle, monitoring windows and tunnel retries" \
+  bash -c "cd pi-server && '$PY' -m pytest -q"
 
 run "Migration SQL parses" "$PY" scripts/check_sql_syntax.py
 run "RPC contract (SQL vs TypeScript)" \
   deno run --allow-read scripts/check-rpc-contract.ts
 
-# Docker-gated: needs a running daemon, which CI and most laptops do not have.
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  echo "── Migration apply + RLS behaviour"
-  echo "   (run 'supabase db reset' manually to exercise migrations against a real database)"
-  echo "   SKIPPED — not automated; see docs/ or ask for a manual run"
-  echo
+if [ "${LPMAS_VERIFY_DATABASE:-0}" = 1 ]; then
+  run "Fresh database migrations, RLS, replay, leases and concurrency" bash scripts/verify-database.sh
 else
-  echo "── Migrations applied to a real database"
-  echo "   SKIPPED — no Docker daemon. The SQL is parsed, never executed."
-  echo "   Migrations 0009-0013 and the two Edge Functions are UNVERIFIED"
-  echo "   against a live Supabase project."
+  echo "── Database integration"
+  echo "   SKIPPED this run. Run LPMAS_VERIFY_DATABASE=1 bash scripts/verify.sh for an isolated Docker database."
   echo
 fi
 

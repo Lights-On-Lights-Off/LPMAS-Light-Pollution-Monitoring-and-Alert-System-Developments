@@ -7,7 +7,8 @@ import { Card, Badge } from "../ui";
 import { Modal } from "../Modal";
 import { ExportCsvButton } from "../ExportCsvButton";
 import { MonitoringStatus } from "../MonitoringStatus";
-import { sensorHealth } from "@/lib/monitoring-state";
+import { sensorHealth, incidentOutcome } from "@/lib/monitoring-state";
+import type { Incident } from "@/lib/monitoring-types";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { getGreenhouses, type Greenhouse } from "@/lib/api";
 import { listAdminUsers, createAdminUser, updateAdminUserRole, deleteAdminUser, type AdminUser } from "@/lib/adminUsers";
@@ -42,7 +43,7 @@ const LINE_COLORS = ["var(--theme-accent)", "var(--theme-accent-hover)"];
 
 type ActivityLog = { id: number; username: string | null; role: string; action: string; resource: string | null; resource_id: string | null; details: Record<string, unknown> | null; created_at: string };
 type SensorAggregate = { sensor_id: string; greenhouse_id: string; bucket_start: string; phase_type: string; sample_count: number; avg_lux: number; min_lux: number; max_lux: number; safe_count: number; warning_count: number; violation_count: number; updated_at: string };
-type MonitoringIncident = { id: number; pi_incident_id: number; sensor_id: string; greenhouse_id: string; phase_type: string; opened_at: string; resolved_at: string | null; status: "open" | "acknowledged" | "resolved"; peak_lux: number; lowest_lux: number; reason: string; updated_at: string };
+type MonitoringIncident = Incident & { pi_incident_id: number; updated_at: string };
 
 export function AdminView({ section }: { section: string }) {
   const meta = TITLES[section] ?? TITLES.Overview;
@@ -161,7 +162,7 @@ export function AdminView({ section }: { section: string }) {
 
     const [aggregateResult, incidentResult, activityResult] = await Promise.all([
       supabase.from("sensor_minute_aggregates").select("sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at").order("bucket_start", { ascending: false }).limit(500),
-      supabase.from("monitoring_incidents").select("id, pi_incident_id, sensor_id, greenhouse_id, phase_type, opened_at, resolved_at, status, peak_lux, lowest_lux, reason, updated_at").order("opened_at", { ascending: false }).limit(100),
+      supabase.from("monitoring_incidents").select("id, pi_incident_id, sensor_id, greenhouse_id, phase_type, opened_at, resolved_at, status, peak_lux, lowest_lux, reason, resolution_reason, updated_at").order("opened_at", { ascending: false }).limit(100),
       supabase.from("activity_logs").select("id, username, role, action, resource, resource_id, details, created_at").neq("action", "NAVIGATE").order("created_at", { ascending: false }).limit(100)
     ]);
 
@@ -676,7 +677,7 @@ export function AdminView({ section }: { section: string }) {
                         <td className="px-5 py-3.5 text-center text-theme-secondary-text">{greenhouses.find(item => item.id === incident.greenhouse_id)?.name ?? incident.greenhouse_id ?? "Unassigned"}</td>
                         <td className="px-5 py-3.5 text-center capitalize text-theme-secondary-text">{incident.phase_type || "—"}</td>
                         <td className="px-5 py-3.5 text-center">
-                          <span className="inline-flex min-w-[92px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold capitalize text-theme-accent">{incident.status}</span>
+                          <span title={incidentOutcome(incident).detail ?? undefined} className="inline-flex min-w-[92px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold capitalize text-theme-accent">{incidentOutcome(incident).label}</span>
                         </td>
                         <td className="px-5 py-3.5 text-center text-theme-secondary-text">{incident.reason || "—"}</td>
                       </tr>

@@ -28,6 +28,9 @@ export type Incident = {
   peak_lux: number | null;
   lowest_lux: number | null;
   reason: string;
+  config_version?: string | null;
+  resolution_reason?: "safe_reading" | "phase_ended" | "assignment_changed" |
+    "configuration_changed" | "monitoring_window_ended" | null;
   incident_uid?: string;
   version?: number;
   incident_version?: number;

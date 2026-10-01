@@ -217,3 +217,7 @@ Deno.test("the API key never appears in a failure message", () => {
   assert(!JSON.stringify(outcome).includes(KEY), "the key leaked into the outcome");
   assert((outcome.detail ?? "").includes("[redacted]"), "expected the key to be marked redacted");
 });
+
+Deno.test("an unconfirmed 2xx response is not acceptance",() => {
+  for(const body of ["", "<html>ok</html>", "{}", '{"data":{"success":false,"smsBatchId":"x"}}']) assertEquals(interpretTextbeeResponse(200,body).ok,false);
+});
