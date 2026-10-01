@@ -3,5 +3,5 @@
 // Wi-Fi is configured from a nearby phone; network credentials stay in device NVS.
 const char* LPMAS_DEVICE_KEY = "PROVISION_THE_SAME_RANDOM_KEY_AS_THE_PI";
 // Optional unique setup Wi-Fi password, 12–63 printable ASCII characters.
-// Leave empty to generate one once and show it in Serial Monitor at 115200 baud.
+// Leave empty to derive a separate per-device password and show it in Serial Monitor at 115200 baud.
 #define LPMAS_SETUP_PASSWORD ""

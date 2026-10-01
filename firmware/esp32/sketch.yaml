@@ -1,0 +1,8 @@
+default_fqbn: esp32:esp32:esp32
+profiles:
+  esp32:
+    fqbn: esp32:esp32:esp32
+    platforms:
+      - platform: esp32:esp32 (3.3.8)
+    libraries:
+      - WiFiManager (2.0.17)

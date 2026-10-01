@@ -240,7 +240,7 @@ void setup() {
   Serial.println("I2C Bus 2: SDA D21 / SCL D22");
   Serial.println();
 
-  networkSetup.begin(LPMAS_SETUP_PASSWORD);
+  networkSetup.begin(LPMAS_SETUP_PASSWORD, LPMAS_DEVICE_KEY);
 
   Serial.println();
   Serial.println("LPMAS hardware monitoring started");

@@ -1,4 +1,5 @@
 #include "../esp32/network_settings.h"
+#include "../esp32/portal_policy.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -36,5 +37,18 @@ int main() {
   // millis() wrapping at 49 days must not disable recovery, setup expiry or BOOT.
   assert(!elapsed(10, UINT32_MAX - 10, 22)); assert(elapsed(11, UINT32_MAX - 10, 22));
   assert(elapsed(5000, UINT32_MAX - 100, 5000));
-  std::cout << "Firmware settings: network validation, corrupt storage and timer rollover passed.\n";
+  const auto permit = [](bool viaAp, const char* origin, const char* site, const char* path, bool post, const char* token, const char* expected = "session-token") {
+    return portalAccess(viaAp, origin, site, path, post, token, expected);
+  };
+  assert(permit(true, "", "", "/", false, "") == PortalAccess::allow);
+  assert(permit(true, "http://192.168.4.1", "same-origin", "/wifisave", true, "session-token") == PortalAccess::allow);
+  assert(permit(false, "", "", "/wifi", false, "") == PortalAccess::forbidden);
+  assert(permit(true, "https://attacker.invalid", "", "/wifi", false, "") == PortalAccess::forbidden);
+  assert(permit(true, "", "cross-site", "/wifisave", true, "session-token") == PortalAccess::forbidden);
+  assert(permit(true, "", "", "/wifisave", false, "session-token") == PortalAccess::forbidden);
+  assert(permit(true, "", "", "/wifisave", true, "wrong-token") == PortalAccess::forbidden);
+  assert(permit(true, "", "", "/wifisave", true, "", "") == PortalAccess::forbidden);
+  assert(permit(true, "", "", "/erase", false, "") == PortalAccess::unavailable);
+  assert(permit(true, "", "", "/restart", false, "") == PortalAccess::unavailable);
+  std::cout << "Firmware settings: validation, stored backups, timer rollover and portal access passed.\n";
 }
