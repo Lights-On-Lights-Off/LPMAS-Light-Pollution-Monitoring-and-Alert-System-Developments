@@ -78,7 +78,7 @@ function fixture(
           });
         }
         return Promise.resolve({
-          data: name === "claim_notification_jobs" ? options.jobs ?? [] : null,
+          data: name === "claim_greenhouse_notifications" ? options.jobs ?? [] : null,
           error: null,
         });
       },
@@ -217,38 +217,38 @@ Deno.test("worker ticks run without any sensor readings", async () => {
     (await f.handler(f.request({ retry_notifications: true }))).status,
     200,
   );
-  assertEquals(f.calls.map((c) => c.name), ["claim_notification_jobs"]);
+  assertEquals(f.calls.map((c) => c.name), ["claim_greenhouse_notifications"]);
 });
 Deno.test("accepted means provider acceptance, not handset delivery", async () => {
   const f = fixture({
-    jobs: [{ id: "job1", lease_token: "lease1", incident }],
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
   });
   await drainNotifications(f.deps);
-  const finish = f.calls.find((c) => c.name === "finish_notification_job")!;
-  assertEquals(finish.args.p_accepted, true);
+  const finish = f.calls.find((c) => c.name === "finish_greenhouse_notification")!;
+  assertEquals(finish.args.p_outcome, "accepted");
   assert(String(finish.args.p_detail).includes("unconfirmed"));
-  assertEquals(finish.args.p_lease_token, "lease1");
+  assertEquals(finish.args.p_attempt_token, "attempt1");
 });
 Deno.test("rejection remains durable and credentials are redacted", async () => {
   const f = fixture({
-    jobs: [{ id: "job1", lease_token: "lease1", incident }],
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
     provider: new Response(JSON.stringify({ error: "secret rejected" }), {
       status: 401,
     }),
   });
   await drainNotifications(f.deps);
-  const args = f.calls.find((c) => c.name === "finish_notification_job")!.args;
-  assertEquals(args.p_accepted, false);
+  const args = f.calls.find((c) => c.name === "finish_greenhouse_notification")!.args;
+  assertEquals(args.p_outcome, "failed");
   assert(!String(args.p_detail).includes("secret"));
 });
-Deno.test("missing configuration records a retryable notification outcome", async () => {
+Deno.test("missing configuration records failure without retry", async () => {
   const f = fixture({
-    jobs: [{ id: "job1", lease_token: "lease1", incident }],
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
     settings: {},
   });
   await drainNotifications(f.deps);
   assertEquals(f.network.length, 0);
-  assertEquals(f.calls.at(-1)!.args.p_accepted, false);
+  assertEquals(f.calls.at(-1)!.args.p_outcome, "failed");
 });
 Deno.test("oversize and malformed requests fail before database writes", async () => {
   const f = fixture();

@@ -5,6 +5,7 @@ import {
 } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
+import { validAccountEmail } from "@/lib/account-email";
 import {
   parseOfflineThreshold,
   validateManagerPhone,
@@ -23,6 +24,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // write any of them.
 const SETTINGS_KEYS = [
   "manager_phone",
+  "manager_user_id",
   "default_illumination_start",
   "default_illumination_end",
   "dark_phase_duration_days",
@@ -67,6 +69,7 @@ function buildSettingsResponse(
 ) {
   return {
     manager_phone: byKey.get("manager_phone")?.value ?? "",
+    manager_user_id: byKey.get("manager_user_id")?.value ?? "",
     default_illumination_start: byKey.get("default_illumination_start")?.value ?? "",
     default_illumination_end: byKey.get("default_illumination_end")?.value ?? "",
     dark_phase_duration_days: byKey.get("dark_phase_duration_days")?.value ?? "",
@@ -291,6 +294,19 @@ export async function PATCH(request: NextRequest) {
       { error: "No recognized settings provided." },
       { status: 400 }
     );
+  }
+
+  const managerId = updates.find(u => u.key === "manager_user_id")?.value;
+  if (managerId) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(managerId)) {
+      return NextResponse.json({error: "Choose a verified manager account."}, {status: 400});
+    }
+    const [{data: account, error: accountError}, profile] = await Promise.all([
+      admin.auth.admin.getUserById(managerId), admin.from("profiles").select("role").eq("id", managerId).maybeSingle(),
+    ]);
+    if (accountError || profile.error || profile.data?.role !== "manager" || !account.user?.email || !validAccountEmail(account.user.email) || !account.user.email_confirmed_at) {
+      return NextResponse.json({error: "Choose a verified manager account."}, {status: 400});
+    }
   }
 
   if (updates.some(u => u.key === "dark_phase_duration_days")) {

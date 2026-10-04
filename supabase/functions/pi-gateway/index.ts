@@ -1,5 +1,6 @@
 import { backendAuthorized } from "../_shared/backend-auth.ts";
 import { createHandler as createIngestHandler } from "../ingest-reading/index.ts";
+import { gmailSender } from "../_shared/gmail.ts";
 
 export interface GatewayDeps {
   piToken: string;
@@ -73,7 +74,7 @@ if (import.meta.main) {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   const client = createClient(Deno.env.get("SUPABASE_URL") ?? "", serviceRoleKey, {auth:{persistSession:false}});
   const ingest = createIngestHandler({
-    client, serviceRoleKey,
+    client, serviceRoleKey, sendEmail:gmailSender(client),
     async readSettings() {
       const {data,error} = await client.from("system_settings").select("key,value").in("key",["sms_provider","textbee_api_key","manager_phone"]);
       if (error) throw error;

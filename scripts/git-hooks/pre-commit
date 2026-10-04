@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Refuses any commit that would add agent working files to the repository.
+#
+# These files (plans, specs, SDD ledgers, the operations log, the standing
+# rules, the agent config) are local-only by owner decision. They are
+# intentionally NOT in .gitignore so they stay visible as untracked files in
+# the editor, which means this hook is what actually prevents them from being
+# committed and pushed.
+#
+# Install with: ./scripts/install-git-hooks.sh
+
+set -uo pipefail
+
+# Paths that must never enter a commit.
+FORBIDDEN_PATTERNS=(
+  '.superpowers/'
+  'docs/superpowers/'
+  'opencode.json'
+  'AGENTS.md'
+  'CLAUDE.md'
+  'GEMINI.md'
+)
+
+# Only examine what this commit would actually add, not the whole tree.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+violations=()
+for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+  while IFS= read -r file; do
+    [ -n "$file" ] && violations+=("$file")
+  done < <(printf '%s\n' "$staged" | grep -F -- "$pattern" || true)
+done
+
+if [ ${#violations[@]} -gt 0 ]; then
+  echo "COMMIT BLOCKED — agent working files must not be committed:" >&2
+  printf '  %s\n' "${violations[@]}" >&2
+  echo >&2
+  echo "These are local-only by owner decision. Unstage them with:" >&2
+  echo "  git restore --staged <path>" >&2
+  exit 1
+fi
+
+exit 0

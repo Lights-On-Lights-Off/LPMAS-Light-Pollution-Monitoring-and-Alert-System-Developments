@@ -39,7 +39,7 @@ fi
 PY="$VENV/bin/python"
 
 run "Edge Function tests — ingest-reading" \
-  bash -c 'cd supabase/functions/ingest-reading && deno test index.test.ts'
+  bash -c 'cd supabase/functions/ingest-reading && deno test index.test.ts notifications.test.ts ../_shared/gmail.test.ts'
 run "Edge Function tests — send-test-sms" \
   bash -c 'cd supabase/functions/send-test-sms && deno test index.test.ts sms-provider.test.ts'
 run "Edge Function tests — scoped Pi gateway" \

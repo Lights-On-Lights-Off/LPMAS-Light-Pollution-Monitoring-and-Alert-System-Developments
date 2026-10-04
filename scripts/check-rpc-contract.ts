@@ -1,6 +1,6 @@
 /**
  * Cross-layer check: do the TypeScript Edge Functions and the SQL migrations
- * agree on every RPC they share?
+ * agree on every RPC they share, including Gmail authorization routes?
  *
  * A mismatch here is the most expensive kind of bug in this system: both
  * layers typecheck, both parse, and the pipeline still fails at runtime with
@@ -190,6 +190,9 @@ for (const fn of sqlFunctions) {
 
 const tsCalls: RpcCall[] = [];
 for (const path of await listFiles("supabase/functions", "index.ts")) {
+  tsCalls.push(...parseRpcCalls(await Deno.readTextFile(path), path));
+}
+for (const path of ["supabase/functions/_shared/gmail.ts", ...await listFiles("web/app/api/admin/gmail", "route.ts")]) {
   tsCalls.push(...parseRpcCalls(await Deno.readTextFile(path), path));
 }
 

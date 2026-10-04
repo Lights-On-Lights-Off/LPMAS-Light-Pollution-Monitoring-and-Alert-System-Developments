@@ -1,6 +1,7 @@
-/** Idempotent Pi ingestion. The Pi owns incident confirmation; minute counts
- * are summaries only. Notification jobs are durable, leased and retried. */
+/** Idempotent Pi ingestion. Supabase derives greenhouse episodes from existing
+ * readings; Pi sensor reports remain unchanged. Attempts are consumed before sending. */
 import { backendAuthorized } from "../_shared/backend-auth.ts";
+import { gmailSender, validEmail } from "../_shared/gmail.ts";
 import {
   buildSendRequest,
   interpretTextbeeResponse,
@@ -37,6 +38,11 @@ export interface IncidentSnapshot {
       config_version?: string;
     }
   >;
+  greenhouse_alert?: {
+    incident_uid: string; greenhouse_id: string; version: number;
+    opened_at: string; resolved_at: string | null;
+    status: "open" | "resolved" | "closed"; legacy: boolean;
+  } | null;
 }
 export interface Delivery {
   kind: "reading" | "incident";
@@ -64,6 +70,7 @@ export interface HandlerDeps {
   fetchImpl(input: string, init: RequestInit): Promise<Response>;
   log(level: "info" | "error", message: string): void;
   spawn(task: Promise<unknown>): void;
+  sendEmail?(recipient: string, message: string): Promise<"accepted" | "failed" | "unknown">;
 }
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -123,6 +130,16 @@ export function validateDelivery(
   const i = p.incident as IncidentSnapshot | null;
   if (p.kind === "incident" && !i) return fail("Incident snapshot required");
   if (i != null) {
+    const g = i.greenhouse_alert;
+    if (g != null && (typeof g !== "object" || !UUID.test(g.incident_uid) ||
+      g.greenhouse_id !== i.greenhouse_id || !Number.isSafeInteger(g.version) || g.version < 1 ||
+      !timestamp(g.opened_at) || Date.parse(g.opened_at) > Date.parse(i.opened_at) ||
+      typeof g.legacy !== "boolean" || !["open", "resolved", "closed"].includes(g.status) ||
+      (g.status === "open" ? g.resolved_at !== null : !timestamp(g.resolved_at) || Date.parse(g.resolved_at) < Date.parse(g.opened_at)) ||
+      (g.status !== "open" && (i.status !== "resolved" || !timestamp(i.resolved_at) || Date.parse(String(g.resolved_at)) < Date.parse(i.resolved_at))) ||
+      (g.status === "resolved" && (i.status !== "resolved" || i.resolution_reason !== "safe_reading")))) {
+      return fail("Invalid greenhouse episode");
+    }
     if (
       typeof i !== "object" || !Number.isSafeInteger(i.id) || i.id < 1 ||
       !Number.isSafeInteger(i.version) || i.version < 1 ||
@@ -190,62 +207,52 @@ function json(status: number, body: unknown) {
 }
 interface NotificationJob {
   id: string;
-  lease_token: string;
-  incident: IncidentSnapshot;
+  attempt_token: string;
+  event: "opened" | "recovered";
+  channel: "sms" | "email";
+  recipient: string | null;
+  message: string;
 }
 export async function drainNotifications(deps: HandlerDeps): Promise<number> {
-  const claim = await deps.client.rpc("claim_notification_jobs", {
+  const claim = await deps.client.rpc("claim_greenhouse_notifications", {
     p_limit: 5,
   });
   if (claim.error) throw new Error(claim.error.message);
   let count = 0;
   for (const job of (claim.data ?? []) as NotificationJob[]) {
-    let accepted = false,
-      detail = "SMS not configured",
-      recipient = "",
-      secret = "";
+    let outcome: "accepted" | "failed" | "unknown" = "failed";
+    let sending = false;
     try {
-      const config = resolveProvider(await deps.readSettings());
-      if (config) {
-        recipient = config.recipient;
-        secret = config.apiKey;
-        const i = job.incident;
-        // ASCII avoids accidental multi-segment UCS-2 messages. Keep identifiers
-        // compact; full incident details remain available in the dashboard.
-        const message = `LPMAS ${i.phase_type} violation: ${
-          i.sensor_id.slice(0, 24)
-        } at ${
-          i.greenhouse_id.slice(0, 24)
-        }. ${i.lowest_lux}-${i.peak_lux} lux. ${i.opened_at.slice(0, 19)}`
-          .replace(/[^\x20-\x7E]/g, "?").slice(0, 160);
-        const request = buildSendRequest(config, message);
-        if (!request.ok) detail = request.error;
-        else {
+      if (job.channel === "email") {
+        if (validEmail(job.recipient) && deps.sendEmail) outcome = await deps.sendEmail(job.recipient, job.message);
+      } else if (job.channel === "sms" && job.recipient) {
+        const config = resolveProvider({...await deps.readSettings(), manager_phone: job.recipient});
+        const request = config ? buildSendRequest(config, job.message) : null;
+        if (request?.ok && config) {
+          sending = true;
           const response = await deps.fetchImpl(request.url, {
             ...request.init,
+            redirect: "error",
             signal: AbortSignal.timeout(10_000),
           });
-          const outcome = interpretTextbeeResponse(
+          const result = interpretTextbeeResponse(
             response.status,
             await response.text(),
-            secret,
+            config.apiKey,
           );
-          accepted = outcome.ok;
-          detail = accepted
-            ? "Accepted by provider; handset delivery unconfirmed"
-            : outcome.detail ?? "Provider rejected SMS";
+          outcome = result.ok ? "accepted" : response.status >= 500 ? "unknown" : "failed";
         }
       }
-    } catch (error) {
-      detail = error instanceof Error ? error.message : "SMS request failed";
+    } catch {
+      outcome = sending || job.channel === "email" ? "unknown" : "failed";
     }
-    if (secret) detail = detail.split(secret).join("[redacted]");
-    const finish = await deps.client.rpc("finish_notification_job", {
+    const finish = await deps.client.rpc("finish_greenhouse_notification", {
       p_id: job.id,
-      p_lease_token: job.lease_token,
-      p_accepted: accepted,
-      p_detail: detail,
-      p_recipient: recipient,
+      p_attempt_token: job.attempt_token,
+      p_outcome: outcome,
+      p_detail: outcome === "accepted" ? "Accepted by provider; recipient delivery unconfirmed"
+        : outcome === "unknown" ? "Acceptance unknown; attempt will not be retried"
+        : "Not accepted or sending configuration unavailable; attempt will not be retried",
     });
     if (finish.error) throw new Error(finish.error.message);
     count++;
@@ -286,11 +293,10 @@ export function createHandler(deps: HandlerDeps) {
       }
       result = ingestion.data;
     }
-    // A failed SMS does not roll back a reading. The leased durable job remains
-    // retryable on subsequent readings or the Pi's independent worker tick.
+    // Independent worker ticks may consume new jobs, but never reclaim attempts.
     deps.spawn(
       drainNotifications(deps).catch(() =>
-        deps.log("error", "Notification worker failed; durable jobs retained")
+        deps.log("error", "Notification worker failed; consumed attempts will not be retried")
       ),
     );
     return json(200, result);
@@ -309,6 +315,7 @@ if (import.meta.main) {
   );
   Deno.serve(createHandler({
     client,
+    sendEmail: gmailSender(client),
     serviceRoleKey: Deno.env.get("LPMAS_BACKEND_JWT") ?? serviceRoleKey,
     async readSettings() {
       const { data, error } = await client.from("system_settings").select(

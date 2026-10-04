@@ -7,6 +7,7 @@ import { Card, Badge } from "../ui";
 import { Modal } from "../Modal";
 import { ExportCsvButton } from "../ExportCsvButton";
 import { MonitoringStatus } from "../MonitoringStatus";
+import { GmailConnection } from "../GmailConnection";
 import { sensorHealth, incidentOutcome } from "@/lib/monitoring-state";
 import type { Incident } from "@/lib/monitoring-types";
 import { useDashboardData } from "@/lib/useDashboardData";
@@ -25,7 +26,6 @@ import {
   toInternationalNumber,
   toLocalDigits,
   validateLocalDigits,
-  validateManagerPhone,
 } from "@/lib/admin-notification-settings";
 import { useProfile } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
@@ -66,6 +66,13 @@ export function AdminView({ section }: { section: string }) {
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [managerPhone, setManagerPhone] = useState("");
+  const [managerUserId, setManagerUserId] = useState("");
+  const [recipientOpen, setRecipientOpen] = useState(false);
+  const [recipientManagerId, setRecipientManagerId] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [recipientSaving, setRecipientSaving] = useState(false);
+  const [recipientError, setRecipientError] = useState<string | null>(null);
+  const [recipientMessage, setRecipientMessage] = useState("");
   // Notification settings. The Semaphore key is write-only: the API returns
   // only whether one is set plus a masked preview, so this field starts
   // empty and saving a new one replaces the stored key.
@@ -109,6 +116,8 @@ export function AdminView({ section }: { section: string }) {
   const [overviewActivity, setOverviewActivity] = useState<ActivityLog[]>([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const recipientManagers = (team ?? []).filter(user => user.role === "manager" && user.email_verified);
+  const savedRecipient = (team ?? []).find(user => user.id === managerUserId);
 
   const latest = useMemo(() => {
     const map = new Map<string, SensorAggregate>();
@@ -199,6 +208,7 @@ export function AdminView({ section }: { section: string }) {
       const body = await response.json().catch(() => ({}));
 
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+      setManagerUserId(body.manager_user_id ?? "");
 
       setManagerPhone(body.manager_phone ?? "");
       setDefaultIllumStart(body.default_illumination_start ?? "");
@@ -218,9 +228,8 @@ export function AdminView({ section }: { section: string }) {
   /**
    * Saves the whole Configure System form in one request.
    *
-   * One form, one save: these values are read together by the Pi and by the
-   * alert path, and splitting them across two modals let an admin save a
-   * 60-day dark phase that disagreed with the sender name beside it.
+   * Monitoring defaults and gateway credentials are saved together. The
+   * manager recipient has a separate modal and is not overwritten here.
    *
    * Every field is validated before anything is sent, so a rejected value
    * never leaves a half-saved configuration behind.
@@ -249,20 +258,12 @@ export function AdminView({ section }: { section: string }) {
       return;
     }
 
-    const phoneError = validateManagerPhone(managerPhone);
-    if (phoneError) {
-      setDefaultsError(phoneError);
-      setDefaultsMessage("");
-      return;
-    }
-
     setDefaultsSaving(true);
     setDefaultsMessage("");
     setDefaultsError(null);
 
     try {
       const payload: Record<string, string> = {
-        manager_phone: managerPhone.trim(),
         sensor_offline_threshold_seconds: String(threshold.value),
         sms_provider: smsProvider.trim() || "textbee",
         default_illumination_start: defaultIllumStart,
@@ -301,6 +302,35 @@ export function AdminView({ section }: { section: string }) {
       setDefaultsError(e instanceof Error ? e.message : "Failed to save the system configuration.");
     } finally {
       setDefaultsSaving(false);
+    }
+  }
+
+  async function saveRecipient() {
+    if (recipientSaving) return;
+    const manager = recipientManagers.find(user => user.id === recipientManagerId);
+    const phoneError = validateLocalDigits(recipientPhone);
+    if (!manager || !recipientPhone || phoneError) {
+      setRecipientError(!manager ? "Choose a verified manager account." : phoneError || "Enter the manager's phone number.");
+      return;
+    }
+    setRecipientSaving(true);
+    setRecipientError(null);
+    try {
+      const response = await fetch("/api/admin/settings", {
+        method: "PATCH", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({manager_user_id: manager.id, manager_phone: toInternationalNumber(recipientPhone)}),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+      setManagerUserId(body.manager_user_id);
+      setManagerPhone(body.manager_phone);
+      setRecipientMessage("Manager recipient saved.");
+      setRecipientOpen(false);
+      await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "notification_recipient", {manager_user_id: manager.id});
+    } catch (e) {
+      setRecipientError(e instanceof Error ? e.message : "Unable to save the manager recipient.");
+    } finally {
+      setRecipientSaving(false);
     }
   }
 
@@ -838,9 +868,19 @@ export function AdminView({ section }: { section: string }) {
                   <div className="flex items-center gap-2"><Phone size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">SMS configuration</p></div>
                   <p className="mt-1 text-xs leading-5 text-theme-muted">One recipient for confirmed violation notifications.</p>
                 </div>
+                <button type="button" disabled={phoneLoading || defaultsSaving || recipientSaving} onClick={() => {
+                  setRecipientManagerId(managerUserId); setRecipientPhone(toLocalDigits(managerPhone));
+                  setRecipientError(null); setRecipientMessage(""); setRecipientOpen(true);
+                }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft disabled:opacity-50"><Plus size={14} /> Add</button>
               </div>
               {phoneError && <p role="alert" className="mb-3 text-sm text-theme-danger">{phoneError}</p>}
-              <PhNumberField id="alert-recipient" label="Alert recipient" value={toLocalDigits(managerPhone)} onChange={value => setManagerPhone(value ? toInternationalNumber(value) : "")} hint="One persisted recipient for all greenhouse incident alerts. Save system configuration to apply changes." />
+              {recipientMessage && <p role="status" className="mb-3 text-sm text-theme-success">{recipientMessage}</p>}
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <SettingRow label="Manager" value={phoneLoading || teamLoading ? "Loading…" : savedRecipient?.full_name || savedRecipient?.email || (managerUserId ? "Manager account unavailable" : "Not selected")} />
+                <SettingRow label="SMS phone" value={phoneLoading ? "Loading…" : managerPhone || "Not set"} />
+              </dl>
+              <p className="mt-2 text-xs text-theme-muted">Use Add to choose a manager and save their phone number. One manager receives alerts for all greenhouses. Email alerts use the same manager's verified email.</p>
+              <GmailConnection />
               <div className="mt-3 flex items-center justify-between gap-3 text-xs">
                 <span className="text-theme-muted">Provider status</span>
                 <span
@@ -886,6 +926,25 @@ export function AdminView({ section }: { section: string }) {
               </div>
             </Card>
           </div>
+
+          <Modal open={recipientOpen} onClose={() => !recipientSaving && setRecipientOpen(false)}
+            title="Add manager SMS recipient"
+            description="Choose the manager who will receive alerts and enter their phone number. Saving replaces the current recipient."
+            footer={<>
+              <button type="button" disabled={recipientSaving} onClick={() => setRecipientOpen(false)} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={recipientSaving || teamLoading || !recipientManagerId || !recipientPhone} onClick={() => void saveRecipient()} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{recipientSaving ? "Saving…" : "Save recipient"}</button>
+            </>}
+          >
+            {recipientError && <p role="alert" className="text-sm text-theme-danger">{recipientError}</p>}
+            {teamError && <p role="alert" className="text-sm text-theme-danger">{teamError}</p>}
+            <label htmlFor="sms-manager-recipient" className="block text-sm font-semibold text-theme-text">Manager</label>
+            <select id="sms-manager-recipient" value={recipientManagerId} disabled={recipientSaving || teamLoading} onChange={event => setRecipientManagerId(event.target.value)} className={controlClassName}>
+              <option value="">{teamLoading ? "Loading managers…" : "Choose a verified manager"}</option>
+              {recipientManagers.map(user => <option key={user.id} value={user.id}>{user.full_name || user.email} — {user.email}</option>)}
+            </select>
+            {!teamLoading && !teamError && !recipientManagers.length && <p className="text-sm text-theme-muted">No verified manager accounts are available. Add or verify a manager in Team management first.</p>}
+            <PhNumberField id="sms-manager-phone" label="Manager phone number" value={recipientPhone} onChange={setRecipientPhone} disabled={recipientSaving} hint="Alerts will be sent to this Philippine mobile number." />
+          </Modal>
 
           <Card>
             <div className="mb-5 flex items-start justify-between gap-3">
@@ -1193,6 +1252,7 @@ function PhNumberField({
   onChange,
   placeholder = "917 XXX XXXX",
   hint,
+  disabled = false,
 }: {
   id: string;
   label: string;
@@ -1200,6 +1260,7 @@ function PhNumberField({
   onChange: (digits: string) => void;
   placeholder?: string;
   hint?: string;
+  disabled?: boolean;
 }) {
   const error = value ? validateLocalDigits(value) : null;
 
@@ -1210,6 +1271,7 @@ function PhNumberField({
         <span className="flex select-none items-center border-r border-[color-mix(in_srgb,var(--accent)_14%,var(--border))] px-3.5 py-3 text-sm font-semibold text-theme-muted">{PH_COUNTRY_CODE}</span>
         <input
           id={id}
+          disabled={disabled}
           type="text"
           inputMode="numeric"
           autoComplete="tel-national"

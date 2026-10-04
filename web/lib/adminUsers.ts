@@ -1,6 +1,6 @@
 import type { Role } from "./profile";
 
-export type AdminUser = { id: string; email: string; full_name: string | null; role: Role };
+export type AdminUser = { id: string; email: string; full_name: string | null; role: Role; email_verified?: boolean };
 
 async function call<T>(init?: RequestInit): Promise<T> {
   const res = await fetch("/api/admin/users", {
