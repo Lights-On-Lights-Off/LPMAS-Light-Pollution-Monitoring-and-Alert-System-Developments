@@ -1,6 +1,21 @@
-import type { MinuteAggregate, Reading } from "./monitoring-types.ts";
+import type { Incident, MinuteAggregate, Reading } from "./monitoring-types.ts";
 import type { SensorListEntry } from "./sensor-list.ts";
 export type SensorHealth = "Online" | "Offline" | "Unknown" | "Data stale";
+
+export function incidentOutcome(incident: Pick<Incident, "status" | "resolution_reason">) {
+  if (incident.status !== "resolved") return { label: incident.status, detail: null };
+  const reasons = {
+    safe_reading: "A safe reading resolved this violation.",
+    phase_ended: "Closed because the monitoring phase ended; recovery was not confirmed.",
+    assignment_changed: "Closed because the sensor assignment ended or changed; recovery was not confirmed.",
+    configuration_changed: "Closed because the monitoring configuration changed; recovery was not confirmed.",
+    monitoring_window_ended: "Closed because the monitoring window ended; recovery was not confirmed.",
+  };
+  return {
+    label: incident.resolution_reason && incident.resolution_reason !== "safe_reading" ? "closed" : "resolved",
+    detail: incident.resolution_reason ? reasons[incident.resolution_reason] : "Historical resolution; no closure reason was recorded.",
+  };
+}
 export function sensorHealth(
   sensor: SensorListEntry | undefined,
   fetchedAt: number | null,

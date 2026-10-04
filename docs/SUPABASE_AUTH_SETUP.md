@@ -21,6 +21,9 @@ and come back here.
 Confirm:
 
 - **Email provider** is enabled.
+- **Allow new users to sign up** is **OFF**. This application creates accounts
+  through its admin API; anonymous visitors use the public monitor. Keep the
+  email login provider enabled. [Supabase Auth access configuration](https://supabase.com/docs/guides/auth/general-configuration).
 - **Confirm email** is **ON** for production. An unconfirmed account that
   requests a reset gets a different error, and the UI reports it as
   "this account's email address is not confirmed yet" rather than sending
@@ -106,7 +109,7 @@ you can ignore this message and your password will stay unchanged.</p>
 **Path:** Dashboard → your project → **Email** → **Custom SMTP**
 
 Supabase's built-in SMTP is for development only. Configure a provider —
-Semaphore's own account is unrelated, so this is a separate service such as
+textbee's own account is unrelated, so this is a separate service such as
 Resend, Postmark, or SendGrid.
 
 Required fields:
@@ -185,9 +188,9 @@ check, every time.
 
 **"Invalid or expired token" immediately, on a link just received**
 Check the system clock. Supabase's tokens are time-limited and a skewed
-server clock invalidates them. The Pi's clock is set in `pi-server/.env`
-via `LPMAS_TIMEZONE`, but the *Supabase* project's clock is what matters for
-the token itself.
+server clock invalidates them. `LPMAS_TIMEZONE` controls timezone conversion; it does not set the system
+clock. Configure time synchronization on the Pi separately. Supabase's clock
+is what determines the token's validity.
 
 **The mail never arrives**
 Check spam first. Then confirm the SMTP test in section 4 succeeds, and that

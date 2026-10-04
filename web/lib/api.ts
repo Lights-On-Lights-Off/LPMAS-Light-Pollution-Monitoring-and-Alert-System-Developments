@@ -39,7 +39,9 @@ function isStaleUrlStatus(status: number) {
 }
 
 async function requestOnce(baseUrl: string, path: string, init?: RequestInit) {
-  const token = (await supabase?.auth.getSession())?.data.session?.access_token;
+  const protectedRequest = path.startsWith('/api/hardware-activity') ||
+    path.startsWith('/api/readings') || path.includes('/acknowledge');
+  const token = protectedRequest ? (await supabase?.auth.getSession())?.data.session?.access_token : undefined;
   return fetch(`${baseUrl}${path}`, {
     ...init,
     signal: init?.signal ?? AbortSignal.timeout(10_000),
@@ -167,7 +169,23 @@ export const getReadings = (sensorId?: string, limit = 100, start?: string, end?
 export const getActivePhase = () => api<Phase | null>("/api/phase/active");
 export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/api/incidents${status ? `?status=${status}` : ""}`);
 export const acknowledgeIncident = (id: number, incidentUid?: string) => api<{ status: string }>(`/api/incidents/${id}/acknowledge`, { method: "POST", body: JSON.stringify({incident_uid:incidentUid}) });
-export const getHardwareActivity = (greenhouseId?: string, sensorIds: string[] = [], start?: string, end?: string) => { const params = new URLSearchParams(); if (greenhouseId) params.set("greenhouse_id", greenhouseId); sensorIds.forEach(id => params.append("sensor_id", id)); if (start) params.set("start", start); if (end) params.set("end", end); return api<HardwareActivityResponse>(`/api/hardware-activity?${params.toString()}`); };
+export async function getHardwareActivity(greenhouseId?: string, sensorIds: string[] = [], start?: string, end?: string): Promise<HardwareActivityResponse> {
+  const params = new URLSearchParams({start:start ?? new Date(Date.now()-86400000).toISOString(), end:end ?? new Date().toISOString()});
+  if (greenhouseId) params.set('greenhouse_id', greenhouseId);
+  sensorIds.forEach(id => params.append('sensor_id', id));
+  const readings: Reading[] = [];
+  let cursor = 0;
+  while (true) {
+    params.set('after_id', String(cursor));
+    const page = await api<HardwareActivityResponse & {next_after_id?: number | null}>(`/api/hardware-activity?${params}`);
+    readings.push(...page.readings);
+    if (page.next_after_id == null) break;
+    if (page.next_after_id <= cursor || readings.length >= 250_000) throw new Error('History export is too large; choose a shorter date range.');
+    cursor = page.next_after_id;
+  }
+  readings.sort((a,b) => Date.parse(a.recorded_at)-Date.parse(b.recorded_at) || a.id-b.id);
+  return {readings, count:readings.length};
+}
 
 // --- sensor_list ------------------------------------------------------------
 //

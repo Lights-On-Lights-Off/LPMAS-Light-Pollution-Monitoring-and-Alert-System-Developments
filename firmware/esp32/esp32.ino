@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <time.h>
 
 TwoWire I2C_1 = TwoWire(0);
 TwoWire I2C_2 = TwoWire(1);
@@ -14,8 +15,12 @@ TwoWire I2C_2 = TwoWire(1);
 
 #define BH1750_ADDRESS 0x23
 
-const char* WIFI_SSID = "NBSC-WiFi";
-const char* WIFI_PASSWORD = "Nb$c@2k25";
+// Copy ESP32-config.example.h to ESP32-config.h and provision locally.
+#include "ESP32-config.h"
+#include "root-certificates.h"
+#include "wifi_setup.h"
+
+WifiSetup networkSetup;
 
 // Permanent Vercel URL. Used to look up the Pi's current tunnel address,
 // since that address rotates and can no longer be hardcoded.
@@ -50,22 +55,6 @@ float readBH1750(TwoWire &bus) {
   return -1;
 }
 
-void connectWiFi() {
-  Serial.print("Connecting to WiFi");
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println();
-  Serial.println("WiFi connected");
-  Serial.print("ESP32 IP: ");
-  Serial.println(WiFi.localIP());
-}
-
 // Extracts a "field":"value" string from a small flat JSON response.
 // Only needs to handle the exact shape /api/pi-url returns.
 bool extractJsonStringField(const String &json, const char* fieldName, String &out) {
@@ -83,9 +72,11 @@ bool extractJsonStringField(const String &json, const char* fieldName, String &o
 
 bool fetchPiUrlFromVercel(String &out) {
   WiFiClientSecure client;
-  client.setInsecure();
+  client.setCACert(LPMAS_ROOT_CA);
 
   HTTPClient http;
+  http.setConnectTimeout(5000);
+  http.setTimeout(5000);
 
   if (!http.begin(client, VERCEL_PI_URL_ENDPOINT)) {
     Serial.println("Failed to begin HTTPS request to Vercel");
@@ -111,6 +102,19 @@ bool fetchPiUrlFromVercel(String &out) {
     return false;
   }
 
+  const String prefix = "https://";
+  const String suffix = ".trycloudflare.com";
+  bool trustedOrigin = url.startsWith(prefix) && url.endsWith(suffix);
+  String hostLabel = url.substring(prefix.length(), url.length() - suffix.length());
+  trustedOrigin = trustedOrigin && hostLabel.length() > 0;
+  for (unsigned int i = 0; i < hostLabel.length(); i++) {
+    char c = hostLabel[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) trustedOrigin = false;
+  }
+  if (!trustedOrigin) {
+    Serial.println("Refusing untrusted Pi tunnel address");
+    return false;
+  }
   out = url;
   return true;
 }
@@ -143,9 +147,11 @@ bool resolvePiBaseUrl(bool forceRefresh) {
 
 int postReadingOnce(const String &baseUrl, const String &payload) {
   WiFiClientSecure client;
-  client.setInsecure();
+  client.setCACert(LPMAS_ROOT_CA);
 
   HTTPClient http;
+  http.setConnectTimeout(5000);
+  http.setTimeout(5000);
   String url = baseUrl + "/api/readings";
 
   if (!http.begin(client, url)) {
@@ -154,6 +160,8 @@ int postReadingOnce(const String &baseUrl, const String &payload) {
   }
 
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-LPMAS-Device-Key", LPMAS_DEVICE_KEY);
+  http.setTimeout(5000);
   int responseCode = http.POST(payload);
   http.end();
 
@@ -161,10 +169,7 @@ int postReadingOnce(const String &baseUrl, const String &payload) {
 }
 
 void sendReading(const char* sensorId, float lux) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected");
-    connectWiFi();
-  }
+  if (!networkSetup.connected() || time(nullptr) < 1704067200) return;
 
   if (lux < 0) {
     Serial.print(sensorId);
@@ -178,7 +183,16 @@ void sendReading(const char* sensorId, float lux) {
     return;
   }
 
-  String payload = "{\"sensor_id\":\"";
+  uint8_t id[16];
+  for (int i = 0; i < 16; i += 4) { uint32_t word = esp_random(); memcpy(id + i, &word, 4); }
+  id[6] = (id[6] & 0x0f) | 0x40; id[8] = (id[8] & 0x3f) | 0x80;
+  char readingId[37];
+  snprintf(readingId, sizeof(readingId), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    id[0],id[1],id[2],id[3],id[4],id[5],id[6],id[7],id[8],id[9],id[10],id[11],id[12],id[13],id[14],id[15]);
+  // The same UUID is reused on every retry of this captured measurement.
+  String payload = "{\"reading_id\":\"";
+  payload += readingId;
+  payload += "\",\"sensor_id\":\"";
   payload += sensorId;
   payload += "\",\"lux\":";
   payload += String(lux, 2);
@@ -186,7 +200,7 @@ void sendReading(const char* sensorId, float lux) {
 
   int responseCode = postReadingOnce(cachedPiBaseUrl, payload);
 
-  if (responseCode <= 0) {
+  if (responseCode <= 0 || responseCode == 429 || responseCode >= 500) {
     Serial.println("POST failed, refreshing Pi address and retrying once");
     if (resolvePiBaseUrl(true)) {
       responseCode = postReadingOnce(cachedPiBaseUrl, payload);
@@ -226,8 +240,7 @@ void setup() {
   Serial.println("I2C Bus 2: SDA D21 / SCL D22");
   Serial.println();
 
-  connectWiFi();
-  resolvePiBaseUrl(true);
+  networkSetup.begin(LPMAS_SETUP_PASSWORD, LPMAS_DEVICE_KEY);
 
   Serial.println();
   Serial.println("LPMAS hardware monitoring started");
@@ -236,6 +249,14 @@ void setup() {
 }
 
 void loop() {
+  networkSetup.tick();
+  static unsigned long lastSample = 0;
+  static bool previouslyConnected = false;
+  const bool connected = networkSetup.connected();
+  if (connected && !previouslyConnected) { cachedPiBaseUrl = ""; piUrlCachedAt = 0; }
+  previouslyConnected = connected;
+  if (networkSetup.configuring() || !lpmas::elapsed(millis(), lastSample, 10000)) { delay(10); return; }
+  lastSample = millis();
   float light1 = readBH1750(I2C_1);
   float light2 = readBH1750(I2C_2);
 
@@ -267,5 +288,6 @@ void loop() {
   sendReading(SENSOR_2_ID, light2);
 
   Serial.println("Next reading in 10 seconds...");
-  delay(10000);
+  if (!connected) Serial.println("Wi-Fi unavailable; reconnecting in the background");
+  else if (time(nullptr) < 1704067200) Serial.println("Waiting for time synchronization before HTTPS delivery");
 }

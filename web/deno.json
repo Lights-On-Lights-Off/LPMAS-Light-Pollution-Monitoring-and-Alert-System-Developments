@@ -4,6 +4,6 @@
     "strict": true
   },
   "tasks": {
-    "test": "deno test lib/sensor-list.test.ts"
+    "test": "deno test lib/*.test.ts"
   }
 }

@@ -5,6 +5,7 @@ import {
   type CookieOptions,
 } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { validAccountEmail } from "@/lib/account-email";
 
 type Role = "admin" | "manager";
 
@@ -243,6 +244,7 @@ export async function GET() {
     return {
       id: user.id,
       email: user.email ?? "",
+      email_verified: Boolean(user.email_confirmed_at),
       full_name: profile?.full_name ?? null,
 
       /*
@@ -333,7 +335,7 @@ export async function POST(req: NextRequest) {
    * This is intentionally simple because Supabase also performs
    * its own email validation.
    */
-  if (!email.includes("@")) {
+  if (!validAccountEmail(email)) {
     return NextResponse.json(
       { error: "A valid email address is required." },
       { status: 400 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ArrowLeft, Eye, EyeOff, LockKeyhole, Mail } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
@@ -14,6 +14,25 @@ export function Login() {
   const [message, setMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("google") === "failed") {
+      setMessage("Google sign-in failed. Use your approved account or sign in with your email and password.");
+    }
+  }, []);
+
+  async function googleSignIn() {
+    if (!supabase) {
+      setMessage("Sign-in is unavailable. Contact an administrator.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    const {error} = await supabase.auth.signInWithOAuth({provider: "google", options: {
+      redirectTo: `${window.location.origin}/auth/callback`, scopes: "openid email profile",
+    }});
+    if (error) { setMessage(error.message); setLoading(false); }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -75,6 +94,7 @@ export function Login() {
       </div>
       {message && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{message}</p>}
       <button disabled={loading} className="mt-6 w-full rounded-xl bg-leaf-500 py-3 font-semibold text-ink hover:bg-leaf-100 disabled:opacity-60">{loading ? "Signing in..." : "Sign in"}</button>
+      {process.env.NEXT_PUBLIC_GOOGLE_SIGN_IN_ENABLED === "true" && <button type="button" disabled={loading} onClick={() => void googleSignIn()} className="mt-3 w-full rounded-xl border border-metal-600 py-3 font-semibold text-metal-50 disabled:opacity-60">Continue with Google</button>}
       {/* A real page rather than an inline handler: the reset needs the
           email address, a clear "check your inbox" state, and somewhere for
           the link to land that is not this form. */}

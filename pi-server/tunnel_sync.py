@@ -5,11 +5,13 @@ import json
 import os
 import re
 import subprocess
-import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from security import load_security_config
+from cloud_gateway import gateway_request
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
@@ -27,6 +29,7 @@ def load_env_file():
                 if not line or line.startswith("#") or "=" not in line: continue
                 key, value = line.split("=", 1)
                 key, value = key.strip(), value.strip()
+                if key not in ('SUPABASE_URL', 'LPMAS_TIMEZONE', 'LPMAS_PI_TOKEN', 'LPMAS_SECURITY_FILE'): continue
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'): value = value[1:-1]
                 os.environ.setdefault(key, value)
     except Exception as error:
@@ -36,30 +39,91 @@ def load_env_file():
 load_env_file()
 LPMAS_TIMEZONE = ZoneInfo(os.getenv("LPMAS_TIMEZONE", "Asia/Manila"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
+SECURITY = load_security_config()
+PI_TOKEN = os.getenv("LPMAS_PI_TOKEN", SECURITY.get("pi_token", ""))
 
 
 def now_iso(): return datetime.now(LPMAS_TIMEZONE).isoformat(timespec="seconds")
-def supabase_configured(): return bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
+def supabase_configured(): return bool(SUPABASE_URL and PI_TOKEN)
 
 
 def supabase_request(table, payload, on_conflict):
-    if not supabase_configured(): raise RuntimeError("Supabase environment variables are not configured")
-    query = urllib.parse.urlencode({"on_conflict": on_conflict}); url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"; body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST"); req.add_header("apikey", SUPABASE_SECRET_KEY); req.add_header("Authorization", f"Bearer {SUPABASE_SECRET_KEY}"); req.add_header("Content-Type", "application/json"); req.add_header("Prefer", "resolution=merge-duplicates,return=minimal")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response: return response.status
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace"); raise RuntimeError(f"Supabase HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error: raise RuntimeError(f"Supabase connection failed: {error.reason}") from error
+    if not supabase_configured(): raise RuntimeError("Scoped Pi cloud access is not provisioned")
+    if table != 'system_settings' or len(payload) != 1 or payload[0].get('key') != 'pi_api_url':
+        raise ValueError('Only tunnel publication is permitted')
+    gateway_request(f'{SUPABASE_URL}/functions/v1/pi-gateway', PI_TOKEN, 'publish-tunnel', url=payload[0]['value'])
+    return 200
 
 
 def push_tunnel_url(url):
     try:
         status = supabase_request("system_settings", [{"key": "pi_api_url", "value": url, "updated_at": now_iso()}], "key")
         print(f"[TUNNEL SYNC] pushed pi_api_url={url} status={status}")
+        return True
     except RuntimeError as error:
         print(f"[TUNNEL SYNC ERROR] {error}")
+        return False
+
+
+class TunnelPublisher:
+    """Retry the latest discovered URL independently of cloudflared output.
+
+    One worker serializes publications. Rotation replaces the pending URL, and
+    shutdown joins the worker before another tunnel can start publishing.
+    """
+    def __init__(self, publish=None, clock=None):
+        self.publish = publish or push_tunnel_url
+        self.clock = clock or time.monotonic
+        self.condition = threading.Condition()
+        self.url = None
+        self.next_attempt = None
+        self.attempts = 0
+        self.stopped = False
+        self.thread = None
+
+    def set_url(self, url):
+        with self.condition:
+            if url == self.url or self.stopped: return
+            self.url = url
+            self.attempts = 0
+            self.next_attempt = self.clock()
+            self.condition.notify_all()
+
+    def publish_due(self):
+        with self.condition:
+            if self.stopped or self.next_attempt is None or self.clock() < self.next_attempt:
+                return False
+            url = self.url
+        try:
+            accepted = self.publish(url)
+        except Exception as error:
+            print(f"[TUNNEL SYNC ERROR] publication failed: {type(error).__name__}")
+            accepted = False
+        with self.condition:
+            if self.url == url:
+                self.attempts += 1
+                self.next_attempt = None if accepted else self.clock() + min(60, 5 * 2 ** min(self.attempts - 1, 4))
+        return True
+
+    def run(self):
+        while True:
+            with self.condition:
+                if self.stopped: return
+                delay = None if self.next_attempt is None else max(0, self.next_attempt - self.clock())
+                if delay is None or delay > 0:
+                    self.condition.wait(delay)
+                    continue
+            self.publish_due()
+
+    def start(self):
+        self.thread = threading.Thread(target=self.run, name="tunnel-publication", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        with self.condition:
+            self.stopped = True
+            self.condition.notify_all()
+        if self.thread: self.thread.join()
 
 
 def run_tunnel_once():
@@ -75,19 +139,19 @@ def run_tunnel_once():
         text=True,
         bufsize=1,
     )
-    last_url = None
+    publisher = TunnelPublisher()
+    publisher.start()
     try:
         for line in process.stdout:
             print(line, end="")
             match = TUNNEL_URL_PATTERN.search(line)
             if match:
                 url = match.group(0)
-                if url != last_url:
-                    last_url = url
+                if url != publisher.url:
                     print(f"[TUNNEL SYNC] detected new tunnel URL: {url}")
-                    if supabase_configured(): push_tunnel_url(url)
-                    else: print("[TUNNEL SYNC ERROR] SUPABASE_URL/SUPABASE_SECRET_KEY missing, cannot publish URL")
+                    publisher.set_url(url)
     finally:
+        publisher.stop()
         process.wait()
     return process.returncode
 

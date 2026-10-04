@@ -1,1092 +1,300 @@
-/**
- * Tests for the ingest-reading Edge Function.
- *
- * Nothing here touches a live Supabase project. The handler takes its
- * Supabase client and its SMS transport as injected dependencies, and the
- * payload validation / classification / aggregate-delta arithmetic are pure
- * exported functions, so the whole surface is testable offline.
- */
-import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-
 import {
-  CONSECUTIVE_VIOLATIONS_REQUIRED,
-  buildAggregateDelta,
+  assert,
+  assertEquals,
+} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import {
   classifyReading,
   createHandler,
-  createSmsGuard,
-  floorToMinute,
-  hasPriorConfirmedBreach,
-  minuteLookbackWindow,
-  validateReadingPayload,
-  type PhaseType,
-  type SensorRow,
-  type SupabaseLike,
+  type Delivery,
+  drainNotifications,
+  type HandlerDeps,
+  type IncidentSnapshot,
+  validateDelivery,
 } from "./index.ts";
-
-const SERVICE_KEY = "test-service-role-key";
-
-// ---------------------------------------------------------------------------
-// Test doubles
-// ---------------------------------------------------------------------------
-
-interface RpcCall {
-  kind: "rpc";
-  name: string;
-  args: Record<string, unknown>;
-}
-
-interface SelectCall {
-  kind: "select";
-  table: string;
-  columns: string;
-  column: string;
-  values: string[];
-}
-
-type Call = RpcCall | SelectCall;
-
-interface StubOptions {
-  sensorRow?: Partial<SensorRow> | null;
-  aggregateRow?: Record<string, unknown> | null;
-  sensorError?: { message: string } | null;
-  aggregateError?: { message: string } | null;
-  priorRows?: Record<string, unknown>[];
-  /** Rows the sensor_list pre-read returns; defaults to the sensor row. */
-  sensorLookupRows?: Record<string, unknown>[] | null;
-  sensorLookupError?: { message: string } | null;
-}
-
-function stubClient(options: StubOptions = {}) {
-  const calls: Call[] = [];
-  const sensorRow: SensorRow = {
-    sensor_id: "ESP32-001",
-    status: "online",
-    greenhouse_id: "gh-001",
-    lux: 12,
-    last_reading_at: "2026-09-29T10:30:00.000Z",
-    ...(options.sensorRow ?? {}),
-  };
-
-  const client: SupabaseLike = {
-    rpc(name, args) {
-      calls.push({ kind: "rpc", name, args });
-      if (name === "update_sensor_list") {
-        return Promise.resolve({
-          data: options.sensorError ? null : sensorRow,
-          error: options.sensorError ?? null,
-        });
-      }
-      if (name === "upsert_minute_aggregate") {
-        return Promise.resolve({
-          data: options.aggregateError
-            ? null
-            : (options.aggregateRow ?? {}),
-          error: options.aggregateError ?? null,
-        });
-      }
-      return Promise.resolve({ data: null, error: { message: `unexpected rpc ${name}` } });
-    },
-    from(table) {
-      return {
-        select(columns) {
-          return {
-            in(column, values) {
-              calls.push({ kind: "select", table, columns, column, values });
-              // This builder serves two distinct queries, so the answer
-              // depends on which table is being read: the sensor_list
-              // pre-read that decides whether a greenhouse is passed to
-              // update_sensor_list, and the aggregate history read that
-              // backs the durable breach dedupe.
-              if (table === "sensor_list") {
-                return Promise.resolve({
-                  data: options.sensorLookupError
-                    ? null
-                    : (options.sensorLookupRows ?? [sensorRow]),
-                  error: options.sensorLookupError ?? null,
-                });
-              }
-              return Promise.resolve({ data: options.priorRows ?? [], error: null });
-            },
-          };
-        },
-      };
-    },
-  };
-
-  return { client, calls, sensorRow };
-}
-
-function recordingSpawner() {
-  const tasks: Promise<unknown>[] = [];
+const KEY = "backend-key";
+const incident: IncidentSnapshot = {
+  id: 1,
+  incident_uid: "11111111-1111-4111-8111-111111111111",
+  version: 1,
+  sensor_id: "S1",
+  greenhouse_id: "G1",
+  phase_type: "dark",
+  opened_at: "2026-10-01T00:00:10Z",
+  resolved_at: null,
+  status: "open",
+  peak_lux: 40,
+  lowest_lux: 40,
+  reason: "Dark phase light violation",
+  triggering_readings: [
+    "2026-09-30T23:59:50Z",
+    "2026-10-01T00:00:00Z",
+    "2026-10-01T00:00:10Z",
+  ].map((recorded_at) => ({
+    sensor_id: "S1",
+    greenhouse_id: "G1",
+    phase_type: "dark",
+    classification: "violation",
+    recorded_at,
+    lux: 40,
+  })),
+};
+function delivery(overrides: Partial<Delivery> = {}): Delivery {
   return {
-    tasks,
-    spawn(task: Promise<unknown>) {
-      tasks.push(task);
-    },
-    async settle() {
-      // A rejected background task must never surface here: the handler is
-      // responsible for attaching a catch. Draining with allSettled makes that
-      // a test failure instead of an unhandled rejection.
-      await Promise.allSettled(tasks);
-      return tasks;
-    },
+    kind: "reading",
+    delivery_id: "22222222-2222-4222-8222-222222222222",
+    recorded_at: "2026-10-01T00:00:10Z",
+    sensor_id: "S1",
+    greenhouse_id: "G1",
+    lux: 40,
+    phase_type: "dark",
+    classification: "violation",
+    monitoring_active: true,
+    config_version: "snapshot-v1",
+    incident: null,
+    ...overrides,
   };
 }
-
-const silentLog = () => {};
-
-interface HandlerOverrides {
-  client?: SupabaseLike;
-  /** Pass a whole stub to keep access to its call log. */
-  stub?: ReturnType<typeof stubClient>;
-  authHeader?: string | null;
-  body?: unknown;
-  rawBody?: string;
-  spawner?: ReturnType<typeof recordingSpawner>;
-  guard?: ReturnType<typeof createSmsGuard>;
-  fetchImpl?: (input: string, init: RequestInit) => Promise<unknown>;
-  settings?: Record<string, string>;
-  readSettings?: () => Promise<Record<string, string>>;
-  log?: (level: string, message: string) => void;
-}
-
-function buildHandler(overrides: HandlerOverrides = {}) {
-  const stub = overrides.stub ?? stubClient();
-  const client = overrides.client ?? stub.client;
-  const spawner = overrides.spawner ?? recordingSpawner();
-  const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
-  const fetchImpl = overrides.fetchImpl ?? (async (url: string, init: RequestInit) => {
-    fetchCalls.push({ url, init });
-    return { ok: true, status: 200 };
-  });
-  const logs: string[] = [];
-
-  const handler = createHandler({
-    client,
-    serviceRoleKey: SERVICE_KEY,
-    guard: overrides.guard ?? createSmsGuard(),
-    spawn: spawner.spawn,
-    readSettings: overrides.readSettings ?? (() =>
+function fixture(
+  options: {
+    jobs?: unknown[];
+    rejectIngestion?: boolean;
+    provider?: Response;
+    settings?: Record<string, string>;
+  } = {},
+) {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const network: string[] = [];
+  const deps: HandlerDeps = {
+    serviceRoleKey: KEY,
+    client: {
+      rpc(name, args) {
+        calls.push({ name, args });
+        if (name === "ingest_pilot_delivery") {
+          return Promise.resolve({
+            data: { ok: true, aggregate_updated: true },
+            error: options.rejectIngestion
+              ? { message: "commit failed" }
+              : null,
+          });
+        }
+        return Promise.resolve({
+          data: name === "claim_greenhouse_notifications" ? options.jobs ?? [] : null,
+          error: null,
+        });
+      },
+    },
+    readSettings: () =>
       Promise.resolve(
-        overrides.settings ?? {
-          sms_provider: "textbee",
-          textbee_api_key: "tb_key_value",
-          manager_phone: "+639171234567",
-        },
-      )),
-    fetchImpl,
-    log: overrides.log ?? ((level, message) => logs.push(`${level}: ${message}`)),
-  });
-
-  const rawBody = overrides.rawBody ?? JSON.stringify(
-    overrides.body ?? {
-      sensor_id: "ESP32-001",
-      lux: 12,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "illumination",
+        options.settings ??
+          {
+            sms_provider: "textbee",
+            textbee_api_key: "secret",
+            manager_phone: "09171234567",
+          },
+      ),
+    fetchImpl: (url) => {
+      network.push(url);
+      return Promise.resolve(
+        options.provider ??
+          new Response(
+            JSON.stringify({ data: { success: true, smsBatchId: "batch1" } }),
+            { status: 200 },
+          ),
+      );
     },
-  );
-
-  const headers = new Headers({ "Content-Type": "application/json" });
-  if (overrides.authHeader !== null) {
-    headers.set("Authorization", overrides.authHeader ?? `Bearer ${SERVICE_KEY}`);
-  }
-  const request = new Request("http://localhost/functions/v1/ingest-reading", {
-    method: "POST",
-    headers,
-    body: rawBody,
-  });
-
-  return { handler, request, calls: stub.calls, spawner, fetchCalls, logs };
+    log: () => {},
+    spawn: (task) => {
+      void task;
+    },
+  };
+  const request = (
+    body: unknown,
+    authorization: string | null = `Bearer ${KEY}`,
+  ) =>
+    new Request("https://local/ingest", {
+      method: "POST",
+      headers: authorization ? { Authorization: authorization } : {},
+      body: JSON.stringify(body),
+    });
+  return { deps, calls, network, request, handler: createHandler(deps) };
 }
-
-function rpcArgs(calls: Call[], name: string): Record<string, unknown> | undefined {
-  const call = calls.find((c): c is RpcCall => c.kind === "rpc" && c.name === name);
-  return call?.args;
-}
-
-// ---------------------------------------------------------------------------
-// Spec-required validation cases
-// ---------------------------------------------------------------------------
-
-Deno.test("missing sensor_id is rejected with 400", async () => {
-  const { handler, request, calls } = buildHandler({
-    body: { lux: 12, recorded_at: "2026-09-29T10:30:00.000Z", phase_type: "illumination" },
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 400);
-  const body = await response.json();
-  assertEquals(body.ok, false);
-  assert(String(body.error).includes("sensor_id"));
-  assertEquals(calls.length, 0, "no RPC may run before validation succeeds");
-});
-
-Deno.test("missing lux is rejected with 400", async () => {
-  const { handler, request, calls } = buildHandler({
-    body: { sensor_id: "ESP32-001", recorded_at: "2026-09-29T10:30:00.000Z", phase_type: "illumination" },
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 400);
-  const body = await response.json();
-  assertEquals(body.ok, false);
-  assert(String(body.error).includes("lux"));
-  assertEquals(calls.length, 0);
-});
-
-Deno.test("invalid phase_type is rejected with 400", async () => {
-  for (const phase of ["night", "unconfigured", "", "ILLUMINATION", 7, null]) {
-    const { handler, request, calls } = buildHandler({
-      body: { sensor_id: "ESP32-001", lux: 12, recorded_at: "2026-09-29T10:30:00.000Z", phase_type: phase },
-    });
-    const response = await handler(request);
-    assertEquals(response.status, 400, `phase_type ${JSON.stringify(phase)} must be rejected`);
-    const body = await response.json();
-    assert(String(body.error).includes("phase_type"));
-    assertEquals(calls.length, 0);
+Deno.test("anonymous and ordinary user callers cannot ingest or drain notifications", async () => {
+  for (const auth of [null, "Bearer user-token", "Bearer "]) {
+    const f = fixture();
+    assertEquals((await f.handler(f.request(delivery(), auth))).status, 401);
+    assertEquals(f.calls.length, 0);
   }
 });
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-Deno.test("validateReadingPayload accepts the spec payload", () => {
-  const result = validateReadingPayload({
-    sensor_id: "ESP32-001",
-    lux: 45.2,
-    recorded_at: "2026-09-29T10:30:00.000Z",
-    phase_type: "illumination",
-    greenhouse_id: "gh-001",
+Deno.test("backend ingestion commits through one transaction RPC", async () => {
+  const f = fixture();
+  const d = delivery();
+  assertEquals((await f.handler(f.request(d))).status, 200);
+  assertEquals(f.calls[0], {
+    name: "ingest_pilot_delivery",
+    args: { p_payload: d },
   });
-  assert(result.ok);
-  assertEquals(result.value.sensor_id, "ESP32-001");
-  assertEquals(result.value.lux, 45.2);
-  assertEquals(result.value.recorded_at, "2026-09-29T10:30:00.000Z");
-  assertEquals(result.value.phase_type, "illumination");
 });
-
-Deno.test("validateReadingPayload rejects missing or malformed recorded_at", () => {
-  for (const recorded_at of [undefined, null, "", "not-a-date", 12345]) {
-    const result = validateReadingPayload({
-      sensor_id: "ESP32-001",
-      lux: 1,
-      recorded_at,
-      phase_type: "dark",
-    });
-    assert(!result.ok, `recorded_at ${JSON.stringify(recorded_at)} must be rejected`);
-    assert(String((result as { error: string }).error).includes("recorded_at"));
+Deno.test("a commit error requests a retry without claiming notification work", async () => {
+  const f = fixture({ rejectIngestion: true });
+  assertEquals((await f.handler(f.request(delivery()))).status, 500);
+  assertEquals(f.calls.length, 1);
+});
+Deno.test("three minute-count violations never create a notification in the handler", async () => {
+  const f = fixture();
+  await f.handler(f.request(delivery()));
+  assertEquals(f.network.length, 0);
+});
+Deno.test("a consecutive sequence spanning midnight and minute boundaries is valid", () =>
+  assert(validateDelivery(delivery({ incident })).ok));
+Deno.test("interrupted and mixed-sensor sequences are rejected", () => {
+  for (
+    const patch of [{ recorded_at: "2026-10-01T00:00:09Z" }, {
+      classification: "safe",
+    }, { sensor_id: "S2" }]
+  ) {
+    const i = structuredClone(incident);
+    Object.assign(i.triggering_readings[1], patch);
+    assert(!validateDelivery(delivery({ incident: i })).ok);
   }
 });
-
-Deno.test("validateReadingPayload rejects non-numeric and negative lux", () => {
-  for (const lux of [undefined, null, "abc", NaN, Infinity, -1]) {
-    const result = validateReadingPayload({
-      sensor_id: "ESP32-001",
-      lux,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "dark",
-    });
-    assert(!result.ok, `lux ${JSON.stringify(lux)} must be rejected`);
-  }
+Deno.test("unassigned or unmonitored measurements still have a valid delivery contract", () =>
+  assert(
+    validateDelivery(
+      delivery({
+        greenhouse_id: null,
+        phase_type: "unconfigured",
+        classification: "unclassified",
+        monitoring_active: false,
+      }),
+    ).ok,
+  ));
+Deno.test("illumination windows do not restrict dark-phase monitoring", () =>
+  assert(validateDelivery(delivery({ incident })).ok));
+Deno.test("invalid lux, context, identifiers and timestamps are rejected", () => {
+  for (
+    const patch of [
+      { lux: NaN },
+      { lux: Infinity },
+      { lux: -1 },
+      { lux: 65536 },
+      { delivery_id: "invalid" },
+      { recorded_at: "2026-10-01" },
+      { config_version: "" },
+      { classification: "safe" },
+      { phase_type: "unconfigured" },
+    ]
+  ) assert(!validateDelivery({ ...delivery(), ...patch }).ok);
 });
-
-Deno.test("validateReadingPayload rejects a blank sensor_id", () => {
-  for (const sensor_id of ["", "   ", null, 42]) {
-    const result = validateReadingPayload({
-      sensor_id,
-      lux: 1,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "dark",
-    });
-    assert(!result.ok);
-    assert(String((result as { error: string }).error).includes("sensor_id"));
-  }
-});
-
-Deno.test("malformed JSON body is rejected with 400", async () => {
-  const { handler, request } = buildHandler({ rawBody: "{not json" });
-  const response = await handler(request);
-  assertEquals(response.status, 400);
-  assertEquals((await response.json()).ok, false);
-});
-
-Deno.test("a non-POST request is rejected with 405", async () => {
-  const { handler, request } = buildHandler();
-  const getRequest = new Request("http://localhost/functions/v1/ingest-reading", {
-    method: "GET",
-    headers: request.headers,
-  });
-  const response = await handler(getRequest);
-  assertEquals(response.status, 405);
-});
-
-// ---------------------------------------------------------------------------
-// Authentication
-// ---------------------------------------------------------------------------
-
-Deno.test("a forwarded reading is accepted even though the function cannot read its own key", async () => {
-  // The regression this guards. SUPABASE_SERVICE_ROLE_KEY is a
-  // platform-reserved name that is NOT exposed to a function's environment,
-  // so it reads as "". A self-check against it rejected every forwarded
-  // reading with 401 — no sensor data, no violation alerts — while looking
-  // exactly like a wrong Pi credential. The gateway has already verified the
-  // JWT, so the handler must not second-guess it.
-  const stub = stubClient();
-  const { request } = buildHandler({ stub });
-  const broken = createHandler({
-    client: stub.client,
-    serviceRoleKey: "",
-    guard: createSmsGuard(),
-    spawn: () => {},
-    readSettings: () => Promise.resolve({}),
-    fetchImpl: async () => ({}),
-    log: silentLog,
-  });
-
-  const response = await broken(request);
-  assertEquals(response.status, 200, "a valid reading must not be refused by the function's own env");
-  assert(stub.calls.length > 0, "the reading should have been recorded");
-});
-
-Deno.test("the Authorization header does not change the outcome — the gateway owns auth", async () => {
-  // The old self-check made the header decide everything, and decided wrong.
-  // Whatever the header says, the gateway has already authenticated the
-  // request, so the handler's own validation is the only thing that matters.
-  for (const header of [null, "Bearer wrong-key", "Bearer total-nonsense"]) {
-    const stub = stubClient();
-    const { request } = buildHandler({ stub, authHeader: header });
-    const handler = createHandler({
-      client: stub.client,
-      serviceRoleKey: "",
-      guard: createSmsGuard(),
-      spawn: () => {},
-      readSettings: () => Promise.resolve({}),
-      fetchImpl: async () => ({}),
-      log: silentLog,
-    });
-
-    const response = await handler(request);
-    assertEquals(response.status, 200, `header ${header} should not change the outcome`);
-  }
-});
-
-Deno.test("an out-of-window reading is stored by the reading table but makes no aggregate", async () => {
-  // The monitoring time window is enforced inside upsert_minute_aggregate,
-  // which returns NULL for a bucket outside the greenhouse's window. That
-  // must not be read as a failure: the reading itself is still recorded, no
-  // SMS fires, and the request still succeeds. Treating the null as an error
-  // would make the Pi retry every out-of-window reading and eventually
-  // discard it, and treating it as an aggregate would defeat the filter.
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({ aggregateRow: null }),
-    body: { sensor_id: "ESP32-001", lux: 12, recorded_at: "2026-09-29T10:30:00.000Z", phase_type: "dark" },
-  });
-
-  const response = await handler(request);
-  assertEquals(response.status, 200, "an out-of-window reading must not fail the request");
-
-  const body = await response.json();
-  assertEquals(body.sms_triggered, false, "no aggregate means no violation count, so no alert");
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 0, "no SMS may be sent for an unstored bucket");
-});
-
-// The monitoring time window's own cases — the 23:00 -> 05:00 wrap above all,
-// which a naive range test turns into an empty window — are pinned in
-// pi-server/test_monitoring_window.py, which is executable and runs in
-// verify.sh. Migration 0015 implements the same comparison in SQL. They are
-// deliberately not restated here: a copy would drift from the original.
-
-// ---------------------------------------------------------------------------
-// Classification thresholds (pi-server/app.py lines 21-27, 285-294)
-// ---------------------------------------------------------------------------
-
-Deno.test("illumination classification matches app.py: >=50 safe, 31-49 warning, <=30 violation", () => {
-  assertEquals(classifyReading(50, "illumination"), "safe");
-  assertEquals(classifyReading(50.1, "illumination"), "safe");
-  assertEquals(classifyReading(1000, "illumination"), "safe");
-  assertEquals(classifyReading(49.999, "illumination"), "warning");
-  assertEquals(classifyReading(31, "illumination"), "warning");
+Deno.test("decimal threshold boundaries agree with Pi rules", () => {
   assertEquals(classifyReading(30, "illumination"), "violation");
-  assertEquals(classifyReading(0, "illumination"), "violation");
-});
-
-Deno.test("dark classification matches app.py: 0-15 safe, 16-29 warning, >=30 violation", () => {
-  assertEquals(classifyReading(0, "dark"), "safe");
+  assertEquals(classifyReading(30.1, "illumination"), "warning");
+  assertEquals(classifyReading(49.9, "illumination"), "warning");
+  assertEquals(classifyReading(50, "illumination"), "safe");
   assertEquals(classifyReading(15, "dark"), "safe");
-  assertEquals(classifyReading(15.5, "dark"), "warning");
-  assertEquals(classifyReading(16, "dark"), "warning");
+  assertEquals(classifyReading(15.1, "dark"), "warning");
   assertEquals(classifyReading(29, "dark"), "warning");
-  assertEquals(classifyReading(30, "dark"), "violation");
-  assertEquals(classifyReading(900, "dark"), "violation");
+  assertEquals(classifyReading(29.1, "dark"), "violation");
 });
-
-// ---------------------------------------------------------------------------
-// Minute bucketing
-// ---------------------------------------------------------------------------
-
-Deno.test("floorToMinute truncates to the UTC minute", () => {
-  assertEquals(floorToMinute("2026-09-29T10:30:00.000Z"), "2026-09-29T10:30:00.000Z");
-  assertEquals(floorToMinute("2026-09-29T10:30:59.999Z"), "2026-09-29T10:30:00.000Z");
-  assertEquals(floorToMinute("2026-09-29T23:59:59.999Z"), "2026-09-29T23:59:00.000Z");
-  assertEquals(floorToMinute("2026-01-01T00:00:00.000Z"), "2026-01-01T00:00:00.000Z");
-});
-
-Deno.test("minuteLookbackWindow yields the prior buckets only, newest excluded", () => {
-  assertEquals(minuteLookbackWindow("2026-09-29T10:30:00.000Z", 3), [
-    "2026-09-29T10:29:00.000Z",
-    "2026-09-29T10:28:00.000Z",
-    "2026-09-29T10:27:00.000Z",
-  ]);
-});
-
-// ---------------------------------------------------------------------------
-// Aggregate delta arithmetic
-// ---------------------------------------------------------------------------
-
-Deno.test("a violation reading sends a per-reading delta, never a running total", () => {
-  // 30 lux in the dark phase is the first violation value (DARK_VIOLATION_MIN).
-  const args = buildAggregateDelta(
-    { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:12.000Z", phase_type: "dark" },
-    "gh-001",
-  );
-  assertEquals(args, {
-    p_sensor_id: "ESP32-001",
-    p_greenhouse_id: "gh-001",
-    p_bucket_start: "2026-09-29T10:30:00.000Z",
-    p_phase_type: "dark",
-    p_sample_count: 1,
-    p_avg_lux: 30,
-    p_min_lux: 30,
-    p_max_lux: 30,
-    p_safe_count: 0,
-    p_warning_count: 0,
-    p_violation_count: 1,
-    p_updated_at: "2026-09-29T10:30:12.000Z",
-  });
-});
-
-Deno.test("safe and warning readings set exactly one classification count", () => {
-  const safe = buildAggregateDelta(
-    { sensor_id: "ESP32-001", lux: 5, recorded_at: "2026-09-29T10:30:02.000Z", phase_type: "dark" },
-    "gh-001",
-  );
-  assertEquals([safe.p_safe_count, safe.p_warning_count, safe.p_violation_count], [1, 0, 0]);
-
-  const warning = buildAggregateDelta(
-    { sensor_id: "ESP32-001", lux: 20, recorded_at: "2026-09-29T10:30:04.000Z", phase_type: "dark" },
-    "gh-001",
-  );
-  assertEquals([warning.p_safe_count, warning.p_warning_count, warning.p_violation_count], [0, 1, 0]);
-});
-
-Deno.test("every aggregate RPC argument uses the p_ prefix PostgREST requires", () => {
-  const args = buildAggregateDelta(
-    { sensor_id: "ESP32-001", lux: 5, recorded_at: "2026-09-29T10:30:02.000Z", phase_type: "dark" },
-    "gh-001",
-  );
-  for (const key of Object.keys(args)) {
-    assert(key.startsWith("p_"), `argument ${key} is missing the p_ prefix`);
+Deno.test("acknowledgement and resolution snapshots can replay independently of readings", () => {
+  for (const status of ["acknowledged", "resolved"] as const) {
+    assert(
+      validateDelivery(
+        delivery({
+          kind: "incident",
+          incident: {
+            ...incident,
+            status,
+            resolved_at: status === "resolved" ? "2026-10-01T00:01:00Z" : null,
+          },
+        }),
+      ).ok,
+    );
   }
 });
-
-// ---------------------------------------------------------------------------
-// Happy path / RPC call sequence
-// ---------------------------------------------------------------------------
-
-Deno.test("an assigned online reading updates the sensor list then upserts the minute", async () => {
-  const { handler, request, calls } = buildHandler({
-    body: {
-      sensor_id: "ESP32-001",
-      lux: 45.2,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "illumination",
-      greenhouse_id: "gh-001",
-    },
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  const body = await response.json();
-  assertEquals(body, {
-    ok: true,
-    sensor_id: "ESP32-001",
-    aggregate_updated: true,
-    sensor_status: "online",
-    classification: "warning",
-    bucket_start: "2026-09-29T10:30:00.000Z",
-    greenhouse_id: "gh-001",
-    sms_triggered: false,
-  });
-
-  // Three calls now, not two: the sensor_list pre-read that decides whether
-  // a greenhouse may be written, then the two writes.
-  assertEquals(calls.length, 3);
-  assertEquals((calls[0] as SelectCall).table, "sensor_list");
-  assertEquals((calls[1] as RpcCall).name, "update_sensor_list");
-  assertEquals((calls[2] as RpcCall).name, "upsert_minute_aggregate");
-
-  // The reading path DOES name a greenhouse, but only the one the sensor is
-  // already assigned to in sensor_list. See the "first reading assigns the
-  // sensor" tests below for why that distinction is load-bearing.
-  assertEquals(rpcArgs(calls, "update_sensor_list"), {
-    p_sensor_id: "ESP32-001",
-    p_lux: 45.2,
-    p_greenhouse_id: "gh-001",
-    p_reading: true,
-  });
-
-  const aggregateArgs = rpcArgs(calls, "upsert_minute_aggregate")!;
-  assertEquals(aggregateArgs.p_greenhouse_id, "gh-001");
-  assertEquals(aggregateArgs.p_sample_count, 1);
-  assertEquals(aggregateArgs.p_warning_count, 1);
-  assertEquals(aggregateArgs.p_bucket_start, "2026-09-29T10:30:00.000Z");
-});
-
-Deno.test("the greenhouse used for the aggregate comes from sensor_list, not the payload", async () => {
-  const { handler, request, calls } = buildHandler({
-    stub: stubClient({ sensorRow: { greenhouse_id: "gh-002" } }),
-    body: {
-      sensor_id: "ESP32-001",
-      lux: 5,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "dark",
-      greenhouse_id: "gh-999",
-    },
-  });
-  await handler(request);
+Deno.test("worker ticks run without any sensor readings", async () => {
+  const f = fixture();
   assertEquals(
-    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
-    "gh-002",
-    "a spoofed payload greenhouse must never be written",
+    (await f.handler(f.request({ retry_notifications: true }))).status,
+    200,
   );
-  assertEquals(
-    rpcArgs(calls, "upsert_minute_aggregate")!.p_greenhouse_id,
-    "gh-002",
-  );
+  assertEquals(f.calls.map((c) => c.name), ["claim_greenhouse_notifications"]);
 });
-
-Deno.test("a sensor seen for the first time is assigned from the payload's greenhouse", async () => {
-  // THE BUG THIS FIXES.
-  //
-  // update_sensor_list was called without p_greenhouse_id, on the reasoning
-  // that the reading path "must never name a greenhouse" because it could
-  // overwrite a manager's assignment. True — but it meant the payload's
-  // greenhouse was DISCARDED rather than used as a first-time default, so a
-  // brand new sensor stayed permanently unassigned. Every subsequent reading
-  // was then refused by upsert_minute_aggregate with "sensor is not assigned
-  // to a greenhouse", and the aggregate tables stayed empty forever.
-  //
-  // The distinction that makes this safe: sensor_list is the authority, so
-  // the value passed here is read from the sensor's own row. A payload-only
-  // greenhouse (sensorRow.greenhouse_id === null) is what makes this a
-  // default rather than an overwrite.
-  const { handler, request, calls } = buildHandler({
-    stub: stubClient({ sensorRow: { greenhouse_id: null } }),
-    body: {
-      sensor_id: "ESP32-001",
-      lux: 5,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "dark",
-      greenhouse_id: "gh-new",
-    },
+Deno.test("accepted means provider acceptance, not handset delivery", async () => {
+  const f = fixture({
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
   });
-
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-
-  assertEquals(
-    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
-    "gh-new",
-    "a first reading must assign the sensor, or aggregates are refused forever",
-  );
+  await drainNotifications(f.deps);
+  const finish = f.calls.find((c) => c.name === "finish_greenhouse_notification")!;
+  assertEquals(finish.args.p_outcome, "accepted");
+  assert(String(finish.args.p_detail).includes("unconfirmed"));
+  assertEquals(finish.args.p_attempt_token, "attempt1");
 });
-
-Deno.test("a sensor already assigned elsewhere is not reassigned by a stale payload", async () => {
-  // The other half of the guarantee. sensor_list is authoritative, so a
-  // manager's reassignment to gh-002 wins over a Pi still reporting gh-001,
-  // and the value passed through is gh-002 -- never the payload's.
-  const { handler, request, calls } = buildHandler({
-    stub: stubClient({ sensorRow: { greenhouse_id: "gh-002" } }),
-    body: {
-      sensor_id: "ESP32-001",
-      lux: 5,
-      recorded_at: "2026-09-29T10:30:00.000Z",
-      phase_type: "dark",
-      greenhouse_id: "gh-stale",
-    },
-  });
-
-  await handler(request);
-  assertEquals(
-    rpcArgs(calls, "update_sensor_list")!.p_greenhouse_id,
-    "gh-002",
-    "the sensor's own assignment must win over a stale payload",
-  );
-});
-
-Deno.test("a PostgREST array result from the RPC is unwrapped", async () => {
-  // Some PostgREST versions return a composite-returning function's result as
-  // a one-row array rather than an object. The wrapper below keeps the call
-  // log in one place so the assertions still see it.
-  const inner = stubClient();
-  const calls: Call[] = [];
-  const arrayReturning: SupabaseLike = {
-    from: (table) => inner.client.from(table),
-    rpc(name, args) {
-      calls.push({ kind: "rpc", name, args });
-      if (name === "update_sensor_list") {
-        return Promise.resolve({ data: [inner.sensorRow], error: null });
-      }
-      return inner.client.rpc(name, args);
-    },
-  };
-  const { handler, request } = buildHandler({ client: arrayReturning });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).aggregate_updated, true);
-  assertEquals(rpcArgs(calls, "upsert_minute_aggregate")!.p_greenhouse_id, "gh-001");
-});
-
-// ---------------------------------------------------------------------------
-// Unassigned sensors
-// ---------------------------------------------------------------------------
-
-Deno.test("an unassigned sensor still updates the sensor list but writes no aggregate", async () => {
-  const { handler, request, calls } = buildHandler({
-    stub: stubClient({ sensorRow: { greenhouse_id: null } }),
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  const body = await response.json();
-  assertEquals(body.ok, true);
-  assertEquals(body.aggregate_updated, false);
-  assertEquals(body.reason, "sensor_not_assigned");
-  assertEquals(body.sensor_status, "online");
-  assertEquals(rpcArgs(calls, "update_sensor_list")!.p_sensor_id, "ESP32-001");
-  assertEquals(
-    calls.filter((c) => c.kind === "rpc" && c.name === "upsert_minute_aggregate").length,
-    0,
-  );
-});
-
-Deno.test("an offline sensor result suppresses the aggregate with its own reason", async () => {
-  const { handler, request, calls } = buildHandler({
-    stub: stubClient({ sensorRow: { status: "offline", greenhouse_id: "gh-001" } }),
-  });
-  const response = await handler(request);
-  const body = await response.json();
-  assertEquals(body.aggregate_updated, false);
-  assertEquals(body.reason, "sensor_offline");
-  assertEquals(
-    calls.filter((c) => c.kind === "rpc" && c.name === "upsert_minute_aggregate").length,
-    0,
-  );
-});
-
-// ---------------------------------------------------------------------------
-// RPC failures
-// ---------------------------------------------------------------------------
-
-Deno.test("an update_sensor_list failure returns 500 and writes no aggregate", async () => {
-  const { handler, request, calls, spawner } = buildHandler({
-    stub: stubClient({ sensorError: { message: "boom" } }),
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 500);
-  const body = await response.json();
-  assertEquals(body.ok, false);
-  assert(String(body.error).includes("boom"));
-  assertEquals(
-    calls.filter((c) => c.kind === "rpc" && c.name === "upsert_minute_aggregate").length,
-    0,
-  );
-  assertEquals((await spawner.settle()).length, 0);
-});
-
-Deno.test("an aggregate failure returns 500 without sending an SMS", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({
-      aggregateError: { message: "Sensor ESP32-001 is not assigned" },
-      aggregateRow: { violation_count: 5 },
+Deno.test("rejection remains durable and credentials are redacted", async () => {
+  const f = fixture({
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
+    provider: new Response(JSON.stringify({ error: "secret rejected" }), {
+      status: 401,
     }),
   });
-  const response = await handler(request);
-  assertEquals(response.status, 500);
-  assertEquals((await response.json()).ok, false);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 0);
+  await drainNotifications(f.deps);
+  const args = f.calls.find((c) => c.name === "finish_greenhouse_notification")!.args;
+  assertEquals(args.p_outcome, "failed");
+  assert(!String(args.p_detail).includes("secret"));
 });
-
-// ---------------------------------------------------------------------------
-// SMS triggering: violation_count >= 3, once per sustained breach
-// ---------------------------------------------------------------------------
-
-function violationAggregate(count: number) {
-  return {
-    sensor_id: "ESP32-001",
-    bucket_start: "2026-09-29T10:30:00.000Z",
-    sample_count: count,
-    violation_count: count,
-    safe_count: 0,
-    warning_count: 0,
-    avg_lux: 10,
-    min_lux: 10,
-    max_lux: 10,
-  };
-}
-
-Deno.test("a violation alert is sent through the gateway with the key in the header", async () => {
-  // The alert path is the reason this project needs SMS at all, so it is
-  // pinned here: one request, the key in a header, and the recipient
-  // normalized to E.164. There is no alphanumeric sender name any more —
-  // the gateway relays through the project's own prepaid SIM.
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).sms_triggered, true);
-  await spawner.settle();
-
-  assertEquals(fetchCalls.length, 1, "the alert should have been sent");
-  assertEquals(fetchCalls[0].url, "https://api.textbee.dev/api/v1/gateway/send-sms");
-
-  const payload = JSON.parse(String(fetchCalls[0].init.body));
-  assertEquals(payload.recipients, ["+639171234567"]);
-  assert((payload.message as string).includes("ALERT"), `expected an alert body, got: ${payload.message}`);
-  assert((payload.message as string).length <= 160, "an alert must stay one billable segment");
-
-  const headers = fetchCalls[0].init.headers as Record<string, string>;
-  assertEquals(headers["x-api-key"], "tb_key_value");
-});
-
-Deno.test("an unconfigured gateway does not silence reading ingestion", async () => {
-  // A monitoring system that stops recording because it cannot text anyone
-  // is worse than one that records silently. The reading must still land.
-  const { handler, request, spawner, fetchCalls, calls } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    readSettings: () => Promise.resolve({ sms_provider: "textbee", textbee_api_key: "", manager_phone: "+639171234567" }),
-  });
-
-  const response = await handler(request);
-  assertEquals(response.status, 200, "a missing SMS key must not fail the reading");
-  await spawner.settle();
-
-  assertEquals(fetchCalls.length, 0, "nothing may be sent without a key");
-  assert(
-    calls.some((c) => c.kind === "rpc" && c.name === "upsert_minute_aggregate"),
-    "the reading must still be recorded",
-  );
-});
-
-Deno.test("no SMS below the 3-reading confirmation threshold", async () => {
-  for (const count of [1, 2]) {
-    const { handler, request, spawner, fetchCalls } = buildHandler({
-      stub: stubClient({ aggregateRow: violationAggregate(count) }),
-      body: { sensor_id: "ESP32-001", lux: 10, recorded_at: "2026-09-29T10:30:00.000Z", phase_type: "dark" },
-    });
-    const response = await handler(request);
-    assertEquals(response.status, 200);
-    assertEquals((await response.json()).sms_triggered, false);
-    await spawner.settle();
-    assertEquals(fetchCalls.length, 0, `violation_count ${count} must not notify`);
-  }
-});
-
-Deno.test("an SMS is fired when the merged violation_count reaches 3", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  const response = await handler(request);
-  const body = await response.json();
-  assertEquals(body.sms_triggered, true);
-  await spawner.settle();
-
-  assertEquals(fetchCalls.length, 1);
-  const call = fetchCalls[0];
-  assertEquals(call.url, "https://api.textbee.dev/api/v1/gateway/send-sms");
-  const sent = JSON.parse(String(call.init.body));
-  assertEquals(sent.recipients, ["+639171234567"]);
-  assert(sent.message.includes("ESP32-001"));
-  assert(sent.message.includes("30 lux"));
-  assertEquals(call.init.method, "POST");
-});
-
-Deno.test("the SMS is not repeated while the same breach continues", async () => {
-  // One shared guard across four readings of a single sustained breach: the
-  // bucket's merged violation_count climbs 3 -> 4 -> 5 -> 6, and exactly one
-  // notification is sent.
-  const guard = createSmsGuard();
-  const sentPerReading: number[] = [];
-  for (const count of [3, 4, 5, 6]) {
-    const { handler, request, spawner, fetchCalls } = buildHandler({
-      guard,
-      stub: stubClient({ aggregateRow: violationAggregate(count) }),
-      body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    });
-    await handler(request);
-    await spawner.settle();
-    sentPerReading.push(fetchCalls.length);
-  }
-  assertEquals(sentPerReading, [1, 0, 0, 0], "one SMS for the whole sustained breach");
-});
-
-Deno.test("a safe reading resets the guard so the next breach notifies again", async () => {
-  const guard = createSmsGuard();
-  const safe = { sensor_id: "ESP32-001", lux: 5, recorded_at: "2026-09-29T10:31:00.000Z", phase_type: "dark" };
-
-  const first = buildHandler({
-    guard,
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  await first.handler(first.request);
-  await first.spawner.settle();
-  assertEquals(first.fetchCalls.length, 1);
-
-  const resolution = buildHandler({
-    guard,
-    stub: stubClient({
-      aggregateRow: { ...violationAggregate(0), sample_count: 1, safe_count: 1, violation_count: 0 },
-    }),
-    body: safe,
-  });
-  const resolveResponse = await resolution.handler(resolution.request);
-  assertEquals((await resolveResponse.json()).classification, "safe");
-  await resolution.spawner.settle();
-  assertEquals(resolution.fetchCalls.length, 0);
-
-  const second = buildHandler({
-    guard,
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 10, recorded_at: "2026-09-29T10:40:20.000Z", phase_type: "dark" },
-  });
-  await second.handler(second.request);
-  await second.spawner.settle();
-  assertEquals(second.fetchCalls.length, 1, "a new breach is a new notification");
-});
-
-Deno.test("the guard is per sensor", async () => {
-  const guard = createSmsGuard();
-  const a = buildHandler({
-    guard,
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  await a.handler(a.request);
-  await a.spawner.settle();
-
-  const b = buildHandler({
-    guard,
-    stub: stubClient({
-      sensorRow: { sensor_id: "ESP32-002" },
-      aggregateRow: { ...violationAggregate(3), sensor_id: "ESP32-002" },
-    }),
-    body: { sensor_id: "ESP32-002", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  const response = await b.handler(b.request);
-  assertEquals((await response.json()).sms_triggered, true);
-  await b.spawner.settle();
-  assertEquals(b.fetchCalls.length, 1, "ESP32-002 has not been notified yet");
-});
-
-// ---------------------------------------------------------------------------
-// Durable (cold-start) dedupe
-// ---------------------------------------------------------------------------
-
-function bucket(offsetMinutes: number, counts: { safe?: number; warning?: number; violation?: number }) {
-  const violation = counts.violation ?? 0;
-  const base = Date.parse("2026-09-29T10:30:00.000Z");
-  return {
-    sensor_id: "ESP32-001",
-    bucket_start: new Date(base - offsetMinutes * 60_000).toISOString(),
-    sample_count: (counts.safe ?? 0) + (counts.warning ?? 0) + violation,
-    safe_count: counts.safe ?? 0,
-    warning_count: counts.warning ?? 0,
-    violation_count: violation,
-  };
-}
-
-Deno.test("hasPriorConfirmedBreach sees a sustained breach confirmed in the previous minute", async () => {
-  const { client } = stubClient({
-    priorRows: [bucket(1, { violation: 5 }), bucket(2, { violation: 4 }), bucket(3, { violation: 3 })],
-  });
-  assertEquals(await hasPriorConfirmedBreach(client, "ESP32-001", "2026-09-29T10:30:00.000Z", 10), true);
-});
-
-Deno.test("hasPriorConfirmedBreach is false when the last minute was safe", async () => {
-  const { client } = stubClient({
-    priorRows: [bucket(1, { safe: 1 }), bucket(2, { violation: 6 })],
-  });
-  assertEquals(await hasPriorConfirmedBreach(client, "ESP32-001", "2026-09-29T10:30:00.000Z", 10), false);
-});
-
-Deno.test("hasPriorConfirmedBreach is false for a first-time breach of 1 or 2 readings", async () => {
-  const { client } = stubClient({ priorRows: [bucket(1, { violation: 2 }), bucket(2, { violation: 1 })] });
-  assertEquals(await hasPriorConfirmedBreach(client, "ESP32-001", "2026-09-29T10:30:00.000Z", 10), false);
-});
-
-Deno.test("hasPriorConfirmedBreach treats a data gap as a resolved breach", async () => {
-  const { client } = stubClient({ priorRows: [bucket(4, { violation: 6 })] });
-  assertEquals(await hasPriorConfirmedBreach(client, "ESP32-001", "2026-09-29T10:30:00.000Z", 10), false);
-});
-
-Deno.test("a cold start mid-breach does not re-notify (durable aggregate check)", async () => {
-  // A fresh guard: this simulates a cold start, so the in-memory flag is gone.
-  const { handler, request, spawner, fetchCalls, calls } = buildHandler({
-    stub: stubClient({
-      aggregateRow: violationAggregate(3),
-      priorRows: [bucket(1, { violation: 5 })],
-    }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  const response = await handler(request);
-  assertEquals((await response.json()).sms_triggered, false);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 0);
-  // Two selects happen now: the sensor_list assignment pre-read and the
-  // aggregate history the dedupe relies on. Assert on the latter by table.
-  const selects = calls.filter((c) => c.kind === "select") as SelectCall[];
-  assert(
-    selects.some((s) => s.table === "sensor_minute_aggregates"),
-    "the durable check must query the prior buckets",
-  );
-});
-
-Deno.test("a cold start on a genuinely new breach still notifies", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({
-      aggregateRow: violationAggregate(3),
-      priorRows: [bucket(1, { violation: 2 }), bucket(2, { safe: 1 })],
-    }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  await handler(request);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 1);
-});
-
-Deno.test("a failing durable lookup fails open (alert) instead of throwing", async () => {
-  const base = stubClient({ aggregateRow: violationAggregate(3) });
-  const failing: SupabaseLike = {
-    rpc: (name, args) => base.client.rpc(name, args),
-    from() {
-      return {
-        select() {
-          return {
-            in() {
-              return Promise.reject(new Error("network down"));
-            },
-          };
-        },
-      };
-    },
-  };
-  const logs: string[] = [];
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    client: failing,
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    log: (level, message) => logs.push(`${level}: ${message}`),
-  });
-  const response = await handler(request);
-  // The rejection must not escape the request path, and a real confirmed
-  // breach must still be alerted on rather than silently suppressed.
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).sms_triggered, true);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 1);
-  assert(logs.some((l) => l.includes("network down")), "the lookup failure is logged");
-});
-
-// ---------------------------------------------------------------------------
-// SMS transport failures never block ingestion
-// ---------------------------------------------------------------------------
-
-Deno.test("a rejected SMS fetch does not affect the response and is logged", async () => {
-  const logs: string[] = [];
-  const { handler, request, spawner } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    fetchImpl: () => Promise.reject(new Error("semaphore 502")),
-    log: (level, message) => logs.push(`${level}: ${message}`),
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).ok, true);
-  await spawner.settle();
-  assertEquals(logs.length, 1);
-  assert(logs[0].startsWith("error:"));
-  assert(logs[0].includes("semaphore 502"), "the failure reason is logged for retry");
-});
-
-Deno.test("unconfigured SMS settings skip the send entirely", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
+Deno.test("missing configuration records failure without retry", async () => {
+  const f = fixture({
+    jobs: [{ id: "job1", attempt_token: "attempt1", channel: "sms", event: "opened", recipient: "09171234567", message: "LPMAS ALERT: Greenhouse G1 has a confirmed light violation." }],
     settings: {},
-    fetchImpl: async () => {
-      throw new Error("should not be called");
-    },
   });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).sms_triggered, false);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 0);
+  await drainNotifications(f.deps);
+  assertEquals(f.network.length, 0);
+  assertEquals(f.calls.at(-1)!.args.p_outcome, "failed");
+});
+Deno.test("oversize and malformed requests fail before database writes", async () => {
+  const f = fixture();
+  assertEquals(
+    (await f.handler(f.request({ data: "x".repeat(33000) }))).status,
+    413,
+  );
+  const request = new Request("https://local/ingest", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${KEY}` },
+    body: "{",
+  });
+  assertEquals((await f.handler(request)).status, 400);
+  assertEquals(f.calls.length, 0);
 });
 
-Deno.test("a throwing readSettings is swallowed and does not fail the request", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    readSettings: () => Promise.reject(new Error("settings 500")),
-    fetchImpl: async () => {
-      throw new Error("should not be called");
-    },
-  });
-  const response = await handler(request);
-  assertEquals(response.status, 200);
-  assertEquals((await response.json()).ok, true);
-  await spawner.settle();
-  assertEquals(fetchCalls.length, 0);
+Deno.test("modern confirmations require one configuration for every triggering sample", () => {
+  const modern = {
+    ...structuredClone(incident),
+    config_version: "snapshot",
+    triggering_readings: incident.triggering_readings.map(r => ({...r, config_version: "snapshot"})),
+  };
+  assert(validateDelivery(delivery({config_version: "snapshot", incident: modern})).ok);
+  modern.triggering_readings[0].config_version = "previous";
+  assert(!validateDelivery(delivery({config_version: "snapshot", incident: modern})).ok);
+  modern.triggering_readings[0].config_version = "snapshot";
+  assert(!validateDelivery(delivery({config_version: "different", incident: modern})).ok);
 });
 
-Deno.test("the response is returned even while the SMS is still in flight", async () => {
-  // A fetch that never settles models a slow provider: the request must not
-  // wait for it (plan Review Focus #4).
-  const { handler, request } = buildHandler({
-    stub: stubClient({ aggregateRow: violationAggregate(3) }),
-    body: { sensor_id: "ESP32-001", lux: 30, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-    fetchImpl: () => new Promise(() => {}),
-  });
-  const response = await Promise.race([
-    handler(request),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("handler awaited the SMS")), 2000)),
-  ]);
-  assertEquals(response.status, 200);
+Deno.test("context closures replay independently and preserve the confirmation configuration", () => {
+  for (const reason of ["safe_reading", "phase_ended", "assignment_changed", "configuration_changed", "monitoring_window_ended"] as const) {
+    const closed = {
+      ...structuredClone(incident),
+      config_version: "original",
+      status: "resolved" as const,
+      resolved_at: "2026-10-01T00:01:00Z",
+      resolution_reason: reason,
+      triggering_readings: incident.triggering_readings.map(r => ({...r, config_version: "original"})),
+    };
+    assert(validateDelivery(delivery({kind: "incident", incident: closed})).ok);
+  }
 });
 
-Deno.test("the SMS message is built from the confirmed breach details", async () => {
-  const { handler, request, spawner, fetchCalls } = buildHandler({
-    stub: stubClient({
-      sensorRow: { greenhouse_id: "greenhouse-alpha" },
-      aggregateRow: violationAggregate(3),
-    }),
-    body: { sensor_id: "ESP32-009", lux: 42.5, recorded_at: "2026-09-29T10:30:20.000Z", phase_type: "dark" },
-  });
-  await handler(request);
-  await spawner.settle();
-  const sent = JSON.parse(String(fetchCalls[0].init.body));
-  assert(sent.message.includes("ESP32-009"));
-  assert(sent.message.includes("greenhouse-alpha"));
-  assert(sent.message.includes("42.5 lux"));
-  assert(sent.message.includes("dark"), "the message names the phase");
-});
-
-Deno.test("CONSECUTIVE_VIOLATIONS_REQUIRED is the project rule of 3", () => {
-  assertEquals(CONSECUTIVE_VIOLATIONS_REQUIRED, 3);
+Deno.test("invalid closure metadata is rejected without breaking historical queues", () => {
+  assert(validateDelivery(delivery({incident})).ok);
+  assert(!validateDelivery(delivery({incident: {...incident, resolution_reason: "safe_reading"}})).ok);
+  assert(!validateDelivery(delivery({incident: {...incident, status: "resolved", resolved_at: "2026-09-01T00:00:00Z"}})).ok);
+  assert(!validateDelivery(delivery({incident: {...incident, config_version: ""}})).ok);
 });

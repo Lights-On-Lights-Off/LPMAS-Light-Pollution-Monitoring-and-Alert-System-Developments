@@ -886,7 +886,7 @@ function RecycleBinView() {
   }, []);
 
   async function restore(entry: RecycleBinEntry) {
-    if (!supabase || restoring !== null) return;
+    if (!supabase || restoring !== null || emptying) return;
     setRestoring(entry.id);setError(null);
     try {
       const result = await supabase.rpc("restore_greenhouse",{p_recycle_id:entry.id});
@@ -898,10 +898,11 @@ function RecycleBinView() {
   }
 
   async function handleEmptyTrash() {
-    if (!supabase || emptying || !entries.length) return;
+    if (!supabase || emptying || restoring !== null || !entries.length) return;
     const confirmed = await confirm(`Permanently delete ${entries.length} recycle bin ${entries.length === 1 ? "entry" : "entries"}? This cannot be undone.`);
     if (!confirmed) return;
     setEmptying(true);
+    setError(null);
     try {
       const { error } = await supabase.rpc("empty_greenhouse_recycle_bin");
       if (error) throw new Error(error.message);
@@ -926,7 +927,7 @@ function RecycleBinView() {
           <button
             onClick={handleEmptyTrash}
             type="button"
-            disabled={emptying || !entries.length}
+            disabled={emptying || restoring !== null || !entries.length}
             className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,#ef4444_14%,transparent)] px-3.5 py-2 text-sm font-medium text-red-400 transition hover:bg-[color-mix(in_srgb,#ef4444_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Trash2 size={16} />
@@ -941,7 +942,7 @@ function RecycleBinView() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {entries.map(entry => (
               <div key={entry.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
-                <button onClick={() => void restore(entry)} disabled={restoring !== null} className="mb-3 rounded-lg border border-theme-border px-3 py-2 text-sm font-semibold text-theme-text disabled:opacity-50">{restoring === entry.id ? "Restoring…" : "Restore configuration"}</button>
+                <button onClick={() => void restore(entry)} disabled={restoring !== null || emptying} className="mb-3 rounded-lg border border-theme-border px-3 py-2 text-sm font-semibold text-theme-text disabled:opacity-50">{restoring === entry.id ? "Restoring…" : "Restore configuration"}</button>
                 <p className="font-semibold text-[var(--foreground)]">{entry.name}</p>
                 <div className="mt-3 space-y-1.5 text-xs text-[var(--muted-foreground)]">
                   <p>Deleted: {new Date(entry.deleted_at).toLocaleString()}</p>
