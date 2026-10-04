@@ -1,6 +1,7 @@
 "use client";
 
 import { supabase } from "./supabase";
+import { activityBrowser, activityPage } from "./activity-context";
 
 export type ActivityDetails = Record<string, unknown>;
 
@@ -11,7 +12,9 @@ export async function logActivity(action: string, resource?: string, resourceId?
     p_action: action,
     p_resource: resource ?? null,
     p_resource_id: resourceId ?? null,
-    p_details: details ?? null
+    p_details: details ?? null,
+    p_page: typeof window === "undefined" ? null : activityPage(window.location.pathname, window.location.search),
+    p_browser: typeof navigator === "undefined" ? null : activityBrowser(navigator.userAgent)
   });
 
   if (error) {
