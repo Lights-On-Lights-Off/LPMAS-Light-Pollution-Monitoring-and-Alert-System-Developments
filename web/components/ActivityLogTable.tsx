@@ -50,7 +50,7 @@ export function ActivityLogTable({
   loading: boolean;
   error?: string | null;
   showRoleColumn?: boolean;
-  onDownloadCsv: () => void;
+  onDownloadCsv: (logs: ActivityLogRow[]) => void;
   downloadDisabled?: boolean;
 }) {
   const [search, setSearch] = useState("");
@@ -66,7 +66,12 @@ export function ActivityLogTable({
       (log.username ?? "").toLowerCase().includes(term) ||
       log.action.toLowerCase().includes(term) ||
       (log.page ?? "").toLowerCase().includes(term) ||
-      (log.role ?? "").toLowerCase().includes(term)
+      (log.role ?? "").toLowerCase().includes(term) ||
+      (log.browser ?? "").toLowerCase().includes(term) ||
+      (log.ip_address ?? "").toLowerCase().includes(term) ||
+      (log.resource ?? "").toLowerCase().includes(term) ||
+      (log.resource_id ?? "").toLowerCase().includes(term) ||
+      (log.details ? JSON.stringify(log.details) : "").toLowerCase().includes(term)
     );
 
     const sorted = [...rows].sort((a, b) => {
@@ -117,8 +122,8 @@ export function ActivityLogTable({
             entries
           </label>
           <button
-            onClick={onDownloadCsv}
-            disabled={downloadDisabled}
+            onClick={() => onDownloadCsv(filtered)}
+            disabled={downloadDisabled || loading || !filtered.length}
             className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-3 py-1.5 text-xs font-medium disabled:opacity-50"
           >
             <Download size={14} />
@@ -130,11 +135,13 @@ export function ActivityLogTable({
           <input
             value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }}
-            placeholder="Actor, action, page..."
+            placeholder="Actor, action, page, browser..."
             className="w-44 rounded-lg border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_6%,var(--surface))] px-2.5 py-1.5 text-xs text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
           />
         </label>
       </div>
+
+      {error && logs.length > 0 && <p role="alert" className="mb-3 text-sm text-red-400">Unable to refresh activity logs. Showing previously loaded entries. {error}</p>}
 
       {loading ? (
         <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">Loading activity logs...</div>
@@ -145,7 +152,7 @@ export function ActivityLogTable({
       ) : (
         <>
           <div className="hidden w-full overflow-x-auto rounded-2xl border border-white/[0.07] bg-black/[0.08] md:block">
-            <table className="w-full table-fixed text-sm leading-5">
+            <table className="w-full min-w-[1050px] text-sm leading-5">
               <thead className="border-b border-metal-700 bg-[var(--surface)]">
                 <tr>
                   <th className="cursor-pointer select-none px-3 py-3 text-left align-middle text-xs font-semibold tracking-wide text-metal-300" onClick={() => toggleSort("created_at")}>Time {sortIndicator("created_at")}</th>
@@ -170,9 +177,9 @@ export function ActivityLogTable({
                         View
                       </button>
                     </td>
-                    <td className="max-w-[180px] truncate px-3 py-3 align-middle font-mono text-xs text-metal-400" title={log.page ?? undefined}>{log.page ?? "—"}</td>
+                    <td className="max-w-[240px] break-all px-3 py-3 align-middle font-mono text-xs text-metal-400" title={log.page ?? undefined}>{log.page?.trim() || "Not recorded"}</td>
                     <td className="px-3 py-3 align-middle font-mono text-xs text-metal-400">{log.ip_address ?? "—"}</td>
-                    <td className="px-3 py-3 align-middle text-xs text-metal-400">{log.browser ?? "—"}</td>
+                    <td className="px-3 py-3 align-middle text-xs text-metal-400 whitespace-nowrap">{log.browser?.trim() || "Not recorded"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -199,11 +206,11 @@ export function ActivityLogTable({
                   </div>
                   <div className="flex items-baseline justify-between gap-4">
                     <span className="shrink-0 text-[var(--muted-foreground)]">Page</span>
-                    <span className="min-w-0 break-all text-right font-mono text-[var(--foreground)]">{log.page ?? "—"}</span>
+                    <span className="min-w-0 break-all text-right font-mono text-[var(--foreground)]">{log.page?.trim() || "Not recorded"}</span>
                   </div>
                   <div className="flex items-baseline justify-between gap-4">
                     <span className="shrink-0 text-[var(--muted-foreground)]">IP / Browser</span>
-                    <span className="min-w-0 break-words text-right text-[var(--foreground)]">{log.ip_address ?? "—"} · {log.browser ?? "—"}</span>
+                    <span className="min-w-0 break-words text-right text-[var(--foreground)]">{log.ip_address ?? "—"} · {log.browser?.trim() || "Not recorded"}</span>
                   </div>
                 </div>
                 <button onClick={() => setViewingLog(log)} className="mt-3 w-full rounded-lg border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] py-1.5 text-xs font-medium text-[var(--foreground)]">
@@ -236,9 +243,9 @@ export function ActivityLogTable({
             <DetailRow label="Actor" value={viewingLog.username ?? "Unknown"} />
             {viewingLog.role && <DetailRow label="Role" value={viewingLog.role} />}
             <DetailRow label="Resource" value={viewingLog.resource ? `${viewingLog.resource}${viewingLog.resource_id ? ` (${viewingLog.resource_id})` : ""}` : "—"} />
-            <DetailRow label="Page" value={viewingLog.page ?? "—"} mono />
+            <DetailRow label="Page" value={viewingLog.page?.trim() || "Not recorded"} mono />
             <DetailRow label="IP Address" value={viewingLog.ip_address ?? "—"} mono />
-            <DetailRow label="Browser" value={viewingLog.browser ?? "—"} />
+            <DetailRow label="Browser" value={viewingLog.browser?.trim() || "Not recorded"} />
             <div>
               <p className="mb-1.5 text-xs font-semibold text-[var(--muted-foreground)]">Details</p>
               <pre className="max-h-56 overflow-auto rounded-lg bg-black/20 p-3 text-xs text-[var(--foreground)]">

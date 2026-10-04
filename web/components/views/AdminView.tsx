@@ -5,7 +5,8 @@ import { Activity, BarChart3, ClipboardList, Database, Pencil, Phone, Plus, Tras
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, Badge } from "../ui";
 import { Modal } from "../Modal";
-import { ExportCsvButton } from "../ExportCsvButton";
+import { ActivityLogTable, type ActivityLogRow } from "../ActivityLogTable";
+import { downloadCsv } from "@/lib/csv";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { GmailConnection } from "../GmailConnection";
 import { sensorHealth, incidentOutcome } from "@/lib/monitoring-state";
@@ -41,7 +42,7 @@ const TITLES: Record<string, { title: string; description: string }> = {
 const ROLES: Role[] = ["manager", "admin"];
 const LINE_COLORS = ["var(--theme-accent)", "var(--theme-accent-hover)"];
 
-type ActivityLog = { id: number; username: string | null; role: string; action: string; resource: string | null; resource_id: string | null; details: Record<string, unknown> | null; created_at: string };
+type ActivityLog = ActivityLogRow;
 type SensorAggregate = { sensor_id: string; greenhouse_id: string; bucket_start: string; phase_type: string; sample_count: number; avg_lux: number; min_lux: number; max_lux: number; safe_count: number; warning_count: number; violation_count: number; updated_at: string };
 type MonitoringIncident = Incident & { pi_incident_id: number; updated_at: string };
 
@@ -108,7 +109,6 @@ export function AdminView({ section }: { section: string }) {
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
-  const [activitySearch, setActivitySearch] = useState("");
   const [activityRoleFilter, setActivityRoleFilter] = useState<"all" | Role>("all");
   const [activityActionFilter, setActivityActionFilter] = useState("all");
   const [overviewAggregates, setOverviewAggregates] = useState<SensorAggregate[]>([]);
@@ -380,12 +380,13 @@ export function AdminView({ section }: { section: string }) {
   async function loadActivityLogs(showLoading = false) {
     if (!supabase) {
       setActivityError("Supabase is not configured.");
+      setActivityLoading(false);
       return;
     }
 
     if (showLoading) setActivityLoading(true);
 
-    const { data: logs, error } = await supabase.from("activity_logs").select("id, username, role, action, resource, resource_id, details, created_at").neq("action", "NAVIGATE").order("created_at", { ascending: false }).limit(100);
+    const { data: logs, error } = await supabase.from("activity_logs").select("id, username, role, action, resource, resource_id, details, page, ip_address, browser, created_at").neq("action", "NAVIGATE").order("created_at", { ascending: false });
 
     if (error) setActivityError(error.message);
     else {
@@ -408,7 +409,7 @@ export function AdminView({ section }: { section: string }) {
   }, [section]);
   useEffect(() => {
     if (section === "System settings") loadManagerPhone();
-    if (section === "Activity Logs") loadActivityLogs();
+    if (section === "Activity Logs") loadActivityLogs(true);
   }, [section]);
   useEffect(() => {
     if (section !== "Activity Logs") return;
@@ -489,26 +490,26 @@ export function AdminView({ section }: { section: string }) {
 
   const activityActions = useMemo(() => Array.from(new Set(activityLogs.map(log => log.action))).sort(), [activityLogs]);
 
-  const filteredActivityLogs = useMemo(() => {
-    const query = activitySearch.trim().toLowerCase();
+  const filteredActivityLogs = useMemo(() => activityLogs.filter(log =>
+    (activityRoleFilter === "all" || log.role === activityRoleFilter) &&
+    (activityActionFilter === "all" || log.action === activityActionFilter)
+  ), [activityActionFilter, activityLogs, activityRoleFilter]);
 
-    return activityLogs.filter(log => {
-      const matchesRole = activityRoleFilter === "all" || log.role === activityRoleFilter;
-      const matchesAction = activityActionFilter === "all" || log.action === activityActionFilter;
-      const haystack = [log.username, log.role, log.action, log.resource, log.resource_id, log.details ? JSON.stringify(log.details) : ""].filter(Boolean).join(" ").toLowerCase();
-      return matchesRole && matchesAction && (!query || haystack.includes(query));
-    });
-  }, [activityActionFilter, activityLogs, activityRoleFilter, activitySearch]);
-
-  const activityRows = useMemo(() => filteredActivityLogs.map(log => ({
-    Timestamp: new Date(log.created_at).toLocaleString(),
-    Username: log.username ?? "Unknown",
-    Role: log.role,
-    Action: log.action,
-    Resource: log.resource ?? "—",
-    ResourceID: log.resource_id ?? "—",
-    Details: log.details ? JSON.stringify(log.details) : "—"
-  })), [filteredActivityLogs]);
+  async function downloadActivityCsv(logs: ActivityLogRow[]) {
+    downloadCsv("admin-activity-logs.csv", logs.map(log => ({
+      Timestamp: new Date(log.created_at).toLocaleString(),
+      Username: log.username ?? "Unknown",
+      Role: log.role ?? "",
+      Action: log.action,
+      Page: log.page ?? "",
+      "IP Address": log.ip_address ?? "",
+      Browser: log.browser ?? "",
+      Resource: log.resource ?? "",
+      ResourceID: log.resource_id ?? "",
+      Details: log.details ? JSON.stringify(log.details) : ""
+    })));
+    await logActivity("EXPORT_ACTIVITY_LOGS", "activity_logs", undefined, { scope: "admin", format: "csv" });
+  }
 
   const filteredTeam = useMemo(() => {
     if (!team) return [];
@@ -1097,13 +1098,6 @@ export function AdminView({ section }: { section: string }) {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  value={activitySearch}
-                  onChange={e => setActivitySearch(e.target.value)}
-                  placeholder="Search activity"
-                  className={`${controlClassName} w-[210px]`}
-                />
-
                 <select value={activityRoleFilter} onChange={e => setActivityRoleFilter(e.target.value as "all" | Role)} className={`${controlClassName} w-auto min-w-[112px]`}>
                   <option value="all" className="bg-theme-surface-secondary text-theme-text">All roles</option>
                   {ROLES.map(role => <option key={role} value={role} className="bg-theme-surface-secondary text-theme-text">{role}</option>)}
@@ -1113,52 +1107,17 @@ export function AdminView({ section }: { section: string }) {
                   <option value="all" className="bg-theme-surface-secondary text-theme-text">All actions</option>
                   {activityActions.map(action => <option key={action} value={action} className="bg-theme-surface-secondary text-theme-text">{action}</option>)}
                 </select>
-
-                <ExportCsvButton filename="admin-activity-logs.csv" rows={activityRows} />
               </div>
             </div>
 
-            {activityError && <div className="mb-3 rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{activityError}</div>}
-
-            {activityLoading ? (
-              <p className="text-sm text-theme-muted">Loading activity logs…</p>
-            ) : (
-              <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-                <table className="w-full min-w-[1120px] border-collapse text-sm">
-                  <thead className="bg-theme-surface-secondary">
-                    <tr className="border-b border-theme-accent/30">
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Time</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Actor</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Role</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Action</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Resource</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Resource ID</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Details</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {filteredActivityLogs.length > 0 ? (
-                      filteredActivityLogs.map(log => (
-                        <tr key={log.id} className="border-b border-theme-border/80">
-                          <td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(log.created_at).toLocaleString()}</td>
-                          <td className="px-5 py-3.5 text-center text-theme-text">{log.username ?? "Unknown"}</td>
-                          <td className="px-5 py-3.5 text-center capitalize text-theme-secondary-text">{log.role}</td>
-                          <td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{log.action}</td>
-                          <td className="px-5 py-3.5 text-center text-theme-secondary-text">{log.resource ?? "—"}</td>
-                          <td className="px-5 py-3.5 text-center font-mono text-xs text-theme-secondary-text">{log.resource_id ?? "—"}</td>
-                          <td className="max-w-[360px] px-5 py-3.5 text-center text-xs text-theme-secondary-text">{log.details ? JSON.stringify(log.details) : "—"}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={7} className="px-5 py-10 text-center text-sm text-theme-muted">{activityLogs.length > 0 ? "No activity logs match the selected filters." : "No activity logs are available."}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <ActivityLogTable
+              logs={filteredActivityLogs}
+              loading={activityLoading}
+              error={activityError}
+              showRoleColumn
+              onDownloadCsv={downloadActivityCsv}
+              downloadDisabled={!filteredActivityLogs.length}
+            />
           </Card>
         </div>
       )}

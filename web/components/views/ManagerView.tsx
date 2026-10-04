@@ -6,7 +6,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { ManagerOverview } from "./ManagerOverview";
 import { Card, Badge, EmptyRow } from "../ui";
-import { ActivityLogTable } from "../ActivityLogTable";
+import { ActivityLogTable, type ActivityLogRow } from "../ActivityLogTable";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { IncidentList } from "../IncidentList";
 import { DialogFrame, useConfirm } from "../Modal";
@@ -17,21 +17,11 @@ import { useDashboardData } from "@/lib/useDashboardData";
 import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, deleteGreenhouse, type Greenhouse, type MinuteAggregate, type Reading } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
+import { hardwareLogWindow, type HardwareLogRange } from "@/lib/hardware-log-window";
 
 type ManagerSection = "Overview" | "Greenhouses" | "Activity Logs" | "Recycle bin" | "Recycle Bin";
 
-type ActivityLog = {
-  id: number;
-  username: string | null;
-  action: string;
-  resource: string | null;
-  resource_id: string | null;
-  details: Record<string, unknown> | null;
-  page: string | null;
-  ip_address: string | null;
-  browser: string | null;
-  created_at: string;
-};
+type ActivityLog = ActivityLogRow;
 
 import { toLocalConfig,type GreenhouseConfig } from "@/lib/greenhouse-config";
 
@@ -407,7 +397,7 @@ function ActivityLogsView() {
   const [userLoading, setUserLoading] = useState(true);
   const [userError, setUserError] = useState<string | null>(null);
   const [greenhouses, setGreenhouses] = useState<GreenhouseConfig[]>([]);
-  const [range, setRange] = useState("24h");
+  const [range, setRange] = useState<HardwareLogRange>("30m");
   const firstLoad = useRef(true);
 
   const [rawLogs, setRawLogs] = useState<Reading[]>([]);
@@ -463,17 +453,6 @@ function ActivityLogsView() {
     };
   }, []);
 
-  const rangeStart = useMemo(() => {
-    const now = Date.now();
-    if (range === "today") {
-      const d = new Date();
-      d.setHours(0, 0, 0, 0);
-      return d.toISOString();
-    }
-    if (range === "7d") return new Date(now - 7 * 86400000).toISOString();
-    return new Date(now - 86400000).toISOString();
-  }, [range]);
-
   const greenhouseNameById = useMemo(() => {
     const map = new Map<string, string>();
     greenhouses.forEach(g => map.set(g.id, g.name));
@@ -490,30 +469,41 @@ function ActivityLogsView() {
   // to.
   useEffect(() => {
     let active = true;
+    let refreshTimer: ReturnType<typeof setTimeout>;
+    setRawLogs([]);
+    setRawError(null);
+    setRawLoading(true);
     async function loadRaw() {
-      setRawLoading(true);
       try {
-        const result = await getHardwareActivity(undefined, [], rangeStart, new Date().toISOString());
+        const bounds = hardwareLogWindow(range);
+        const result = await getHardwareActivity(undefined, [], bounds.start, bounds.end);
         if (active) {
           setRawLogs(result.readings);
           setRawError(null);
         }
       } catch (error) {
-        if (active) setRawError(error instanceof Error ? error.message : "Unable to load hardware logs");
+        if (active) {
+          setRawLogs([]);
+          setRawError(error instanceof Error ? error.message : "Unable to load hardware logs");
+        }
       } finally {
-        if (active) setRawLoading(false);
+        if (active) {
+          setRawLoading(false);
+          refreshTimer = setTimeout(loadRaw, 30_000);
+        }
       }
     }
     loadRaw();
     return () => {
       active = false;
+      clearTimeout(refreshTimer);
     };
-  }, [rangeStart]);
+  }, [range]);
 
   function openExportModal() {
-    const now = new Date();
-    setExportStart(toDatetimeLocal(rangeStart));
-    setExportEnd(toDatetimeLocal(now.toISOString()));
+    const bounds = hardwareLogWindow(range);
+    setExportStart(toDatetimeLocal(bounds.start));
+    setExportEnd(toDatetimeLocal(bounds.end));
     setExportFormat("csv");
     setExportError(null);
     setExportModalOpen(true);
@@ -550,9 +540,9 @@ function ActivityLogsView() {
     }
   }
 
-  async function downloadUserCSV() {
+  async function downloadUserCSV(logs: ActivityLogRow[]) {
     const headers = ["Timestamp", "Username", "Action Taken", "Page", "IP Address", "Browser"];
-    const rows = userLogs.map(log => [new Date(log.created_at).toLocaleString(), log.username ?? "Unknown", log.action, log.page ?? "", log.ip_address ?? "", log.browser ?? ""]);
+    const rows = logs.map(log => [new Date(log.created_at).toLocaleString(), log.username ?? "Unknown", log.action, log.page ?? "", log.ip_address ?? "", log.browser ?? ""]);
     downloadCSV("manager-user-activity-logs.csv", headers, rows);
     await logActivity("EXPORT_ACTIVITY_LOGS", "activity_logs", undefined, { scope: "manager", format: "csv" });
   }
@@ -571,10 +561,16 @@ function ActivityLogsView() {
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">All sensor readings for the selected time range, regardless of greenhouse assignment or active status. Downloads pull the same raw data from the Raspberry Pi's SQLite database for the date range you choose.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select value={range} onChange={e => setRange(e.target.value)} className="min-w-[150px] rounded-xl border border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_10%,var(--surface))] px-3 py-2 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_20%,transparent)]">
+            <select aria-label="Hardware log time range" value={range} onChange={e => {
+              setRawLogs([]);
+              setRawError(null);
+              setRawLoading(true);
+              setRange(e.target.value as HardwareLogRange);
+            }} className="min-w-[150px] rounded-xl border border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_10%,var(--surface))] px-3 py-2 text-sm font-medium text-[var(--foreground)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_20%,transparent)]">
+              <option value="30m">Last 30mins</option>
+              <option value="1h">Last 1hr</option>
+              <option value="3h">Last 3hrs</option>
               <option value="today">Today</option>
-              <option value="24h">Last 24h</option>
-              <option value="7d">Last 7d</option>
             </select>
             <button onClick={openExportModal} type="button" className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-3.5 py-2 text-sm font-medium">
               <Download size={16} />
@@ -582,6 +578,8 @@ function ActivityLogsView() {
             </button>
           </div>
         </div>
+
+        {rawError && <p role="alert" className="mb-3 text-sm text-red-400">Unable to load hardware logs. {rawError}</p>}
 
         <div className="hidden max-h-[360px] overflow-y-auto overflow-x-auto md:block">
           <table className="w-full table-fixed text-sm leading-5">
