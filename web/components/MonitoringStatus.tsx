@@ -8,12 +8,14 @@ export function MonitoringStatus() {
     sensorError,
     configError,
     sensorsFetchedAt,
+    sensorHealthById,
     sources,
     data,
     refresh,
   } = useDashboardData();
   const degraded = !!(piError || cloudError || sensorError || configError);
-  const stale = !sensorsFetchedAt || Date.now() - sensorsFetchedAt > 30_000;
+  const health = Object.values(sensorHealthById);
+  const stale = health.length === 0 || health.every(status => status === "Unknown" || status === "Data stale");
   return (
     <div
       role="status"
@@ -34,7 +36,7 @@ export function MonitoringStatus() {
           {" "}
           · Cloud: {sensorsFetchedAt === null
             ? "unknown"
-            : cloudError
+            : cloudError || sensorError
             ? "unavailable"
             : "connected"} · Sensor registry checked: {sensorsFetchedAt
             ? new Date(sensorsFetchedAt).toLocaleTimeString()

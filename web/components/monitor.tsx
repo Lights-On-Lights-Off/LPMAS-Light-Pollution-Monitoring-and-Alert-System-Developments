@@ -10,8 +10,7 @@ import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
 import { sensorSeries } from "@/lib/chartData";
-import { sensorHealth,phaseForGreenhouse } from "@/lib/monitoring-state";
-import { AvailableSensors } from "@/components/AvailableSensors";
+import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
 type GreenhouseConfig = {
   id: string;
@@ -42,7 +41,7 @@ function getThresholdLines(phase: string | null): { value: number; color: string
 }
 
 export function Monitor() {
-  const { data, greenhouses, sensors: registry, sensorsFetchedAt, sensorError, policy, sources } = useDashboardData();
+  const { data, greenhouses, sensorHealthById, policy, sources } = useDashboardData();
   const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [selectedSensor, setSelectedSensor] = useState("all");
 
@@ -117,10 +116,10 @@ export function Monitor() {
     return Object.entries(counts).filter(([, value]) => value > 0).map(([name, value]) => ({ name, value }));
   }, [latest]);
 
-  const onlineCount = configuredSensorIds.filter(id => !sensorError && sensorHealth(registry.find(s => s.sensor_id === id),sensorsFetchedAt,Date.now(),policy.offline_threshold_seconds) === "Online").length;
+  const onlineCount = configuredSensorIds.filter(id => sensorHealthById[id] === "Online").length;
 
   const totalSensors = greenhouse ? configuredSensorIds.length : 0;
-  const offlineCount = configuredSensorIds.filter(id => !sensorError && sensorHealth(registry.find(s => s.sensor_id === id),sensorsFetchedAt,Date.now(),policy.offline_threshold_seconds) === "Offline").length;
+  const offlineCount = configuredSensorIds.filter(id => sensorHealthById[id] === "Offline").length;
 
   const incidentCount = useMemo(() => {
     if (!greenhouse) return 0;
@@ -323,10 +322,6 @@ export function Monitor() {
               </select>
             </div>}
 
-            {/* Which devices are actually reporting, as opposed to what the
-                readings say. A flat chart with no sensors listed is the case
-                this panel exists to make obvious. */}
-            <AvailableSensors greenhouseId={selectedGreenhouse} />
           </Card>
         </div>
       </div>

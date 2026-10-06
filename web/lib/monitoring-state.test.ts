@@ -3,8 +3,9 @@ import {
   freshestReadings,
   phaseForGreenhouse,
   sensorHealth,
+  resolveSensorMonitoring,
 } from "./monitoring-state.ts";
-import type { MinuteAggregate, Reading } from "./monitoring-types.ts";
+import type { Greenhouse, MinuteAggregate, Reading } from "./monitoring-types.ts";
 const now = Date.parse("2026-10-01T00:00:30Z");
 const sensor = {
   sensor_id: "S1",
@@ -19,7 +20,7 @@ Deno.test("fetch failures and expiry are distinct from offline hardware", () => 
   assertEquals(sensorHealth(sensor, now, now), "Online");
   assertEquals(
     sensorHealth({ ...sensor, status: "offline" }, now, now),
-    "Offline",
+    "Online",
   );
   assertEquals(
     sensorHealth(
@@ -90,5 +91,51 @@ Deno.test("incident outcomes distinguish measured recovery from context closure"
     const result = incidentOutcome({status: "resolved", resolution_reason: reason});
     assertEquals(result.label, "closed");
     assertEquals(result.detail!.includes("recovery was not confirmed"), true);
+  }
+});
+
+const greenhouse = { id: "current", is_active: 1, sensor_ids: ["S1", "S2"] } as Greenhouse;
+const monitoringOptions = {
+  now, offlineThresholdSeconds: 15, registryFetchedAt: now,
+  piFetchedAt: now, registryError: null, piError: null, configurationKnown: true,
+};
+function rawReading(secondsAgo: number, lux = 10): Reading {
+  return { id: 1, sensor_id: "S1", greenhouse_id: "old", lux,
+    recorded_at: new Date(now - secondsAgo * 1000).toISOString(),
+    classification: "safe", phase_type: "dark" };
+}
+Deno.test("fresh Pi readings override a delayed offline registry and current assignment wins", () => {
+  const result = resolveSensorMonitoring([{ ...sensor, status: "offline", last_reading_at: "2026-09-30T00:00:00Z" }],
+    [rawReading(2)], [greenhouse], { ...monitoringOptions, registryError: "Cloud unavailable" });
+  assertEquals(result.health.S1, "Online");
+  assertEquals(result.sensors.find(s => s.sensor_id === "S1")!.greenhouse_id, "current");
+  assertEquals(result.health.S2, "Unknown");
+});
+Deno.test("identical lux readings reset the timer and configured expiry is exact", () => {
+  const reading = rawReading(15);
+  assertEquals(resolveSensorMonitoring([], [reading], [], monitoringOptions).health.S1, "Online");
+  assertEquals(resolveSensorMonitoring([], [reading], [], { ...monitoringOptions, now: now + 1 }).health.S1, "Offline");
+  assertEquals(resolveSensorMonitoring([], [reading, rawReading(1, 10)], [], monitoringOptions).health.S1, "Online");
+});
+Deno.test("retained values and failed polls never become fresh measurements", () => {
+  const failed = { ...monitoringOptions, piError: "Unavailable", registryError: "Unavailable" };
+  assertEquals(resolveSensorMonitoring([], [rawReading(60)], [], failed).health.S1, "Data stale");
+  assertEquals(resolveSensorMonitoring([], [rawReading(60)], [], monitoringOptions).health.S1, "Offline");
+  assertEquals(resolveSensorMonitoring([], [rawReading(2)], [], failed).health.S1, "Online");
+});
+Deno.test("current configuration clears historical assignments and discovers Pi-only sensors", () => {
+  const result = resolveSensorMonitoring([sensor], [rawReading(1)], [], monitoringOptions);
+  assertEquals(result.sensors[0].greenhouse_id, null);
+  assertEquals(result.health.S1, "Online");
+});
+Deno.test("future timestamps and invalid measurements do not establish online status", () => {
+  assertEquals(resolveSensorMonitoring([], [rawReading(-60)], [greenhouse], monitoringOptions).health.S1, "Unknown");
+  assertEquals(resolveSensorMonitoring([], [rawReading(1, NaN)], [greenhouse], monitoringOptions).health.S1, "Unknown");
+});
+
+Deno.test("a malformed registry timestamp cannot hide a valid fresh Pi reading", () => {
+  for (const last_reading_at of ["invalid", new Date(now + 60000).toISOString()]) {
+    const result = resolveSensorMonitoring([{ ...sensor, last_reading_at }], [rawReading(2)], [], monitoringOptions);
+    assertEquals(result.health.S1, "Online");
   }
 });

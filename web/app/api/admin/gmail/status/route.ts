@@ -9,5 +9,6 @@ export async function GET() {
   if (!admin) return NextResponse.json({error: "Email sending is not configured."}, {status: 503});
   const {data, error} = await admin.rpc("get_gmail_authorization_status", {});
   if (error) return NextResponse.json({error: "Email sending is not configured."}, {status: 503});
-  return NextResponse.json({configured, sender_email: data?.sender_email ?? null}, {headers: {"Cache-Control": "no-store"}});
+  return NextResponse.json({configured, authorized: Boolean(data?.sender_email), sender_email: data?.sender_email ?? null,
+    authorized_at: data?.authorized_at ?? null}, {headers: {"Cache-Control": "no-store"}});
 }

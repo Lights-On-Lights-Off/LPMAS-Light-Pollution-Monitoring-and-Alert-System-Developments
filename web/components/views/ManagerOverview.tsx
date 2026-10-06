@@ -21,14 +21,13 @@ import {
   YAxis,
 } from "recharts";
 import { Badge, Card, EmptyRow } from "../ui";
-import { AvailableSensors } from "../AvailableSensors";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { IncidentList } from "../IncidentList";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { type MinuteAggregate } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { type GreenhouseConfig, toLocalConfig } from "@/lib/greenhouse-config";
-import { phaseForGreenhouse, sensorHealth } from "@/lib/monitoring-state";
+import { phaseForGreenhouse } from "@/lib/monitoring-state";
 import { sensorSeries } from "@/lib/chartData";
 
 export function ManagerOverview(
@@ -90,16 +89,7 @@ export function ManagerOverview(
     monitoring.greenhouses.find((g) => g.id === selectedGreenhouse),
     monitoring.policy.dark_phase_days,
   );
-  const onlineSensorCount =
-    assignedIds.filter((id) =>
-      !monitoring.sensorError &&
-      sensorHealth(
-          monitoring.sensors.find((s) => s.sensor_id === id),
-          monitoring.sensorsFetchedAt,
-          Date.now(),
-          monitoring.policy.offline_threshold_seconds,
-        ) === "Online"
-    ).length;
+  const onlineSensorCount = assignedIds.filter(id => monitoring.sensorHealthById[id] === "Online").length;
   const scopedReadings = readings.filter((r) =>
     r.greenhouse_id === selectedGreenhouse
   );
@@ -513,22 +503,9 @@ export function ManagerOverview(
                       </td>
                       <td className="p-3">
                         <Badge
-                          tone={!monitoring.sensorError &&
-                              sensorHealth(
-                                  r,
-                                  monitoring.sensorsFetchedAt,
-                                  Date.now(),
-                                  monitoring.policy.offline_threshold_seconds,
-                                ) === "Online"
-                            ? "green"
-                            : "slate"}
+                          tone={monitoring.sensorHealthById[r.sensor_id] === "Online" ? "green" : monitoring.sensorHealthById[r.sensor_id] === "Offline" ? "red" : "slate"}
                         >
-                          {monitoring.sensorError ? "Data stale" : sensorHealth(
-                            r,
-                            monitoring.sensorsFetchedAt,
-                            Date.now(),
-                            monitoring.policy.offline_threshold_seconds,
-                          )}
+                          {monitoring.sensorHealthById[r.sensor_id] ?? "Unknown"}
                         </Badge>
                       </td>
                     </tr>
@@ -582,11 +559,6 @@ export function ManagerOverview(
           </div>
         </Card>
 
-        {
-          /* The same liveness panel the public Monitor page shows, so a manager
-            sees which devices are reporting rather than only what they read. */
-        }
-        <AvailableSensors greenhouseId={selectedGreenhouse} />
       </div>
       <IncidentList greenhouseId={selectedGreenhouse} />
     </div>

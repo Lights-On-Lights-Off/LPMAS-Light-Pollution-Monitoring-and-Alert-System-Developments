@@ -1,5 +1,5 @@
 "use client";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import {
   type DashboardSummary,
   getDashboardSummary,
@@ -11,7 +11,7 @@ import {
 } from "./api";
 import type { SensorListEntry } from "./sensor-list";
 import { supabase } from "./supabase";
-import { freshestReadings } from "./monitoring-state";
+import { freshestReadings, resolveSensorMonitoring } from "./monitoring-state";
 const EMPTY_DATA: DashboardSummary = {
   phase: null,
   readings: [],
@@ -27,6 +27,7 @@ type State = {
   sensorError: string | null;
   greenhouses: Greenhouse[];
   configError: string | null;
+  configurationFetchedAt: number | null;
   sources: Record<string, "raw" | "minute">;
   policy: { dark_phase_days: number; offline_threshold_seconds: number };
   lastFetchedAt: number | null;
@@ -42,6 +43,7 @@ const INITIAL: State = {
   sensorError: null,
   greenhouses: [],
   configError: null,
+  configurationFetchedAt: null,
   sources: {},
   policy: { dark_phase_days: 60, offline_threshold_seconds: 15 },
   lastFetchedAt: null,
@@ -62,8 +64,12 @@ function publish(update: Partial<State>) {
 }
 async function cloudRefresh() {
   if (!supabase) throw new Error("Cloud monitoring is not configured");
-  const [sensors, aggregates, incidents] = await Promise.all([
-    getSensorList(),
+  const [, aggregates, incidents] = await Promise.all([
+    getSensorList().then(sensors => {
+      publish({ sensors, sensorsFetchedAt: Date.now(), sensorError: null });
+    }).catch(error => {
+      publish({ sensorError: error instanceof Error ? error.message : "Sensor registry unavailable" });
+    }),
     supabase.from("sensor_minute_aggregates").select("*").order(
       "bucket_start",
       { ascending: false },
@@ -80,9 +86,6 @@ async function cloudRefresh() {
     id: row.pi_incident_id,
   })) as Incident[];
   publish({
-    sensors,
-    sensorsFetchedAt: Date.now(),
-    sensorError: null,
     cloudError: null,
   });
 }
@@ -108,7 +111,7 @@ export function refreshDashboard(force = true): Promise<void> {
           const message = error instanceof Error
             ? error.message
             : "Cloud unavailable";
-          publish({ cloudError: message, sensorError: message });
+          publish({ cloudError: message });
         }),
       );
     }
@@ -124,6 +127,7 @@ export function refreshDashboard(force = true): Promise<void> {
           if (policy?.error) throw new Error(policy.error.message);
           publish({
             greenhouses,
+            configurationFetchedAt: Date.now(),
             policy: policy?.data ?? state.policy,
             configError: null,
           });
@@ -179,8 +183,19 @@ function subscribe(listener: () => void) {
   };
 }
 export function useDashboardData() {
+  const snapshot = useSyncExternalStore(subscribe, () => state, () => INITIAL);
+  // Local component state updates must not create new effect dependencies.
+  // Store publications (including the polling tick) refresh time-based health.
+  const resolved = useMemo(() => resolveSensorMonitoring(snapshot.sensors, snapshot.data.readings, snapshot.greenhouses, {
+    now: Date.now(), offlineThresholdSeconds: snapshot.policy.offline_threshold_seconds,
+    registryFetchedAt: snapshot.sensorsFetchedAt, piFetchedAt: snapshot.lastFetchedAt,
+    registryError: snapshot.sensorError, piError: snapshot.piError,
+    configurationKnown: snapshot.configurationFetchedAt !== null,
+  }), [snapshot]);
   return {
-    ...useSyncExternalStore(subscribe, () => state, () => INITIAL),
+    ...snapshot,
+    sensors: resolved.sensors,
+    sensorHealthById: resolved.health,
     refresh: refreshDashboard,
   };
 }
