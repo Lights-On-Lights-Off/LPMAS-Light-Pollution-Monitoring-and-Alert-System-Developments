@@ -1,4 +1,4 @@
-import type { Incident, MinuteAggregate, Reading } from "./monitoring-types.ts";
+import type { Greenhouse, Incident, MinuteAggregate, Reading } from "./monitoring-types.ts";
 import type { SensorListEntry } from "./sensor-list.ts";
 export type SensorHealth = "Online" | "Offline" | "Unknown" | "Data stale";
 
@@ -24,10 +24,63 @@ export function sensorHealth(
 ): SensorHealth {
   if (!sensor || fetchedAt === null) return "Unknown";
   if (now - fetchedAt > 30_000) return "Data stale";
-  return sensor.status === "online" && sensor.last_reading_at !== null &&
+  return sensor.last_reading_at !== null &&
+      Date.parse(sensor.last_reading_at) <= now &&
       now - Date.parse(sensor.last_reading_at) <= offlineThresholdSeconds * 1000
     ? "Online"
     : "Offline";
+}
+
+// Current assignments come from configuration; historical readings retain their
+// original greenhouse. Status depends on measurement time, never lux changes.
+export function resolveSensorMonitoring(
+  registry: SensorListEntry[],
+  readings: Reading[],
+  greenhouses: Greenhouse[],
+  options: {
+    now: number;
+    offlineThresholdSeconds: number;
+    registryFetchedAt: number | null;
+    piFetchedAt: number | null;
+    registryError: string | null;
+    piError: string | null;
+    configurationKnown: boolean;
+  },
+) {
+  const sensors = new Map(registry.map(sensor => [sensor.sensor_id, { ...sensor }]));
+  for (const reading of readings) {
+    const stamp = Date.parse(reading.recorded_at);
+    if (!Number.isFinite(stamp) || stamp > options.now || !Number.isFinite(reading.lux) || reading.lux < 0) continue;
+    const previous = sensors.get(reading.sensor_id);
+    if (!previous || !previous.last_reading_at || !Number.isFinite(Date.parse(previous.last_reading_at)) || Date.parse(previous.last_reading_at) > options.now || stamp > Date.parse(previous.last_reading_at)) {
+      sensors.set(reading.sensor_id, {
+        ...previous, sensor_id: reading.sensor_id, lux: reading.lux,
+        last_reading_at: reading.recorded_at, greenhouse_id: previous?.greenhouse_id ?? null,
+        status: "offline",
+      });
+    }
+  }
+  const assignments = new Map(greenhouses.filter(g => g.is_active === 1)
+    .flatMap(g => g.sensor_ids.map(id => [id, g.id] as const)));
+  for (const [id, greenhouseId] of assignments) {
+    if (!sensors.has(id)) sensors.set(id, {
+      sensor_id: id, greenhouse_id: greenhouseId, lux: 0, status: "offline", last_reading_at: null,
+    });
+  }
+  const observed = [
+    [options.registryFetchedAt, options.registryError],
+    [options.piFetchedAt, options.piError],
+  ].some(([at, error]) => typeof at === "number" && !error && options.now - at <= 30_000);
+  const health: Record<string, SensorHealth> = {};
+  for (const [id, sensor] of sensors) {
+    if (options.configurationKnown) sensor.greenhouse_id = assignments.get(id) ?? null;
+    const stamp = sensor.last_reading_at ? Date.parse(sensor.last_reading_at) : NaN;
+    const recent = Number.isFinite(stamp) && stamp <= options.now &&
+      options.now - stamp <= options.offlineThresholdSeconds * 1000;
+    health[id] = recent ? "Online" : !Number.isFinite(stamp) ? "Unknown" : observed ? "Offline" : "Data stale";
+    sensor.status = health[id] === "Online" ? "online" : "offline";
+  }
+  return { sensors: [...sensors.values()].sort((a, b) => a.sensor_id.localeCompare(b.sensor_id)), health };
 }
 export function freshestReadings(
   raw: Reading[],

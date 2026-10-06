@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Activity, BarChart3, ClipboardList, Database, Pencil, Phone, Plus, Trash2, UserPlus, Users } from "lucide-react";
+import { Activity, BarChart3, ClipboardList, Database, Eye, Pencil, Phone, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, Badge } from "../ui";
 import { Modal } from "../Modal";
@@ -9,7 +9,7 @@ import { ActivityLogTable, type ActivityLogRow } from "../ActivityLogTable";
 import { downloadCsv } from "@/lib/csv";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { GmailConnection } from "../GmailConnection";
-import { sensorHealth, incidentOutcome } from "@/lib/monitoring-state";
+import { incidentOutcome } from "@/lib/monitoring-state";
 import type { Incident } from "@/lib/monitoring-types";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { getGreenhouses, type Greenhouse } from "@/lib/api";
@@ -91,6 +91,7 @@ export function AdminView({ section }: { section: string }) {
   const [textbeeKeyPreview, setTextbeeKeyPreview] = useState("");
   const [testSmsBusy, setTestSmsBusy] = useState(false);
   const [testSmsMessage, setTestSmsMessage] = useState("");
+  const [testSmsFailed, setTestSmsFailed] = useState(false);
   // The number a test message goes to. Typed by the admin on purpose: a test
   // is meant to be sent without saving anything first, and to a phone the
   // admin is holding.
@@ -130,8 +131,9 @@ export function AdminView({ section }: { section: string }) {
   const allSensorIds = useMemo(() => {
     const ids = new Set<string>(sensorIds);
     greenhouses.forEach(greenhouse => greenhouse.sensor_ids.forEach(id => ids.add(id)));
+    monitoring.sensors.forEach(sensor => ids.add(sensor.sensor_id));
     return Array.from(ids).sort();
-  }, [greenhouses, sensorIds]);
+  }, [greenhouses, sensorIds, monitoring.sensors]);
 
   const systemActivity = useMemo(() => {
     const buckets = new Map<string, { time: string; sensorUpdates: number; systemActions: number }>();
@@ -154,12 +156,12 @@ export function AdminView({ section }: { section: string }) {
     return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
   }, [overviewActivity, overviewAggregates]);
 
-  const reportingSensors = monitoring.sensors.filter(s => !monitoring.sensorError && sensorHealth(s,monitoring.sensorsFetchedAt,Date.now(),monitoring.policy.offline_threshold_seconds) === "Online").length;
+  const reportingSensors = monitoring.sensors.filter(s => monitoring.sensorHealthById[s.sensor_id] === "Online").length;
 
   const openIncidents = overviewIncidents.filter(incident => incident.status !== "resolved").length;
   const activeGreenhouses = greenhouses.filter(greenhouse => greenhouse.is_active === 1).length;
   const activeGreenhouseSensorIds = useMemo(() => new Set(greenhouses.filter(g => g.is_active === 1).flatMap(g => g.sensor_ids)), [greenhouses]);
-  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => ({sensor_id:s.sensor_id,lux:s.lux,recorded_at:s.last_reading_at ?? "",health:monitoring.sensorError ? "Data stale" : sensorHealth(s,monitoring.sensorsFetchedAt,Date.now(),monitoring.policy.offline_threshold_seconds)}));
+  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => ({sensor_id:s.sensor_id,lux:s.lux,recorded_at:s.last_reading_at ?? "",health:monitoring.sensorHealthById[s.sensor_id] ?? "Unknown"}));
   const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
   const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
 
@@ -349,10 +351,12 @@ export function AdminView({ section }: { section: string }) {
     const number = sanitizeLocalDigits(testSmsPhone);
     const incomplete = validateLocalDigits(number);
     if (incomplete) {
+      setTestSmsFailed(true);
       setTestSmsMessage(incomplete);
       return;
     }
 
+    setTestSmsFailed(false);
     setTestSmsBusy(true);
     setTestSmsMessage("");
 
@@ -362,6 +366,7 @@ export function AdminView({ section }: { section: string }) {
       // route that adds the key itself.
       const response = await fetch("/api/admin/test-sms", {
         method: "POST",
+        signal: AbortSignal.timeout(30_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: toInternationalNumber(number) }),
       });
@@ -369,9 +374,10 @@ export function AdminView({ section }: { section: string }) {
 
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
 
-      setTestSmsMessage(body.message ?? "Test SMS sent.");
+      setTestSmsMessage(body.message ?? "Test SMS accepted by the provider. Handset delivery is unconfirmed.");
     } catch (e) {
-      setTestSmsMessage(e instanceof Error ? e.message : "Test SMS failed.");
+      setTestSmsFailed(true);
+      setTestSmsMessage(e instanceof Error && e.name !== "TimeoutError" ? e.message : "SMS acceptance could not be confirmed. Check the handset before sending another test.");
     } finally {
       setTestSmsBusy(false);
     }
@@ -646,20 +652,19 @@ export function AdminView({ section }: { section: string }) {
                   <tbody>
                     {allSensorIds.length > 0 ? (
                       allSensorIds.map(id => {
-                        const row = latest.get(id);
-                        const updatedAt = row?.updated_at || row?.bucket_start;
-                        const reporting = !!updatedAt && Date.now() - new Date(updatedAt).getTime() <= 120_000;
-                        const greenhouse = row?.greenhouse_id ? greenhouses.find(item => item.id === row.greenhouse_id) : greenhouses.find(item => item.sensor_ids.includes(id));
+                        const health = monitoring.sensorHealthById[id] ?? "Unknown";
+                        const reporting = health === "Online";
+                        const greenhouse = monitoring.greenhouses.find(item => item.is_active === 1 && item.sensor_ids.includes(id));
 
                         return (
                           <tr key={id} className="border-b border-theme-border/80">
                             <td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{id}</td>
                             <td className="px-5 py-3.5 text-center">
                               <span className={`inline-flex min-w-[88px] justify-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${reporting ? "bg-theme-accent-soft text-theme-accent" : "bg-theme-surface-secondary text-theme-muted"}`}>
-                                {row ? reporting ? "Reporting" : "Stale" : "No data"}
+                                {health}
                               </span>
                             </td>
-                            <td className="px-5 py-3.5 text-center text-theme-secondary-text">{greenhouse?.name ?? "Unassigned"}</td>
+                            <td className="px-5 py-3.5 text-center text-theme-secondary-text">{monitoring.configurationFetchedAt === null ? monitoring.configError ? "Assignment unavailable" : "Checking…" : greenhouse?.name ?? "Unassigned"}</td>
                           </tr>
                         );
                       })
@@ -837,7 +842,7 @@ export function AdminView({ section }: { section: string }) {
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Card><p className="text-sm text-theme-muted">Greenhouses active</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p><p className="mt-1 text-xs text-theme-subtle">Currently active sites</p></Card>
-            <Card><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Reporting within 2 minutes</p></Card>
+            <Card><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p></Card>
             <Card><p className="text-sm text-theme-muted">Open incidents</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{openIncidents}</p><p className="mt-1 text-xs text-theme-subtle">Requires attention</p></Card>
             <Card><p className="text-sm text-theme-muted">Users</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{team?.length ?? "—"}</p><p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p></Card>
           </div>
@@ -849,7 +854,7 @@ export function AdminView({ section }: { section: string }) {
                   <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">Monitoring configuration</p></div>
                   <p className="mt-1 text-xs leading-5 text-theme-muted">System monitoring rules applied to configured greenhouse schedules.</p>
                 </div>
-                <button type="button" onClick={() => setMonitoringEditOpen(true)} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
+                <button type="button" onClick={() => setMonitoringEditOpen(true)} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Eye size={14} /> View</button>
               </div>
               {data.phase ? (
                 <dl className="grid gap-4 sm:grid-cols-2">
@@ -881,17 +886,17 @@ export function AdminView({ section }: { section: string }) {
                 <SettingRow label="SMS phone" value={phoneLoading ? "Loading…" : managerPhone || "Not set"} />
               </dl>
               <p className="mt-2 text-xs text-theme-muted">Use Add to choose a manager and save their phone number. One manager receives alerts for all greenhouses. Email alerts use the same manager's verified email.</p>
-              <GmailConnection />
+              <GmailConnection recipientEmail={savedRecipient?.email_verified ? savedRecipient.email : null} />
               <div className="mt-3 flex items-center justify-between gap-3 text-xs">
                 <span className="text-theme-muted">Provider status</span>
                 <span
                   className={
-                    textbeeKey.trim() || textbeeKeyPreview
+                    textbeeKeyPreview
                       ? "rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent"
                       : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
                   }
                 >
-                  {textbeeKey.trim() || textbeeKeyPreview
+                  {textbeeKeyPreview
                     ? "Configured"
                     : "Not configured"}
                 </span>
@@ -922,7 +927,7 @@ export function AdminView({ section }: { section: string }) {
                 </div>
 
                 {testSmsMessage && (
-                  <p className="text-sm text-theme-muted">{testSmsMessage}</p>
+                  <p role={testSmsFailed ? "alert" : "status"} className={`text-sm ${testSmsFailed ? "text-theme-danger" : "text-theme-success"}`}>{testSmsMessage}</p>
                 )}
               </div>
             </Card>
@@ -1052,7 +1057,7 @@ export function AdminView({ section }: { section: string }) {
             </div>
           </Card>
 
-          <Modal open={monitoringEditOpen} onClose={() => setMonitoringEditOpen(false)} title="Edit monitoring configuration" description="Review the active monitoring policy. Greenhouse dates, monitoring windows and sensor assignments remain managed by Greenhouse Management." footer={<button onClick={() => setMonitoringEditOpen(false)} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover">Done</button>}>
+          <Modal open={monitoringEditOpen} onClose={() => setMonitoringEditOpen(false)} title="View monitoring configuration" description="Review the active monitoring policy. Greenhouse dates, monitoring windows and sensor assignments remain managed by Greenhouse Management." footer={<button onClick={() => setMonitoringEditOpen(false)} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover">Done</button>}>
             {data.phase ? <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><SettingRow label="Current phase" value={data.phase.phase_type} /><SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} /><SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} /><SettingRow label="Confirmation" value="3 consecutive readings" /></div><div className="rounded-xl border border-theme-accent/20 bg-theme-accent-soft p-4"><p className="text-sm font-semibold text-theme-text">System-defined thresholds</p><div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs"><div><p className="text-theme-muted">Illumination</p><p className="mt-1 font-medium text-theme-text">≥ 50 safe · 31–49 warning · ≤ 30 violation</p></div><div><p className="text-theme-muted">Dark</p><p className="mt-1 font-medium text-theme-text">0–15 safe · 16–29 warning · ≥ 30 violation</p></div></div></div><p className="text-xs text-theme-muted">Thresholds are fixed by the monitoring service and are intentionally not editable here.</p></div> : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
           </Modal>
 
@@ -1071,7 +1076,7 @@ export function AdminView({ section }: { section: string }) {
             <Card>
               <p className="text-sm text-theme-muted">Sensors online</p>
               <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p>
-              <p className="mt-1 text-xs text-theme-subtle">Reporting within 2 minutes</p>
+              <p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p>
             </Card>
 
             <Card>

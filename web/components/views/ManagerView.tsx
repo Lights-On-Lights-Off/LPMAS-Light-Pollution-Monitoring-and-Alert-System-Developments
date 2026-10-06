@@ -14,6 +14,7 @@ import { sensorSeries } from "@/lib/chartData";
 import { sensorHealth,phaseForGreenhouse } from "@/lib/monitoring-state";
 import { AvailableSensors } from "../AvailableSensors";
 import { useDashboardData } from "@/lib/useDashboardData";
+import { parseIlluminationRange } from "@/lib/admin-notification-settings";
 import { getDashboardSummary, getGreenhouses, getHardwareActivity, saveGreenhouse, deleteGreenhouse, type Greenhouse, type MinuteAggregate, type Reading } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { logActivity } from "@/lib/activityLog";
@@ -88,6 +89,7 @@ function GreenhousesView() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [defaultPhase, setDefaultPhase] = useState({ start: "", end: "" });
+  const phaseRange = parseIlluminationRange(phaseStart, phaseEnd);
 
   useEffect(() => {
     fetch("/api/admin/settings", { cache: "no-store" })
@@ -172,6 +174,7 @@ function GreenhousesView() {
 
   async function confirmGreenhouse() {
     if (!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !windowStart || !windowEnd || saving) return;
+    if (!phaseRange.ok) { setSaveError(phaseRange.error); return; }
     setSaving(true);
     setSaveError(null);
     const id = editingId ?? `greenhouse-${Date.now()}`;
@@ -322,9 +325,10 @@ function GreenhousesView() {
                   </label>
                   <label>
                     <span className="mb-2 block text-xs text-[var(--muted-foreground)]">End date</span>
-                    <input type="date" value={phaseEnd} onChange={e => setPhaseEnd(e.target.value)} className="w-full rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))]" />
+                    <input type="date" value={phaseEnd} min={phaseStart || undefined} aria-invalid={!phaseRange.ok} aria-describedby={!phaseRange.ok ? "greenhouse-phase-range-error" : undefined} onChange={e => setPhaseEnd(e.target.value)} className="w-full rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))]" />
                   </label>
                 </div>
+                {!phaseRange.ok && <p id="greenhouse-phase-range-error" role="alert" className="mt-2 text-sm text-red-400">{phaseRange.error}</p>}
               </div>
 
               <div>
@@ -379,7 +383,7 @@ function GreenhousesView() {
               <button onClick={closeModal} disabled={saving} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] disabled:opacity-50">Cancel</button>
               <button
                 onClick={confirmGreenhouse}
-                disabled={!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !windowStart || !windowEnd || saving}
+                disabled={!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !phaseRange.ok || !windowStart || !windowEnd || saving}
                 className="rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] px-5 py-2.5 text-sm font-semibold disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Confirm"}

@@ -1,6 +1,7 @@
 import { validatePiUrl } from "./pi-url";
 import { supabase } from "./supabase";
 import { buildSensorList, filterSensors } from "./sensor-list";
+import { parseIlluminationRange } from "./admin-notification-settings";
 
 // If NEXT_PUBLIC_PI_API_URL is set (e.g. local dev pointed at a LAN IP, or a
 // future permanent domain), it is used as-is and none of the dynamic lookup
@@ -132,6 +133,8 @@ export async function getGreenhouses(): Promise<Greenhouse[]> {
 }
 
 export async function saveGreenhouse(greenhouse: { id: string; name: string; sensor_ids: string[]; phase_start: string; phase_end: string; window_start: string; window_end: string }): Promise<Greenhouse> {
+  const range = parseIlluminationRange(greenhouse.phase_start, greenhouse.phase_end);
+  if (!range.ok) throw new Error(range.error!);
   if (!supabase) throw new Error("Supabase is not configured");
   const { data, error } = await supabase.rpc("upsert_greenhouse", {
     p_id: greenhouse.id,
@@ -143,7 +146,8 @@ export async function saveGreenhouse(greenhouse: { id: string; name: string; sen
     p_window_end: greenhouse.window_end
   });
 
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(error.message.includes("greenhouses_phase_range_check")
+    ? "The illumination phase must not end before it starts." : error.message);
 
   const row = data as GreenhouseRow;
   return {
