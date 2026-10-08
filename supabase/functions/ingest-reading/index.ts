@@ -4,7 +4,8 @@ import { backendAuthorized } from "../_shared/backend-auth.ts";
 import { gmailSender, validEmail } from "../_shared/gmail.ts";
 import {
   buildSendRequest,
-  interpretTextbeeResponse,
+  interpretProviderResponse,
+  SMS_SETTING_KEYS,
   resolveProvider,
 } from "../send-test-sms/sms-provider.ts";
 
@@ -235,11 +236,7 @@ export async function drainNotifications(deps: HandlerDeps): Promise<number> {
             redirect: "error",
             signal: AbortSignal.timeout(10_000),
           });
-          const result = interpretTextbeeResponse(
-            response.status,
-            await response.text(),
-            config.apiKey,
-          );
+          const result = interpretProviderResponse(config, response.status, await response.text());
           outcome = result.ok ? "accepted" : response.status >= 500 ? "unknown" : "failed";
         }
       }
@@ -320,7 +317,7 @@ if (import.meta.main) {
     async readSettings() {
       const { data, error } = await client.from("system_settings").select(
         "key,value",
-      ).in("key", ["sms_provider", "textbee_api_key", "manager_phone"]);
+      ).in("key", SMS_SETTING_KEYS);
       if (error) throw error;
       return Object.fromEntries(
         (data ?? []).map((row) => [row.key, row.value]),

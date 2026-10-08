@@ -31,12 +31,14 @@ const SETTINGS_KEYS = [
   "sensor_offline_threshold_seconds",
   "sms_provider",
   "textbee_api_key",
+  "smsgate_username",
+  "smsgate_password",
 ] as const;
 
 type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
 /**
- * Keys a manager may READ. The Semaphore API key is deliberately absent:
+ * Keys a manager may READ. SMS gateway credentials is deliberately absent:
  * a manager configures greenhouses, not credentials, and the key only ever
  * needs to reach an admin and the Edge Function. Managers already read
  * manager_phone because the Greenhouses form pre-fills from the defaults.
@@ -49,12 +51,12 @@ const MANAGER_READABLE_KEYS: readonly string[] = [
 ];
 
 /**
- * The SMS gateway API key is a secret. It is never returned by GET in full —
+ * SMS gateway credentials are secret. They are never returned by GET in full —
  * only a boolean saying whether one is set, plus a masked preview — so the
  * browser never receives a value it could leak into a screenshot, a
  * support ticket, or a React DevTools dump. Writing a new one replaces it.
  */
-const SECRET_KEYS: readonly string[] = ["textbee_api_key"];
+const SECRET_KEYS: readonly string[] = ["textbee_api_key", "smsgate_username", "smsgate_password"];
 
 function maskSecret(value: string): string {
   const trimmed = value.trim();
@@ -79,6 +81,8 @@ function buildSettingsResponse(
     // Never the real value.
     textbee_api_key_set: Boolean(byKey.get("textbee_api_key")?.value?.trim()),
     textbee_api_key_preview: maskSecret(byKey.get("textbee_api_key")?.value ?? ""),
+    smsgate_username_set: Boolean(byKey.get("smsgate_username")?.value?.trim()),
+    smsgate_password_set: Boolean(byKey.get("smsgate_password")?.value?.trim()),
     updated_at: updatedAt,
   };
 }
@@ -206,7 +210,7 @@ export async function GET() {
     );
   }
 
-  // A manager gets only the keys they legitimately need; the Semaphore
+  // A manager gets only the keys they legitimately need; the SMS gateway
   // credentials and the offline threshold are admin configuration.
   const visibleKeys =
     authorization.role === "admin" ? SETTINGS_KEYS : MANAGER_READABLE_KEYS;
@@ -294,6 +298,14 @@ export async function PATCH(request: NextRequest) {
       { error: "No recognized settings provided." },
       { status: 400 }
     );
+  }
+
+  const provider = updates.find(u => u.key === "sms_provider")?.value;
+  if (provider && !["textbee", "smsgate"].includes(provider)) {
+    return NextResponse.json({ error: "Choose SMSGate or TextBee." }, { status: 400 });
+  }
+  if (updates.find(u => u.key === "smsgate_username")?.value.includes(":")) {
+    return NextResponse.json({ error: "SMSGate username cannot contain a colon." }, { status: 400 });
   }
 
   const managerId = updates.find(u => u.key === "manager_user_id")?.value;

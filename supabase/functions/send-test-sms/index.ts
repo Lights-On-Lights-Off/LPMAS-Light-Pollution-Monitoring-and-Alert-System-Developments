@@ -1,30 +1,6 @@
 import { backendAuthorized } from "../_shared/backend-auth.ts";
-/**
- * LPMAS — `send-test-sms` Supabase Edge Function.
- *
- * Sends a single test message to the configured manager phone so an operator
- * can verify Semaphore credentials from the Admin panel before a real
- * violation depends on them.
- *
- * Design notes that are load-bearing:
- *
- *  - THIS IS DELIBERATELY SYNCHRONOUS, unlike ingest-reading's alert SMS.
- *    A test send is initiated by a human who is watching a button, and the
- *    only useful answer is the provider's actual verdict. Fire-and-forget
- *    would report "sent" for a request that was rejected.
- *
- *  - A NON-2xx IS NOT THE ONLY FAILURE. Semaphore can answer HTTP 200 with a
- *    per-message `status` of "failed" in the body. A status-code-only check
- *    would tell the operator their key works when it does not, which is the
- *    one outcome this endpoint exists to prevent.
- *
- *  - MISCONFIGURATION IS A 400, A PROVIDER FAILURE IS A 502. The Admin panel
- *    needs to tell "you have not filled this in" apart from "Semaphore said
- *    no", because the fixes are completely different.
- *
- *  - THE API KEY NEVER APPEARS IN A RESPONSE OR A LOG. It is only ever sent
- *    in the outbound request body.
- */
+/** Sends a synchronous test SMS using the selected gateway. Provider acceptance
+ * is checked separately from handset delivery; credentials never appear in logs. */
 
 // ===========================================================================
 // Types
@@ -32,7 +8,9 @@ import { backendAuthorized } from "../_shared/backend-auth.ts";
 
 import {
   buildSendRequest,
-  interpretTextbeeResponse,
+  interpretProviderResponse,
+  normalizePhilippineNumber,
+  redactSmsSecrets,
   resolveProvider,
   type SmsConfig,
 } from "./sms-provider.ts";
@@ -233,7 +211,7 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
     if (!config) {
       return json(400, {
         ok: false,
-        error: "SMS is not configured. Set the SMS gateway API key and a manager phone in Admin > Configure system.",
+        error: "SMS is not configured. Save the selected SMS gateway credentials in Admin > Configure system.",
       });
     }
 
@@ -261,19 +239,17 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
       return json(400, { ok: false, error: outbound.error });
     }
 
-    const number = String(
-      (JSON.parse(String(outbound.init.body)) as { recipients: string[] }).recipients[0],
-    );
+    const number = normalizePhilippineNumber(recipient.number ?? config.recipient)!;
 
     // 5. Send, and report the gateway's real verdict.
     let status: number;
     let rawBody: string;
     try {
-      const response = await deps.fetchImpl(outbound.url, outbound.init);
+      const response = await deps.fetchImpl(outbound.url, { ...outbound.init, redirect: "error", signal: AbortSignal.timeout(10_000) });
       status = responseStatus(response);
       rawBody = await responseText(response);
     } catch (error) {
-      const detail = describe(error);
+      const detail = redactSmsSecrets(describe(error), config);
       deps.log("error", `Test SMS transport failed: ${detail}`);
       return json(502, {
         ok: false,
@@ -281,7 +257,7 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
       });
     }
 
-    const outcome = interpretTextbeeResponse(status, rawBody, config.apiKey);
+    const outcome = interpretProviderResponse(config, status, rawBody);
     if (!outcome.ok) {
       // The phone number is masked and the key is scrubbed: operators paste
       // these messages into tickets, and neither belongs in a ticket.

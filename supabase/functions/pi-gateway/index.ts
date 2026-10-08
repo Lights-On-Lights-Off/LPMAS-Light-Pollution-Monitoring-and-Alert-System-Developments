@@ -1,3 +1,4 @@
+import { SMS_SETTING_KEYS } from "../send-test-sms/sms-provider.ts";
 import { backendAuthorized } from "../_shared/backend-auth.ts";
 import { createHandler as createIngestHandler } from "../ingest-reading/index.ts";
 import { gmailSender } from "../_shared/gmail.ts";
@@ -76,7 +77,7 @@ if (import.meta.main) {
   const ingest = createIngestHandler({
     client, serviceRoleKey, sendEmail:gmailSender(client),
     async readSettings() {
-      const {data,error} = await client.from("system_settings").select("key,value").in("key",["sms_provider","textbee_api_key","manager_phone"]);
+      const {data,error} = await client.from("system_settings").select("key,value").in("key",SMS_SETTING_KEYS);
       if (error) throw error;
       return Object.fromEntries((data ?? []).map(row => [row.key,row.value]));
     },
