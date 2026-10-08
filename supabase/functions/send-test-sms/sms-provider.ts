@@ -1,15 +1,5 @@
-/**
- * The SMS provider layer.
- *
- * Semaphore, the previous provider, meters every message against a credit
- * balance and refuses to send without a registered sender name, so a free
- * account could not deliver a single alert. textbee relays through the
- * project's own prepaid SIM, using the SIM's carrier plan; carrier charges still apply.
- *
- * Both Edge Functions import this so they cannot disagree about what a valid
- * configuration is, how a number is formatted, or what a provider's verdict
- * means. Everything here is pure: settings in, request out.
- */
+/** Shared SMS configuration, validation and API adapters for TextBee and SMSGate.
+ * Both relay through an Android phone's SIM; carrier plan charges still apply. */
 
 /** textbee's send endpoint. The device is chosen by the account default. */
 export const TEXTBEE_ENDPOINT = "https://api.textbee.dev/api/v1/gateway/send-sms";
@@ -24,19 +14,22 @@ const PH_MOBILE_DIGITS = 10;
  */
 const MESSAGE_MAX_CHARACTERS = 160;
 
-export type ProviderName = "textbee";
+export const SMSGATE_ENDPOINT = "https://api.sms-gate.app/3rdparty/v1/messages";
+export const SMS_SETTING_KEYS = ["sms_provider", "textbee_api_key", "smsgate_username", "smsgate_password", "manager_phone"];
+
+export type ProviderName = "textbee" | "smsgate";
 
 export interface SmsSettings {
   sms_provider?: string | null;
   textbee_api_key?: string | null;
+  smsgate_username?: string | null;
+  smsgate_password?: string | null;
   manager_phone?: string | null;
 }
 
-export interface SmsConfig {
-  provider: ProviderName;
-  apiKey: string;
-  recipient: string;
-}
+export type SmsConfig =
+  | { provider: "textbee"; apiKey: string; recipient: string }
+  | { provider: "smsgate"; username: string; password: string; recipient: string };
 
 export type SendRequest =
   | { ok: true; url: string; init: RequestInit }
@@ -57,6 +50,12 @@ export function resolveProvider(settings: SmsSettings): SmsConfig | null {
 
   // An unknown provider is refused rather than defaulted. Defaulting would
   // send a credential to a URL that nobody chose and nobody reviewed.
+  if (provider === "smsgate") {
+    const username = (settings.smsgate_username ?? "").trim();
+    const password = (settings.smsgate_password ?? "").trim();
+    if (!username || !password || username.includes(":")) return null;
+    return { provider, username, password, recipient };
+  }
   if (provider !== "textbee") return null;
   if (!apiKey) return null;
 
@@ -142,6 +141,21 @@ export function buildSendRequest(
     return {
       ok: false,
       error: `The message is too long. Keep it under ${MESSAGE_MAX_CHARACTERS} characters so it stays one billable segment.`,
+    };
+  }
+
+  if (config.provider === "smsgate") {
+    return {
+      ok: true,
+      url: SMSGATE_ENDPOINT,
+      init: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${basicCredential(config)}`,
+        },
+        body: JSON.stringify({ textMessage: { text: message }, phoneNumbers: [recipient] }),
+      },
     };
   }
 
@@ -239,4 +253,44 @@ function readMessageFailure(parsed: unknown): string | null {
     }
   }
   return null;
+}
+
+/** Encode UTF-8 credentials without assuming they contain only ASCII. */
+function basicCredential(config: Extract<SmsConfig, { provider: "smsgate" }>): string {
+  return btoa(Array.from(new TextEncoder().encode(`${config.username}:${config.password}`), byte => String.fromCharCode(byte)).join(""));
+}
+
+/** Scrub credentials even if a transport or gateway echoes them. */
+export function redactSmsSecrets(detail: string, config: SmsConfig): string {
+  const secrets = config.provider === "textbee" ? [config.apiKey]
+    : [basicCredential(config), `${config.username}:${config.password}`, config.password, config.username];
+  for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) {
+    detail = detail.split(secret).join("[redacted]");
+  }
+  return detail;
+}
+
+export function interpretProviderResponse(config: SmsConfig, status: number, rawBody: string): ProviderOutcome {
+  if (config.provider === "textbee") return interpretTextbeeResponse(status, rawBody, config.apiKey);
+  // Do not echo upstream content: it can include credentials and phone numbers.
+  if (status < 200 || status >= 300) {
+    return { ok: false, detail: `SMSGate returned HTTP ${status}. Check the Cloud Server credentials and that the phone is online.` };
+  }
+  let data: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    data = parsed;
+  } catch {
+    return { ok: false, detail: "SMSGate returned an invalid response." };
+  }
+  const acceptedStates = ["pending", "processed", "sent", "delivered"];
+  if (typeof data.id !== "string" || !data.id.trim() || typeof data.state !== "string" || !acceptedStates.includes(data.state.toLowerCase())) {
+    return { ok: false, detail: "SMSGate did not confirm message acceptance." };
+  }
+  if (!Array.isArray(data.recipients) || data.recipients.length === 0 || data.recipients.some(entry =>
+    !entry || typeof entry.state !== "string" || !acceptedStates.includes(entry.state.toLowerCase()))) {
+    return { ok: false, detail: "SMSGate did not accept the message for its recipient." };
+  }
+  return { ok: true, detail: null };
 }

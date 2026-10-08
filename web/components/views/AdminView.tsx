@@ -78,17 +78,16 @@ export function AdminView({ section }: { section: string }) {
   // only whether one is set plus a masked preview, so this field starts
   // empty and saving a new one replaces the stored key.
   const [offlineThreshold, setOfflineThreshold] = useState(String(OFFLINE_THRESHOLD_DEFAULT));
-  // Blank is the correct starting value, not an oversight: Semaphore defaults
-  // to the account's own registered sender at no cost, and a custom name has
-  // to be registered first, which costs a top-up. Defaulting the field to
-  // "LPMAS" would quietly point every alert at a paid registration.
-  // The SMS gateway is textbee, which relays through the project's own
-  // prepaid SIM. There is no alphanumeric sender name: the provider used to
-  // require a registered one before it would send, and registering it cost a
-  // paid top-up, which is why this field no longer exists.
-  const [smsProvider, setSmsProvider] = useState("textbee");
+  // Keep each provider's credentials independently so switching preserves them.
+  const [smsProvider, setSmsProvider] = useState("smsgate");
+  const [smsgateUsername, setSmsgateUsername] = useState("");
+  const [smsgatePassword, setSmsgatePassword] = useState("");
+  const [smsgateUsernameSet, setSmsgateUsernameSet] = useState(false);
+  const [smsgatePasswordSet, setSmsgatePasswordSet] = useState(false);
   const [textbeeKey, setTextbeeKey] = useState("");
   const [textbeeKeyPreview, setTextbeeKeyPreview] = useState("");
+  const gatewayConfigured = smsProvider === "smsgate"
+    ? smsgateUsernameSet && smsgatePasswordSet : Boolean(textbeeKeyPreview);
   const [testSmsBusy, setTestSmsBusy] = useState(false);
   const [testSmsMessage, setTestSmsMessage] = useState("");
   const [testSmsFailed, setTestSmsFailed] = useState(false);
@@ -217,9 +216,13 @@ export function AdminView({ section }: { section: string }) {
       setDefaultIllumEnd(body.default_illumination_end ?? "");
       setDarkPhaseDays(body.dark_phase_duration_days || String(DARK_PHASE_DAYS_DEFAULT));
       setOfflineThreshold(body.sensor_offline_threshold_seconds || String(OFFLINE_THRESHOLD_DEFAULT));
-      setSmsProvider(body.sms_provider || "textbee");
+      setSmsProvider(body.sms_provider || "smsgate");
       setTextbeeKey("");
       setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
+      setSmsgateUsername("");
+      setSmsgatePassword("");
+      setSmsgateUsernameSet(Boolean(body.smsgate_username_set));
+      setSmsgatePasswordSet(Boolean(body.smsgate_password_set));
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : "Failed to load manager phone.");
     } finally {
@@ -267,7 +270,7 @@ export function AdminView({ section }: { section: string }) {
     try {
       const payload: Record<string, string> = {
         sensor_offline_threshold_seconds: String(threshold.value),
-        sms_provider: smsProvider.trim() || "textbee",
+        sms_provider: smsProvider.trim() || "smsgate",
         default_illumination_start: defaultIllumStart,
         default_illumination_end: defaultIllumEnd,
         dark_phase_duration_days: String(darkPhase.value),
@@ -276,6 +279,8 @@ export function AdminView({ section }: { section: string }) {
       // An empty key field means "leave the stored key alone" — the real
       // value was never sent to this browser, so sending "" would wipe it.
       if (textbeeKey.trim()) payload.textbee_api_key = textbeeKey.trim();
+      if (smsgateUsername.trim()) payload.smsgate_username = smsgateUsername.trim();
+      if (smsgatePassword.trim()) payload.smsgate_password = smsgatePassword.trim();
 
       const response = await fetch("/api/admin/settings", {
         method: "PATCH",
@@ -291,6 +296,10 @@ export function AdminView({ section }: { section: string }) {
       setDarkPhaseDays(String(darkPhase.value));
       setTextbeeKey("");
       setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
+      setSmsgateUsername("");
+      setSmsgatePassword("");
+      setSmsgateUsernameSet(Boolean(body.smsgate_username_set));
+      setSmsgatePasswordSet(Boolean(body.smsgate_password_set));
       setDefaultsMessage("System configuration saved.");
       await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "system_config", {
         offline_threshold_seconds: threshold.value,
@@ -298,7 +307,7 @@ export function AdminView({ section }: { section: string }) {
         default_illumination_start: defaultIllumStart,
         default_illumination_end: defaultIllumEnd,
         sms_provider: smsProvider.trim(),
-        gateway_key_changed: Boolean(textbeeKey.trim()),
+        gateway_key_changed: Boolean(textbeeKey.trim() || smsgateUsername.trim() || smsgatePassword.trim()),
       });
     } catch (e) {
       setDefaultsError(e instanceof Error ? e.message : "Failed to save the system configuration.");
@@ -891,18 +900,18 @@ export function AdminView({ section }: { section: string }) {
                 <span className="text-theme-muted">Provider status</span>
                 <span
                   className={
-                    textbeeKeyPreview
+                    gatewayConfigured
                       ? "rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent"
                       : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
                   }
                 >
-                  {textbeeKeyPreview
+                  {gatewayConfigured
                     ? "Configured"
                     : "Not configured"}
                 </span>
               </div>
 
-              {/* Semaphore credentials and the offline threshold. The API key is
+              {/* SMS gateway credentials. The stored values are
                   write-only: the stored value is never sent to this browser, so
                   the field starts blank and saving a new one replaces it. */}
               <div className="mt-5 space-y-4 border-t border-theme-border/70 pt-5">
@@ -961,12 +970,12 @@ export function AdminView({ section }: { section: string }) {
               <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
             </div>
             <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <SettingRow label="SMS gateway" value={smsProvider.trim() || "Not set"} />
+              <SettingRow label="SMS gateway" value={smsProvider === "smsgate" ? "SMSGate" : smsProvider === "textbee" ? "TextBee" : "Not set"} />
               <SettingRow label="Offline threshold" value={`${offlineThreshold} seconds`} />
               <SettingRow label="Dark phase duration" value={`${darkPhaseDays || String(DARK_PHASE_DAYS_DEFAULT)} days`} />
               <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
               <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
-              <SettingRow label="Gateway API key" value={textbeeKeyPreview ? `Stored ${textbeeKeyPreview}` : "Not set"} />
+              <SettingRow label="Gateway credentials" value={gatewayConfigured ? "Stored" : "Not set"} />
             </dl>
           </Card>
 
@@ -995,9 +1004,10 @@ export function AdminView({ section }: { section: string }) {
                     onChange={e => setSmsProvider(e.target.value)}
                     className={controlClassName}
                   >
+                    <option value="smsgate" className="bg-theme-surface-secondary text-theme-text">SMSGate (recommended Android phone gateway)</option>
                     <option value="textbee" className="bg-theme-surface-secondary text-theme-text">textbee (Android phone gateway)</option>
                   </select>
-                  <span className="mt-1.5 block text-xs text-theme-muted">textbee sends through your own prepaid SIM, so messages cost nothing each. The phone must stay on, plugged in, with the app running.</span>
+                  <span className="mt-1.5 block text-xs text-theme-muted">Both gateways send through your phone’s SIM using its carrier plan. Keep the phone powered and online. SMSGate is recommended; TextBee remains available.</span>
                 </label>
 
                 <label className="block">
@@ -1032,6 +1042,20 @@ export function AdminView({ section }: { section: string }) {
                 <span className="mt-1.5 block text-xs text-theme-muted">Replaces the fixed {DARK_PHASE_DAYS_DEFAULT}-day default. Applies system-wide; the Pi picks this up within 30 seconds of saving.</span>
               </label>
 
+              {smsProvider === "smsgate" ? (
+                <div className="space-y-4">
+                  <p className="text-xs text-theme-muted">Enable Cloud Server in the SMSGate Android app and bring the phone online. Enter the generated credentials below. Leave either field blank to keep its stored value. Save before sending a test.</p>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">SMSGate username</span>
+                    <input id="configure-smsgate-username" type="text" value={smsgateUsername} onChange={e => setSmsgateUsername(e.target.value)} placeholder={smsgateUsernameSet ? "Stored — type to replace" : "Cloud Server username"} autoComplete="off" className={controlClassName} />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">SMSGate password</span>
+                    <input id="configure-smsgate-password" type="password" value={smsgatePassword} onChange={e => setSmsgatePassword(e.target.value)} placeholder={smsgatePasswordSet ? "Stored — type to replace" : "Cloud Server password"} autoComplete="new-password" className={controlClassName} />
+                  </label>
+                  <p className="text-xs text-theme-muted">Credentials are stored server-side and never returned to this browser. Phones without Google Play Services can use SSE Only in SMSGate’s Cloud Server settings.</p>
+                </div>
+              ) : (
               <label className="block">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">textbee API key</span>
                 <input
@@ -1045,6 +1069,7 @@ export function AdminView({ section }: { section: string }) {
                 />
                 <span className="mt-1.5 block text-xs text-theme-muted">From your textbee dashboard, under API keys. Stored server-side and never sent back to this browser. Leave blank to keep the current key.</span>
               </label>
+              )}
             </div>
           </Modal>
 
