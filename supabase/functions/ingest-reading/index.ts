@@ -71,6 +71,7 @@ export interface HandlerDeps {
   fetchImpl(input: string, init: RequestInit): Promise<Response>;
   log(level: "info" | "error", message: string): void;
   spawn(task: Promise<unknown>): void;
+  pause?(milliseconds: number): Promise<void>;
   sendEmail?(recipient: string, message: string): Promise<"accepted" | "failed" | "unknown">;
 }
 const UUID =
@@ -209,18 +210,19 @@ function json(status: number, body: unknown) {
 interface NotificationJob {
   id: string;
   attempt_token: string;
-  event: "opened" | "recovered";
+  event: "opened" | "recovered" | "closed";
+  send_number?: number;
   channel: "sms" | "email";
   recipient: string | null;
   message: string;
 }
-export async function drainNotifications(deps: HandlerDeps): Promise<number> {
+async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: number; scheduleCopies: boolean }> {
   const claim = await deps.client.rpc("claim_greenhouse_notifications", {
     p_limit: 5,
   });
   if (claim.error) throw new Error(claim.error.message);
-  let count = 0;
-  for (const job of (claim.data ?? []) as NotificationJob[]) {
+  const jobs = (claim.data ?? []) as NotificationJob[];
+  await Promise.all(jobs.map(async job => {
     let outcome: "accepted" | "failed" | "unknown" = "failed";
     let sending = false;
     try {
@@ -252,7 +254,21 @@ export async function drainNotifications(deps: HandlerDeps): Promise<number> {
         : "Not accepted or sending configuration unavailable; attempt will not be retried",
     });
     if (finish.error) throw new Error(finish.error.message);
-    count++;
+  }));
+  return { count: jobs.length, scheduleCopies: jobs.some(job => job.channel === "sms" && job.event === "opened" && (job.send_number ?? 1) === 1) };
+}
+
+export async function drainNotifications(deps: HandlerDeps): Promise<number> {
+  const first = await drainNotificationBatch(deps);
+  let count = first.count;
+  if (first.scheduleCopies) {
+    const pause = deps.pause ?? (milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds)));
+    // Durable claims serialize all workers. These ticks wake the scheduled copies;
+    // a restart can also recover them through the regular Pi worker ticks.
+    for (let copy = 2; copy <= 3; copy++) {
+      await pause(10_000);
+      count += (await drainNotificationBatch(deps)).count;
+    }
   }
   return count;
 }

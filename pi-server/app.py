@@ -19,6 +19,9 @@ import urllib.parse
 import ipaddress
 from security import load_security_config, RequestLimiter
 from cloud_gateway import gateway_request
+import greenhouse_alerts
+import local_sms
+import local_sms_clock
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 32_768
@@ -70,6 +73,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SECURITY = load_security_config()
 PI_TOKEN = os.getenv("LPMAS_PI_TOKEN", SECURITY.get("pi_token", ""))
 DEVICE_KEY = os.getenv("LPMAS_DEVICE_KEY", SECURITY.get("device_key", ""))
+LOCAL_SMS = SECURITY.get("local_sms", {})
 ALLOWED_ORIGINS = SECURITY.get("allowed_origins", [])
 CORS(app, origins=ALLOWED_ORIGINS, methods=['GET', 'POST', 'OPTIONS'],
      allow_headers=['Authorization', 'Content-Type', 'X-LPMAS-Device-Key'])
@@ -269,6 +273,8 @@ def init_db():
     cached_days = conn.execute("SELECT value FROM supabase_sync_state WHERE key='dark_phase_days'").fetchone()
     if cached_days:
         DARK_PHASE_DAYS = int(cached_days[0])
+    greenhouse_alerts.initialize(conn)
+    local_sms.initialize(conn)
     conn.commit()
     conn.close()
 
@@ -542,12 +548,15 @@ def open_incident(conn, sensor_id, greenhouse_id, phase_type, lux, triggering_ro
         str(uuid.uuid4()), json.dumps([dict(row) for row in (triggering_rows or [])]), cursor.lastrowid))
     if triggering_rows:
         conn.execute("UPDATE incidents SET config_version=? WHERE id=?", (triggering_rows[-1]["config_version"], cursor.lastrowid))
+    row = conn.execute('SELECT greenhouse_id,opened_at FROM incidents WHERE id=?', (cursor.lastrowid,)).fetchone()
+    greenhouse_alerts.attach(conn, cursor.lastrowid, row['greenhouse_id'], row['opened_at'])
     return cursor.lastrowid, True
 
 
 def resolve_incident(conn, incident, reason="safe_reading", at=None):
     stamp = at.astimezone(timezone.utc).isoformat(timespec="microseconds") if at else now_iso()
     conn.execute("UPDATE incidents SET status='resolved', resolved_at=?, resolution_reason=?, version=version+1 WHERE id=?", (stamp, reason, incident["id"]))
+    greenhouse_alerts.finish_member(conn, incident['id'], stamp)
 
 
 def reconcile_incidents(conn, at=None, sensor_id=None):
@@ -585,13 +594,32 @@ def reconcile_incidents(conn, at=None, sensor_id=None):
         enqueue_delivery(conn, {"kind": "incident", "delivery_id": str(uuid.uuid4()),
             "recorded_at": at.astimezone(timezone.utc).isoformat(timespec="microseconds"),
             "incident": incident_snapshot(conn, incident["id"])})
+    reconcile_greenhouse_alerts(conn, at)
+
+
+def reconcile_greenhouse_alerts(conn, at):
+    stamp = at.astimezone(timezone.utc).isoformat(timespec='microseconds')
+    def context_current(member):
+        greenhouse = get_sensor_greenhouse(conn, member['sensor_id'])
+        phase = get_phase_for_sensor(conn, member['sensor_id'], at)
+        if not greenhouse or greenhouse['id'] != member['greenhouse_id'] or not phase or phase['phase_type'] != member['phase_type']:
+            return False
+        version = member['context_version'] or member['config_version']
+        if version and version != configuration_version(greenhouse):
+            return False
+        return phase['phase_type'] != 'illumination' or classify_reading(0, phase, at) != 'unclassified'
+    for member_id in greenhouse_alerts.reconcile_waiting(conn, stamp, context_current):
+        enqueue_delivery(conn, {'kind': 'incident', 'delivery_id': str(uuid.uuid4()), 'recorded_at': stamp,
+                              'incident': incident_snapshot(conn, member_id)})
 
 
 def reconcile_incident_lifecycle():
     conn = get_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        reconcile_incidents(conn)
+        if not LOCAL_SMS.get("enabled") or local_sms.clock_ready(LOCAL_SMS):
+            reconcile_incidents(conn)
+            local_sms.sync_events(conn, LOCAL_SMS)
         conn.commit()
     finally:
         conn.close()
@@ -610,11 +638,29 @@ def handle_incident(conn, sensor_id, greenhouse_id, lux, classification, phase_t
             )
             return incident_id, "open"
         return incident["id"] if incident else None, "pending"
-    if incident and classification == "safe":
+    if incident and classification == "safe" and recovery_ready(conn, incident):
         resolve_incident(conn, incident)
         return incident["id"], "resolved"
     if incident and classification != "unclassified": update_incident_values(conn, incident, lux); return incident["id"], incident["status"]
     return None, classification
+
+
+def recovery_ready(conn, incident):
+    rows = list(reversed(recent_readings(conn, incident['sensor_id'])))
+    if len(rows) != CONSECUTIVE_READINGS_REQUIRED:
+        return False
+    previous = None
+    opened = parse_datetime(incident['opened_at'])
+    for row in rows:
+        stamp = parse_datetime(row['recorded_at'])
+        if (row['classification'] != 'safe' or row['greenhouse_id'] != incident['greenhouse_id']
+                or row['phase_type'] != incident['phase_type'] or row['config_version'] != rows[-1]['config_version']
+                or stamp is None or opened is None or stamp <= opened):
+            return False
+        if previous and not 0 < (stamp - previous).total_seconds() <= MAX_CONSECUTIVE_GAP_SECONDS:
+            return False
+        previous = stamp
+    return True
 
 
 @app.route("/api/greenhouses", methods=["GET"])
@@ -705,6 +751,8 @@ def create_reading():
             if existing["sensor_id"] != sensor_id or existing["lux"] != lux:
                 return jsonify({"error": "reading_id reused with different content"}), 409
             return jsonify(dict(existing)), 200
+        if LOCAL_SMS.get("enabled") and not local_sms.clock_ready(LOCAL_SMS):
+            return jsonify({"error": "Local clock is not trusted; restore RTC or synchronize Pi time"}), 503
         recorded_at = now_iso()
         captured_at = parse_datetime(recorded_at)
         reconcile_incidents(conn, captured_at, sensor_id)
@@ -719,9 +767,11 @@ def create_reading():
         incident_id, incident_status = (None, "waiting")
         if phase:
             incident_id, incident_status = handle_incident(conn,sensor_id,greenhouse_id,lux,classification,phase_type)
+        reconcile_greenhouse_alerts(conn, captured_at)
         reading = dict(conn.execute("SELECT * FROM readings WHERE id=?", (cursor.lastrowid,)).fetchone())
         delivery = reading_delivery(reading, incident_snapshot(conn, incident_id))
         enqueue_delivery(conn, delivery)
+        local_sms.sync_events(conn, LOCAL_SMS)
         conn.commit()
         _outbox_wake.set()
         return jsonify({**reading,"incident_id":incident_id,"incident_status":incident_status}), 201
@@ -734,6 +784,7 @@ def incident_snapshot(conn, incident_id):
     row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
     if not row: return None
     value = dict(row)
+    value['greenhouse_alert'] = greenhouse_alerts.snapshot(conn, value.pop('greenhouse_alert_uid', None))
     value.pop("context_version", None)
     value["triggering_readings"] = json.loads(value["triggering_readings"])
     if not value["triggering_readings"]: value["legacy"] = True
@@ -766,7 +817,14 @@ def flush_outbox(post=None):
     for entry in entries:
         # A long offline backlog must not delay time-based incident closure.
         reconcile_incident_lifecycle()
-        ok = _deliver(json.loads(entry["payload"]),post)
+        payload = json.loads(entry["payload"])
+        if payload.get('kind') == 'sms-outcome':
+            try:
+                ok = cloud_request('sms-outcome', outcome=payload['outcome']).get('ok') is True
+            except Exception:
+                ok = False
+        else:
+            ok = _deliver(payload,post)
         conn = get_db()
         if ok:
             conn.execute("DELETE FROM delivery_outbox WHERE delivery_id=?", (entry["delivery_id"],))
@@ -775,7 +833,8 @@ def flush_outbox(post=None):
             conn.execute("UPDATE delivery_outbox SET attempts=attempts+1,next_attempt_at=?,last_error=? WHERE delivery_id=?",
                 (time.time()+min(3600,2**min(entry["attempts"]+1,12)),"Cloud delivery failed",entry["delivery_id"]))
         conn.commit(); conn.close()
-    # Durable SMS retries must also run while no sensors are posting.
+    # Consume new notification jobs while no sensors are posting. The cloud
+    # never retries an already consumed SMS or email attempt.
     _deliver({"retry_notifications":True},post)
     return delivered
 
@@ -1023,24 +1082,54 @@ def sync_greenhouses_from_supabase(snapshot=None):
     return len(greenhouses)
 
 
+def apply_configuration_snapshot(snapshot):
+    """Publish assignments, phase settings and SMS ownership in one SQLite commit."""
+    global DARK_PHASE_DAYS
+    days = int(snapshot['dark_phase_days'])
+    if not 1 <= days <= 36500:
+        raise ValueError('Invalid dark phase duration')
+    for row in snapshot['greenhouses']:
+        if date.fromisoformat(row['phase_end']) < date.fromisoformat(row['phase_start']):
+            raise ValueError('Invalid phase dates')
+        if not parse_time(row['window_start']) or not parse_time(row['window_end']):
+            raise ValueError('Invalid monitoring window')
+    ids = {r['id'] for r in snapshot['greenhouses']}
+    assignments = snapshot['greenhouse_sensors']
+    if len({r['sensor_id'] for r in assignments}) != len(assignments) or any(r['greenhouse_id'] not in ids for r in assignments):
+        raise ValueError('Invalid sensor assignments')
+    conn = get_db()
+    previous = DARK_PHASE_DAYS
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        if LOCAL_SMS.get('enabled') or snapshot.get('local_sms') is not None:
+            local_sms.cache_config(conn, snapshot)
+        conn.execute('DELETE FROM greenhouse_sensors')
+        conn.execute('DELETE FROM greenhouses')
+        conn.execute('DELETE FROM registered_sensors')
+        conn.executemany('INSERT OR IGNORE INTO registered_sensors(sensor_id) VALUES (?)', [(r['sensor_id'],) for r in snapshot['sensor_list']])
+        for row in snapshot['greenhouses']:
+            conn.execute('INSERT INTO greenhouses(id,name,phase_start,phase_end,window_start,window_end,is_active,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+                (row['id'],row['name'],row['phase_start'],row['phase_end'],row['window_start'][:5],row['window_end'][:5],int(row['is_active']),row['updated_at']))
+        for row in snapshot['greenhouse_sensors']:
+            conn.execute('INSERT INTO greenhouse_sensors(greenhouse_id,sensor_id) VALUES (?,?)', (row['greenhouse_id'],row['sensor_id']))
+        DARK_PHASE_DAYS = days
+        conn.execute("INSERT INTO supabase_sync_state VALUES ('dark_phase_days',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(days),))
+        if not LOCAL_SMS.get('enabled') or local_sms.clock_ready(LOCAL_SMS):
+            reconcile_incidents(conn)
+            local_sms.sync_events(conn, LOCAL_SMS)
+        conn.commit()
+    except Exception:
+        DARK_PHASE_DAYS = previous
+        raise
+    finally:
+        conn.close()
+    _outbox_wake.set()
+
+
 def run_supabase_sync():
     snapshot = cloud_request('configuration')
-    # Each piece is isolated: a failure in one shouldn't block the others
-    # from still syncing this cycle.
-    try:
-        greenhouse_count = sync_greenhouses_from_supabase(snapshot)
-    except Exception as error:
-        print(f"[SUPABASE SYNC ERROR] greenhouses: {error}")
-        greenhouse_count = None
-    try:
-        dark_phase_days = sync_dark_phase_duration_from_supabase(snapshot)
-    except Exception as error:
-        print(f"[SUPABASE SYNC ERROR] dark phase duration: {error}")
-        dark_phase_days = DARK_PHASE_DAYS
-    # NOTE: aggregates are intentionally absent. The Edge Function writes
-    # sensor_minute_aggregates per reading; the Pi must not also batch them.
-    # Incident snapshots travel through the transactional delivery outbox.
-    print(f"[SUPABASE SYNC] greenhouses={greenhouse_count} dark_phase_days={dark_phase_days}")
+    apply_configuration_snapshot(snapshot)
+    print(f"[SUPABASE SYNC] greenhouses={len(snapshot['greenhouses'])} dark_phase_days={DARK_PHASE_DAYS}")
 
 
 def supabase_sync_loop():
@@ -1060,11 +1149,62 @@ def start_supabase_sync():
     _supabase_sync_thread = threading.Thread(target=supabase_sync_loop, name="supabase-sync", daemon=True); _supabase_sync_thread.start()
 
 
+def local_sms_loop():
+    # Separate from the cloud outbox: internet timeouts never delay local SMS.
+    while True:
+        try:
+            local_sms_clock.establish(LOCAL_SMS, Path(DB_PATH))
+            reconcile_incident_lifecycle()
+            local_sms.tick(get_db, LOCAL_SMS)
+            conn = get_db()
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+                local_sms.report_pending(conn, enqueue_delivery)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            print('[LOCAL SMS] Worker unavailable; inspect local status/configuration')
+        time.sleep(1)
+
+
+def start_local_sms():
+    if LOCAL_SMS.get('enabled'):
+        threading.Thread(target=local_sms_loop, name='local-sms', daemon=True).start()
+
+
+def lan_ingestion(environ, start_response):
+    # This listener cannot expose cloud-authenticated manager endpoints.
+    if environ.get('PATH_INFO') != '/api/readings' or environ.get('REQUEST_METHOD') != 'POST':
+        start_response('404 Not Found', [('Content-Type', 'application/json')])
+        return [b'{"error":"Local listener accepts sensor readings only"}']
+    environ.pop('HTTP_CF_CONNECTING_IP', None)
+    return app(environ, start_response)
+
+
+def start_lan_ingestion():
+    address = SECURITY.get('lan_bind')
+    if not address:
+        return
+    lan_ip = ipaddress.ip_address(address)
+    if lan_ip.version != 4 or not any(lan_ip in ipaddress.ip_network(n) for n in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16')):
+        raise SystemExit('lan_bind must be the Pi reserved private IPv4 address')
+    from waitress import create_server
+    # Bind synchronously so address conflicts cannot silently disable ingestion.
+    server = create_server(lan_ingestion, host=address, port=5001, threads=4,
+        max_request_body_size=32768, expose_tracebacks=False, clear_untrusted_proxy_headers=True)
+    threading.Thread(target=server.run, name='lan-ingestion', daemon=True).start()
+
+
 if __name__ == "__main__":
     if len(DEVICE_KEY) < 32 or len(PI_TOKEN) < 32 or not ALLOWED_ORIGINS:
         raise SystemExit('Provision device authentication, scoped cloud access, and allowed web origins before starting the service.')
     from waitress import serve
-    init_db(); start_supabase_sync(); start_outbox()
+    if LOCAL_SMS.get('enabled'):
+        if str(LPMAS_TIMEZONE) != 'Asia/Manila':
+            raise SystemExit('Local monitoring must use Asia/Manila to match cloud schedules.')
+        local_sms.validate_gateway(LOCAL_SMS)
+    init_db(); start_lan_ingestion(); start_supabase_sync(); start_outbox(); start_local_sms()
     serve(app, host='127.0.0.1', port=5000, threads=8, connection_limit=64,
           channel_timeout=30, max_request_body_size=32768, max_request_header_size=16384,
           expose_tracebacks=False, clear_untrusted_proxy_headers=True, ident='')

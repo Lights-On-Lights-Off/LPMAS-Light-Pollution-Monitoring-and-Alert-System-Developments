@@ -35,7 +35,7 @@ import { logActivity } from "@/lib/activityLog";
 const TITLES: Record<string, { title: string; description: string }> = {
   Overview: { title: "Admin overview", description: "System-wide visibility for monitoring sites, sensors, incidents, and users." },
   Team: { title: "Team management", description: "Invite users and manage administrator and manager access." },
-  "System settings": { title: "System settings", description: "Review monitoring rules, SMS recipients, and currently connected sensors." },
+  "System settings": { title: "System settings", description: "Review monitoring rules, SMS and email recipients, and currently connected sensors." },
   "Activity Logs": { title: "Activity logs", description: "Review administrator and manager actions recorded by the system." }
 };
 
@@ -79,6 +79,8 @@ export function AdminView({ section }: { section: string }) {
   // empty and saving a new one replaces the stored key.
   const [offlineThreshold, setOfflineThreshold] = useState(String(OFFLINE_THRESHOLD_DEFAULT));
   // Keep each provider's credentials independently so switching preserves them.
+  const [smsDispatchMode, setSmsDispatchMode] = useState("cloud");
+  const [savedSmsDispatchMode, setSavedSmsDispatchMode] = useState("cloud");
   const [smsProvider, setSmsProvider] = useState("smsgate");
   const [smsgateUsername, setSmsgateUsername] = useState("");
   const [smsgatePassword, setSmsgatePassword] = useState("");
@@ -216,6 +218,8 @@ export function AdminView({ section }: { section: string }) {
       setDefaultIllumEnd(body.default_illumination_end ?? "");
       setDarkPhaseDays(body.dark_phase_duration_days || String(DARK_PHASE_DAYS_DEFAULT));
       setOfflineThreshold(body.sensor_offline_threshold_seconds || String(OFFLINE_THRESHOLD_DEFAULT));
+      setSmsDispatchMode(body.sms_dispatch_mode || "cloud");
+      setSavedSmsDispatchMode(body.sms_dispatch_mode || "cloud");
       setSmsProvider(body.sms_provider || "smsgate");
       setTextbeeKey("");
       setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
@@ -270,6 +274,7 @@ export function AdminView({ section }: { section: string }) {
     try {
       const payload: Record<string, string> = {
         sensor_offline_threshold_seconds: String(threshold.value),
+        sms_dispatch_mode: smsDispatchMode,
         sms_provider: smsProvider.trim() || "smsgate",
         default_illumination_start: defaultIllumStart,
         default_illumination_end: defaultIllumEnd,
@@ -298,6 +303,8 @@ export function AdminView({ section }: { section: string }) {
       setTextbeeKeyPreview(body.textbee_api_key_preview ?? "");
       setSmsgateUsername("");
       setSmsgatePassword("");
+      setSmsDispatchMode(body.sms_dispatch_mode || "cloud");
+      setSavedSmsDispatchMode(body.sms_dispatch_mode || "cloud");
       setSmsgateUsernameSet(Boolean(body.smsgate_username_set));
       setSmsgatePasswordSet(Boolean(body.smsgate_password_set));
       setDefaultsMessage("System configuration saved.");
@@ -306,6 +313,7 @@ export function AdminView({ section }: { section: string }) {
         dark_phase_duration_days: darkPhase.value,
         default_illumination_start: defaultIllumStart,
         default_illumination_end: defaultIllumEnd,
+        sms_dispatch_mode: smsDispatchMode,
         sms_provider: smsProvider.trim(),
         gateway_key_changed: Boolean(textbeeKey.trim() || smsgateUsername.trim() || smsgatePassword.trim()),
       });
@@ -335,7 +343,7 @@ export function AdminView({ section }: { section: string }) {
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
       setManagerUserId(body.manager_user_id);
       setManagerPhone(body.manager_phone);
-      setRecipientMessage("Manager recipient saved.");
+      setRecipientMessage("Manager recipient saved for SMS and email alerts.");
       setRecipientOpen(false);
       await logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "notification_recipient", {manager_user_id: manager.id});
     } catch (e) {
@@ -355,7 +363,7 @@ export function AdminView({ section }: { section: string }) {
    * than a button that silently does nothing.
    */
   async function sendTestSms() {
-    if (testSmsBusy) return;
+    if (testSmsBusy || savedSmsDispatchMode === "local") return;
 
     const number = sanitizeLocalDigits(testSmsPhone);
     const incomplete = validateLocalDigits(number);
@@ -880,8 +888,8 @@ export function AdminView({ section }: { section: string }) {
             <Card className="min-w-0">
               <div className="mb-5 flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2"><Phone size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">SMS configuration</p></div>
-                  <p className="mt-1 text-xs leading-5 text-theme-muted">One recipient for confirmed violation notifications.</p>
+                  <div className="flex items-center gap-2"><Phone size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">Alert Recipients — SMS &amp; Email</p></div>
+                  <p className="mt-1 text-xs leading-5 text-theme-muted">One manager receives SMS and email alerts for all greenhouses.</p>
                 </div>
                 <button type="button" disabled={phoneLoading || defaultsSaving || recipientSaving} onClick={() => {
                   setRecipientManagerId(managerUserId); setRecipientPhone(toLocalDigits(managerPhone));
@@ -892,12 +900,13 @@ export function AdminView({ section }: { section: string }) {
               {recipientMessage && <p role="status" className="mb-3 text-sm text-theme-success">{recipientMessage}</p>}
               <dl className="grid gap-4 sm:grid-cols-2">
                 <SettingRow label="Manager" value={phoneLoading || teamLoading ? "Loading…" : savedRecipient?.full_name || savedRecipient?.email || (managerUserId ? "Manager account unavailable" : "Not selected")} />
+                <SettingRow label="Email" value={phoneLoading || teamLoading ? "Loading…" : savedRecipient?.email_verified ? savedRecipient.email : "Verified email unavailable"} />
                 <SettingRow label="SMS phone" value={phoneLoading ? "Loading…" : managerPhone || "Not set"} />
               </dl>
               <p className="mt-2 text-xs text-theme-muted">Use Add to choose a manager and save their phone number. One manager receives alerts for all greenhouses. Email alerts use the same manager's verified email.</p>
               <GmailConnection recipientEmail={savedRecipient?.email_verified ? savedRecipient.email : null} />
               <div className="mt-3 flex items-center justify-between gap-3 text-xs">
-                <span className="text-theme-muted">Provider status</span>
+                <span className="text-theme-muted">SMS provider status</span>
                 <span
                   className={
                     gatewayConfigured
@@ -905,7 +914,7 @@ export function AdminView({ section }: { section: string }) {
                       : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
                   }
                 >
-                  {gatewayConfigured
+                  {savedSmsDispatchMode === "local" ? "Managed on Raspberry Pi" : gatewayConfigured
                     ? "Configured"
                     : "Not configured"}
                 </span>
@@ -928,13 +937,14 @@ export function AdminView({ section }: { section: string }) {
                   <button
                     type="button"
                     onClick={sendTestSms}
-                    disabled={testSmsBusy}
+                    disabled={testSmsBusy || savedSmsDispatchMode === "local"}
                     className="rounded-xl border border-theme-accent px-4 py-2.5 text-sm font-semibold text-theme-accent transition hover:bg-theme-accent-soft disabled:opacity-50"
                   >
                     {testSmsBusy ? "Sending…" : "Send test SMS"}
                   </button>
                 </div>
 
+                {savedSmsDispatchMode === "local" && <p className="text-sm text-theme-muted">SMS is sent by the Raspberry Pi over local Wi-Fi. Run the local test command on the Pi to check delivery.</p>}
                 {testSmsMessage && (
                   <p role={testSmsFailed ? "alert" : "status"} className={`text-sm ${testSmsFailed ? "text-theme-danger" : "text-theme-success"}`}>{testSmsMessage}</p>
                 )}
@@ -943,8 +953,8 @@ export function AdminView({ section }: { section: string }) {
           </div>
 
           <Modal open={recipientOpen} onClose={() => !recipientSaving && setRecipientOpen(false)}
-            title="Add manager SMS recipient"
-            description="Choose the manager who will receive alerts and enter their phone number. Saving replaces the current recipient."
+            title="Set SMS and email recipient"
+            description="Choose a manager for both SMS and email alerts. SMS uses the phone number below; email uses their verified account email. Saving replaces the current recipient for both channels."
             footer={<>
               <button type="button" disabled={recipientSaving} onClick={() => setRecipientOpen(false)} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent disabled:opacity-50">Cancel</button>
               <button type="button" disabled={recipientSaving || teamLoading || !recipientManagerId || !recipientPhone} onClick={() => void saveRecipient()} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{recipientSaving ? "Saving…" : "Save recipient"}</button>
@@ -958,7 +968,7 @@ export function AdminView({ section }: { section: string }) {
               {recipientManagers.map(user => <option key={user.id} value={user.id}>{user.full_name || user.email} — {user.email}</option>)}
             </select>
             {!teamLoading && !teamError && !recipientManagers.length && <p className="text-sm text-theme-muted">No verified manager accounts are available. Add or verify a manager in Team management first.</p>}
-            <PhNumberField id="sms-manager-phone" label="Manager phone number" value={recipientPhone} onChange={setRecipientPhone} disabled={recipientSaving} hint="Alerts will be sent to this Philippine mobile number." />
+            <PhNumberField id="sms-manager-phone" label="Manager phone number" value={recipientPhone} onChange={setRecipientPhone} disabled={recipientSaving} hint="SMS alerts use this Philippine mobile number. Email alerts use the selected manager’s verified account email." />
           </Modal>
 
           <Card>
@@ -970,12 +980,13 @@ export function AdminView({ section }: { section: string }) {
               <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
             </div>
             <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <SettingRow label="SMS sender" value={savedSmsDispatchMode === "local" ? "Raspberry Pi · local SMSGate" : "Cloud"} />
               <SettingRow label="SMS gateway" value={smsProvider === "smsgate" ? "SMSGate" : smsProvider === "textbee" ? "TextBee" : "Not set"} />
               <SettingRow label="Offline threshold" value={`${offlineThreshold} seconds`} />
               <SettingRow label="Dark phase duration" value={`${darkPhaseDays || String(DARK_PHASE_DAYS_DEFAULT)} days`} />
               <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
               <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
-              <SettingRow label="Gateway credentials" value={gatewayConfigured ? "Stored" : "Not set"} />
+              <SettingRow label="Gateway credentials" value={savedSmsDispatchMode === "local" ? "Managed on Pi" : gatewayConfigured ? "Stored" : "Not set"} />
             </dl>
           </Card>
 
@@ -995,19 +1006,28 @@ export function AdminView({ section }: { section: string }) {
               {defaultsError && <div className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{defaultsError}</div>}
               {defaultsMessage && <div className="rounded-xl border border-theme-success/30 bg-theme-success/10 p-3 text-sm text-theme-success">{defaultsMessage}</div>}
 
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">SMS sender</span>
+                <select value={smsDispatchMode} onChange={e => setSmsDispatchMode(e.target.value)} disabled={savedSmsDispatchMode === "local"} className={controlClassName}>
+                  <option value="cloud">Cloud gateway</option>
+                  <option value="local">Raspberry Pi · local SMSGate</option>
+                </select>
+                <p className="mt-1.5 text-xs text-theme-muted">Local mode sends without internet after Pi and sensor setup. Saving local mode retires pending cloud alerts. Configure the Pi before switching. Phone credentials are stored on the Pi. Returning to cloud requires stopping local sending first.</p>
+              </label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block">
                   <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-theme-text">SMS gateway</span>
                   <select
                     id="configure-provider"
                     value={smsProvider}
+                    disabled={smsDispatchMode === "local"}
                     onChange={e => setSmsProvider(e.target.value)}
                     className={controlClassName}
                   >
                     <option value="smsgate" className="bg-theme-surface-secondary text-theme-text">SMSGate (recommended Android phone gateway)</option>
                     <option value="textbee" className="bg-theme-surface-secondary text-theme-text">textbee (Android phone gateway)</option>
                   </select>
-                  <span className="mt-1.5 block text-xs text-theme-muted">Both gateways send through your phone’s SIM using its carrier plan. Keep the phone powered and online. SMSGate is recommended; TextBee remains available.</span>
+                  <span className="mt-1.5 block text-xs text-theme-muted">{smsDispatchMode === "local" ? "Local mode uses SMSGate on the Raspberry Pi’s Wi-Fi network. The saved cloud provider is retained for a coordinated rollback." : "Both gateways send through your phone’s SIM using its carrier plan. Keep the phone powered and connected to the internet."}</span>
                 </label>
 
                 <label className="block">
@@ -1042,7 +1062,7 @@ export function AdminView({ section }: { section: string }) {
                 <span className="mt-1.5 block text-xs text-theme-muted">Replaces the fixed {DARK_PHASE_DAYS_DEFAULT}-day default. Applies system-wide; the Pi picks this up within 30 seconds of saving.</span>
               </label>
 
-              {smsProvider === "smsgate" ? (
+              {smsDispatchMode === "local" ? <p className="text-sm text-theme-muted">Configure SMSGate Local Server credentials on the Raspberry Pi. The phone must have cellular signal and an active SMS plan.</p> : smsProvider === "smsgate" ? (
                 <div className="space-y-4">
                   <p className="text-xs text-theme-muted">Enable Cloud Server in the SMSGate Android app and bring the phone online. Enter the generated credentials below. Leave either field blank to keep its stored value. Save before sending a test.</p>
                   <label className="block">

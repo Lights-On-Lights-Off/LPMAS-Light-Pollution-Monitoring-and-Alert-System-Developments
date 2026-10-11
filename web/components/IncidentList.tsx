@@ -7,6 +7,8 @@ import { supabase } from "@/lib/supabase";
 import { incidentOutcome } from "@/lib/monitoring-state";
 type Job = {
   id: string;
+  source?: string;
+  send_number?: number;
   greenhouse_alert_uid: string;
   event: string;
   channel: string;
@@ -36,10 +38,13 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
       const result = await supabase.from("greenhouse_notification_jobs").select(
         "id,greenhouse_alert_uid,event,channel,status,attempts,recipient,attempted_at,detail",
       ).in("greenhouse_alert_uid", ids).order("created_at", {ascending: false}).limit(120).abortSignal(AbortSignal.timeout(10_000));
+      const local = await supabase.from("local_sms_outcomes").select(
+        "id,greenhouse_alert_uid,event,status,attempts,recipient,attempted_at,detail,send_number",
+      ).in("greenhouse_alert_uid", ids).order("created_at", {ascending:false}).limit(120).abortSignal(AbortSignal.timeout(10_000));
       if (!active) return;
-      if (result.error) setError("Notification outcomes unavailable.");
+      if (result.error || local.error) setError("Notification outcomes unavailable.");
       else {
-        setJobs(result.data ?? []);
+        setJobs([...(result.data ?? []), ...(local.data ?? []).map(row => ({...row, channel:"sms", source:"local"}))]);
         setError(null);
       }
     }
@@ -70,7 +75,12 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
       <h2 className="font-bold text-theme-text">Incidents and notifications</h2>
       <p className="mt-1 text-sm text-theme-muted">
         Three consecutive violation samples under the same configuration confirm
-        a greenhouse alert. Recovery requires three fresh safe readings from every affected sensor. Sensor reports below keep their existing Pi lifecycle.
+        a greenhouse alert. A sensor report resolves after a safe reading; greenhouse recovery requires three fresh safe readings from every affected sensor.
+      </p>
+      <p className="mt-1 text-sm text-theme-muted">
+        Acknowledge means you have seen the incident and are handling it; monitoring continues.
+        Resolved means safe readings confirmed recovery. Closed means the monitoring context ended
+        or changed without confirmed recovery. Email notices cover opening, recovery, and closure independently of SMS.
       </p>
       {error && (
         <p role="alert" className="mt-3 text-sm text-theme-danger">{error}</p>
@@ -80,12 +90,12 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
           <p className="font-semibold text-theme-text">Greenhouse incident {episode.incident_uid.slice(0, 12)} · {episode.status}</p>
           <p className="mt-1 text-xs text-theme-muted">Opened {new Date(episode.opened_at).toLocaleString()}</p>
           {jobs.filter(job => job.greenhouse_alert_uid === episode.incident_uid).map(job => <div key={job.id} className="mt-2 text-sm text-theme-muted">
-            <p>{job.event === "recovered" ? "Recovery" : "Opening"} {job.channel.toUpperCase()}: {job.status === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : job.status}</p>
+            <p>{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {job.source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: {job.status === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : job.status}</p>
             <p className="text-xs">{job.recipient || "Recipient unavailable"}{job.attempted_at ? ` · ${new Date(job.attempted_at).toLocaleString()}` : ""} · {job.attempts} sending attempt</p>
             {job.detail && <p className="text-xs">{job.detail}</p>}
           </div>)}
         </article>)}
-        <p className="text-xs text-theme-muted">Opening and recovery attempts are recorded separately for SMS and email. Consumed attempts are never retried.</p>
+        <p className="text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued even after closure or delayed synchronization. Consumed attempts are never retried.</p>
       </div>
       <div className="mt-4 space-y-3">
         {incidents.slice(0, 30).map((i) => {
