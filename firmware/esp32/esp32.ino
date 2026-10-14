@@ -1,8 +1,10 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <HTTPClient.h>
 #include <time.h>
+#include <sys/time.h>
 
 TwoWire I2C_1 = TwoWire(0);
 TwoWire I2C_2 = TwoWire(1);
@@ -19,6 +21,12 @@ TwoWire I2C_2 = TwoWire(1);
 #include "ESP32-config.h"
 #include "root-certificates.h"
 #include "wifi_setup.h"
+#ifndef LPMAS_LOCAL_PI_URL
+#define LPMAS_LOCAL_PI_URL ""
+#endif
+#ifndef LPMAS_LOCAL_NTP_HOST
+#define LPMAS_LOCAL_NTP_HOST ""
+#endif
 
 WifiSetup networkSetup;
 
@@ -32,6 +40,113 @@ const char* SENSOR_2_ID = "SENSOR_02";
 String cachedPiBaseUrl = "";
 unsigned long piUrlCachedAt = 0;
 const unsigned long PI_URL_CACHE_MS = 5UL * 60UL * 1000UL;
+
+void initializeClockFromBuild() {
+  if (time(nullptr) >= 1704067200) return;
+  // Approximate UTC bootstrap for HTTPS when NTP is unavailable. Build this
+  // firmware with a correctly dated computer; background NTP can refine it.
+  char month[4];
+  struct tm built = {};
+  int year, day, hour, minute, second;
+  if (sscanf(__DATE__ " " __TIME__, "%3s %d %d %d:%d:%d",
+      month, &day, &year, &hour, &minute, &second) != 6) return;
+  const char* months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const char* match = strstr(months, month);
+  if (!match) return;
+  built.tm_mon = (match - months) / 3;
+  built.tm_year = year - 1900;
+  built.tm_mday = day;
+  built.tm_hour = hour;
+  built.tm_min = minute;
+  built.tm_sec = second;
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  struct timeval clock = {};
+  clock.tv_sec = mktime(&built);
+  if (clock.tv_sec >= 1704067200 && settimeofday(&clock, nullptr) == 0) {
+    Serial.println("[TIME] Using approximate firmware build time; delivery will not wait for NTP");
+  }
+}
+
+bool localMode() { return strlen(LPMAS_LOCAL_PI_URL) > 0; }
+
+bool validLocalPiUrl(const String &url) {
+  if (!url.startsWith("http://") || !url.endsWith(":5001")) return false;
+  String host = url.substring(7, url.length()-5);
+  IPAddress address;
+  if (!address.fromString(host)) return false;
+  return address[0] == 10 || (address[0] == 172 && address[1] >= 16 && address[1] <= 31) ||
+    (address[0] == 192 && address[1] == 168);
+}
+
+void checkTimeSync(bool connected) {
+  if (localMode()) {
+    static bool configured = false;
+    if (!connected) { configured = false; return; }
+    if (!configured && strlen(LPMAS_LOCAL_NTP_HOST) > 0) {
+      configTime(0, 0, LPMAS_LOCAL_NTP_HOST);
+      configured = true;
+    }
+    return; // Pi timestamps local measurements; no public NTP/DNS dependency.
+  }
+  static bool wasConnected = false;
+  static bool reportedReady = false;
+  static unsigned long lastAttempt = 0;
+  static unsigned int nextServer = 0;
+  const char* servers[] = {"time.google.com", "time.cloudflare.com", "pool.ntp.org"};
+
+  if (!connected) {
+    wasConnected = false;
+    reportedReady = false;
+    return;
+  }
+  if (!wasConnected) {
+    wasConnected = true;
+    lastAttempt = millis();
+    nextServer = 0;
+    Serial.print("[NETWORK] SSID=");
+    Serial.print(WiFi.SSID());
+    Serial.print(" | IP=");
+    Serial.print(WiFi.localIP());
+    Serial.print(" | Gateway=");
+    Serial.print(WiFi.gatewayIP());
+    Serial.print(" | DNS=");
+    Serial.println(WiFi.dnsIP());
+  }
+
+  const time_t now = time(nullptr);
+  if (now >= 1704067200) {
+    if (!reportedReady) {
+      struct tm utc;
+      gmtime_r(&now, &utc);
+      char timestamp[32];
+      strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &utc);
+      Serial.print("[TIME] Clock ready: ");
+      Serial.println(timestamp);
+      reportedReady = true;
+    }
+    return;
+  }
+  if (!lpmas::elapsed(millis(), lastAttempt, 30000)) return;
+
+  // Restart a stalled initial request and rotate the first server on each retry.
+  const char* server = servers[nextServer];
+  nextServer = (nextServer + 1) % 3;
+  Serial.print("[TIME] Clock still unset; checking DNS for ");
+  Serial.println(server);
+  IPAddress address;
+  if (WiFi.hostByName(server, address) == 1) {
+    Serial.print("[TIME] DNS OK: ");
+    Serial.print(server);
+    Serial.print(" -> ");
+    Serial.println(address);
+    Serial.println("[TIME] Retrying NTP; waiting for a time-server reply");
+  } else {
+    Serial.println("[TIME] DNS FAILED: check this Wi-Fi network's DNS/internet access");
+  }
+  configTime(0, 0, server, servers[nextServer], servers[(nextServer + 1) % 3]);
+  lastAttempt = millis();
+}
 
 void startBH1750(TwoWire &bus) {
   bus.beginTransmission(BH1750_ADDRESS);
@@ -122,6 +237,14 @@ bool fetchPiUrlFromVercel(String &out) {
 // Resolves the Pi's current base URL, using a cached value when fresh.
 // Returns false only if no URL is available at all (fresh or cached).
 bool resolvePiBaseUrl(bool forceRefresh) {
+  if (localMode()) {
+    if (!validLocalPiUrl(LPMAS_LOCAL_PI_URL)) {
+      Serial.println("Local Pi URL must be http://<reserved-private-IPv4>:5001");
+      return false;
+    }
+    cachedPiBaseUrl = LPMAS_LOCAL_PI_URL;
+    return true;
+  }
   bool isFresh = cachedPiBaseUrl.length() > 0 && (millis() - piUrlCachedAt) < PI_URL_CACHE_MS;
 
   if (isFresh && !forceRefresh) return true;
@@ -147,14 +270,16 @@ bool resolvePiBaseUrl(bool forceRefresh) {
 
 int postReadingOnce(const String &baseUrl, const String &payload) {
   WiFiClientSecure client;
+  WiFiClient localClient;
   client.setCACert(LPMAS_ROOT_CA);
 
   HTTPClient http;
-  http.setConnectTimeout(5000);
-  http.setTimeout(5000);
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
   String url = baseUrl + "/api/readings";
 
-  if (!http.begin(client, url)) {
+  bool began = localMode() ? (validLocalPiUrl(baseUrl) && http.begin(localClient, url)) : http.begin(client, url);
+  if (!began) {
     Serial.println("Failed to begin HTTPS request to Pi");
     return -1;
   }
@@ -168,18 +293,44 @@ int postReadingOnce(const String &baseUrl, const String &payload) {
   return responseCode;
 }
 
+void printDeliveryStatus(const char* sensorId, const char* status, int responseCode = 0) {
+  Serial.print("[DELIVERY] Wi-Fi=");
+  Serial.print(networkSetup.connected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.print(" | Pi URL=");
+  Serial.print(cachedPiBaseUrl.length() > 0 ? cachedPiBaseUrl : String("UNRESOLVED"));
+  Serial.print(" | ");
+  Serial.print(sensorId);
+  Serial.print(" | ");
+  Serial.print(status);
+  if (responseCode != 0) {
+    Serial.print(" | HTTP=");
+    Serial.print(responseCode);
+    if (responseCode < 0) {
+      Serial.print(" (");
+      Serial.print(HTTPClient::errorToString(responseCode));
+      Serial.print(")");
+    }
+  }
+  Serial.println();
+}
+
 void sendReading(const char* sensorId, float lux) {
-  if (!networkSetup.connected() || time(nullptr) < 1704067200) return;
+  if (!networkSetup.connected()) {
+    printDeliveryStatus(sensorId, "NOT SENT: Wi-Fi unavailable");
+    return;
+  }
+  if (!localMode() && time(nullptr) < 1704067200) {
+    printDeliveryStatus(sensorId, "NOT SENT: waiting for time synchronization");
+    return;
+  }
 
   if (lux < 0) {
-    Serial.print(sensorId);
-    Serial.println(" not sending because sensor is not reading");
+    printDeliveryStatus(sensorId, "NOT SENT: sensor is not reading");
     return;
   }
 
   if (!resolvePiBaseUrl(false)) {
-    Serial.print(sensorId);
-    Serial.println(" not sending, Pi address unavailable");
+    printDeliveryStatus(sensorId, "NOT SENT: Pi URL lookup failed");
     return;
   }
 
@@ -207,22 +358,16 @@ void sendReading(const char* sensorId, float lux) {
     }
   }
 
-  Serial.print("Sending ");
-  Serial.print(sensorId);
-  Serial.print(" | ");
-  Serial.print(lux, 2);
-  Serial.print(" lux | HTTP ");
-
-  if (responseCode > 0) {
-    Serial.println(responseCode);
-  } else {
-    Serial.println("FAILED");
-  }
+  printDeliveryStatus(sensorId,
+    responseCode == 201 ? "SAVED ON PI" :
+    responseCode == 200 ? "ALREADY SAVED ON PI" : "SEND FAILED",
+    responseCode);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  if (!localMode()) initializeClockFromBuild();
 
   I2C_1.begin(SDA1_PIN, SCL1_PIN, 100000);
   I2C_2.begin(SDA2_PIN, SCL2_PIN, 100000);
@@ -253,6 +398,7 @@ void loop() {
   static unsigned long lastSample = 0;
   static bool previouslyConnected = false;
   const bool connected = networkSetup.connected();
+  checkTimeSync(connected);
   if (connected && !previouslyConnected) { cachedPiBaseUrl = ""; piUrlCachedAt = 0; }
   previouslyConnected = connected;
   if (networkSetup.configuring() || !lpmas::elapsed(millis(), lastSample, 10000)) { delay(10); return; }
@@ -289,5 +435,5 @@ void loop() {
 
   Serial.println("Next reading in 10 seconds...");
   if (!connected) Serial.println("Wi-Fi unavailable; reconnecting in the background");
-  else if (time(nullptr) < 1704067200) Serial.println("Waiting for time synchronization before HTTPS delivery");
+  else if (!localMode() && time(nullptr) < 1704067200) Serial.println("Waiting for time synchronization before HTTPS delivery");
 }

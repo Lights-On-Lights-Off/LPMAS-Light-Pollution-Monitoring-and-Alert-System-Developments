@@ -30,6 +30,7 @@ const SETTINGS_KEYS = [
   "dark_phase_duration_days",
   "sensor_offline_threshold_seconds",
   "sms_provider",
+  "sms_dispatch_mode",
   "textbee_api_key",
   "smsgate_username",
   "smsgate_password",
@@ -77,6 +78,7 @@ function buildSettingsResponse(
     dark_phase_duration_days: byKey.get("dark_phase_duration_days")?.value ?? "",
     sensor_offline_threshold_seconds:
       byKey.get("sensor_offline_threshold_seconds")?.value ?? "",
+    sms_dispatch_mode: byKey.get("sms_dispatch_mode")?.value ?? "cloud",
     sms_provider: byKey.get("sms_provider")?.value ?? "",
     // Never the real value.
     textbee_api_key_set: Boolean(byKey.get("textbee_api_key")?.value?.trim()),
@@ -300,6 +302,15 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
+  const dispatchMode = updates.find(u => u.key === "sms_dispatch_mode")?.value;
+  if (dispatchMode !== undefined && !["cloud", "local"].includes(dispatchMode)) {
+    return NextResponse.json({error: "Choose cloud or local SMS dispatch."}, {status: 400});
+  }
+  if (dispatchMode === "cloud") {
+    const current = await admin.from("system_settings").select("value").eq("key", "sms_dispatch_mode").maybeSingle();
+    if (current.error) return NextResponse.json({error:"Unable to verify SMS ownership."}, {status:503});
+    if (current.data?.value === "local") return NextResponse.json({error:"Stop the Pi SMS worker and follow the local SMS rollback guide before returning to cloud dispatch."}, {status:409});
+  }
   const provider = updates.find(u => u.key === "sms_provider")?.value;
   if (provider && !["textbee", "smsgate"].includes(provider)) {
     return NextResponse.json({ error: "Choose SMSGate or TextBee." }, { status: 400 });

@@ -15,12 +15,13 @@ const PH_MOBILE_DIGITS = 10;
 const MESSAGE_MAX_CHARACTERS = 160;
 
 export const SMSGATE_ENDPOINT = "https://api.sms-gate.app/3rdparty/v1/messages";
-export const SMS_SETTING_KEYS = ["sms_provider", "textbee_api_key", "smsgate_username", "smsgate_password", "manager_phone"];
+export const SMS_SETTING_KEYS = ["sms_provider", "textbee_api_key", "smsgate_username", "smsgate_password", "manager_phone", "sms_dispatch_mode"];
 
 export type ProviderName = "textbee" | "smsgate";
 
 export interface SmsSettings {
   sms_provider?: string | null;
+  sms_dispatch_mode?: string | null;
   textbee_api_key?: string | null;
   smsgate_username?: string | null;
   smsgate_password?: string | null;
@@ -44,6 +45,7 @@ export type SendRequest =
  * an error — SMS not being set up must never break a sensor reading.
  */
 export function resolveProvider(settings: SmsSettings): SmsConfig | null {
+  if (settings.sms_dispatch_mode === "local") return null;
   const provider = (settings.sms_provider ?? "").trim();
   const apiKey = (settings.textbee_api_key ?? "").trim();
   const recipient = (settings.manager_phone ?? "").trim();

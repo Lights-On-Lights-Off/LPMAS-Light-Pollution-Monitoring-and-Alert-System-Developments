@@ -35,7 +35,8 @@ export async function sendGmail(
     return "failed";
   }
   const body = btoa(String.fromCharCode(...new TextEncoder().encode(message)));
-  const subject = message.startsWith("LPMAS RESOLVED") ? "LPMAS greenhouse resolved" : "LPMAS greenhouse alert";
+  const subject = message.startsWith("LPMAS RESOLVED") ? "LPMAS greenhouse resolved"
+    : message.startsWith("LPMAS CLOSED") ? "LPMAS greenhouse closed" : "LPMAS greenhouse violation";
   const mime = `From: ${credentials.sender_email}\r\nTo: ${recipient}\r\nSubject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${body}`;
   const raw = btoa(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   try {

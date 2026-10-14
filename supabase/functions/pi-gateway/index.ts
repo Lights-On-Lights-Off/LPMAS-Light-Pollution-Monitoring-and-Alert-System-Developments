@@ -9,6 +9,7 @@ export interface GatewayDeps {
   publishTunnel(url: string): Promise<void>;
   authorizeUser(token: string): Promise<string | null>;
   ingest(delivery: unknown): Promise<Response>;
+  recordSmsOutcome?(outcome: Record<string, unknown>): Promise<unknown>;
 }
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
   status, headers: {"Content-Type":"application/json", "Cache-Control":"no-store"},
@@ -49,6 +50,23 @@ export function createHandler(deps: GatewayDeps) {
     } catch { return json(400, {error:"JSON object required"}); }
     try {
       switch (body.action) {
+        case "sms-outcome": {
+          const o = body.outcome as Record<string, unknown>;
+          if (!o || typeof o !== "object" || Array.isArray(o) || !deps.recordSmsOutcome) return json(400, {error:"Invalid SMS outcome"});
+          if (typeof o.id !== "string" || typeof o.episode_uid !== "string" ||
+              !Number.isSafeInteger(o.version) || Number(o.version)<1 ||
+              typeof o.recipient !== "string" || !/^\+639[0-9]{9}$/.test(o.recipient) ||
+              typeof o.message !== "string" || !o.message || o.message.length>160 ||
+              !["opened","recovered"].includes(String(o.event)) ||
+              ![1,2,3].includes(Number(o.send_number)) ||
+              !["pending","unknown","accepted","sent","delivered","failed","skipped"].includes(String(o.status)) ||
+              ![0,1].includes(Number(o.attempts)) ||
+              typeof o.created_at !== "number" || !Number.isFinite(o.created_at) ||
+              (o.attempted_at != null && (typeof o.attempted_at !== "number" || !Number.isFinite(o.attempted_at)))) {
+            return json(400, {error:"Invalid SMS outcome"});
+          }
+          return json(200, await deps.recordSmsOutcome(o));
+        }
         case "ingest": return await deps.ingest(body.delivery);
         case "configuration": return json(200, await deps.configuration());
         case "publish-tunnel":
@@ -89,6 +107,11 @@ if (import.meta.main) {
     piToken:Deno.env.get("LPMAS_PI_TOKEN") ?? "",
     async configuration() {
       const {data,error} = await client.rpc("pi_configuration", {});
+      if (error) throw error;
+      return data;
+    },
+    async recordSmsOutcome(outcome) {
+      const {data,error} = await client.rpc("record_local_sms_outcome", {p_outcome:outcome});
       if (error) throw error;
       return data;
     },

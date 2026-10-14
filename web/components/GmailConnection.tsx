@@ -58,6 +58,14 @@ export function GmailConnection({ recipientEmail }: { recipientEmail: string | n
       <button type="button" onClick={() => void sendTest()} disabled={busy || !configured || status !== "authorized" || !recipientEmail} className="rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">{busy ? "Sending…" : "Send test email"}</button>
     </div>
     <p className="mt-2 break-all text-xs text-theme-muted">{recipientEmail ? `Test recipient: ${recipientEmail}` : "Select and save a verified manager to enable the email test."}</p>
+    <details className="mt-3 rounded-lg border border-theme-border p-3">
+      <summary className="cursor-pointer text-sm font-semibold text-theme-text">Preview violation and resolved emails</summary>
+      <p className="mt-2 text-xs text-theme-muted">The saved manager receives one email per event with the same message as the SMS. Violation SMS is sent up to three times, at least 10 seconds apart; resolution SMS is sent once. Names and incident references below are examples.</p>
+      <div className="mt-3 space-y-3 text-sm text-theme-text">
+        <div><p className="font-semibold">Subject: LPMAS greenhouse violation</p><p className="mt-1">LPMAS ALERT: Greenhouse GH-01 has a confirmed light violation. Incident 12345678-abcd.</p></div>
+        <div><p className="font-semibold">Subject: LPMAS greenhouse resolved</p><p className="mt-1">LPMAS RESOLVED: Greenhouse GH-01 has returned to safe light levels. Incident 12345678-abcd.</p></div>
+      </div>
+    </details>
     {testResult && <p role={testResult.failed ? "alert" : "status"} className={`mt-2 text-sm ${testResult.failed ? "text-theme-danger" : "text-theme-success"}`}>{testResult.message}</p>}
   </div>;
 }
