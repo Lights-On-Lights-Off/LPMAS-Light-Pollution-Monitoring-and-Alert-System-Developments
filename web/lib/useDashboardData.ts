@@ -194,7 +194,10 @@ export function useDashboardData() {
   }), [snapshot]);
   return {
     ...snapshot,
-    sensors: resolved.sensors,
+    sensors: resolved.sensors.map(sensor => {
+      const latest = [...snapshot.data.readings].reverse().find(r => r.sensor_id === sensor.sensor_id);
+      return { ...sensor, lux: latest?.lux ?? NaN };
+    }),
     sensorHealthById: resolved.health,
     refresh: refreshDashboard,
   };

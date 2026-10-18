@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, Cell, Legend, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Line, LineChart, CartesianGrid, Cell, Legend, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDashboardData } from "@/lib/useDashboardData";
 import type { Reading, Greenhouse, MinuteAggregate } from "@/lib/api";
 import { getGreenhouses } from "@/lib/api";
@@ -9,7 +9,6 @@ import { supabase } from "@/lib/supabase";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
-import { sensorSeries } from "@/lib/chartData";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
 type GreenhouseConfig = {
@@ -22,7 +21,7 @@ type GreenhouseConfig = {
 
 const CONFIG_KEY = "lpmas-greenhouse-config";
 const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d", "#7bd389", "#b18cff"];
-const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d" } as const;
+const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d", unclassified: "#94a3b8" } as const;
 const ONLINE_WINDOW = 60_000;
 
 // The two fixed lux thresholds that separate safe / warning / violation for
@@ -92,7 +91,7 @@ export function Monitor() {
       .slice(-30);
 
     // Numeric epoch preserves actual elapsed time. Each plotted sensor has
-    // its own timestamps and explicit gaps; asynchronous devices stay distinct.
+    // its own timestamps; connectNulls joins asynchronous sensor samples.
     const map = new Map<number, Record<string, number>>();
 
     for (const reading of rows) {
@@ -107,13 +106,13 @@ export function Monitor() {
   }, [effectiveReadings, sensorIds, greenhouse]);
 
   const distribution = useMemo(() => {
-    const counts = { safe: 0, warning: 0, violation: 0 };
+    const counts = { safe: 0, warning: 0, violation: 0, unclassified: 0 };
 
     for (const reading of latest.values()) {
-      if (reading.classification !== "unclassified") counts[reading.classification]++;
+      counts[reading.classification]++;
     }
 
-    return Object.entries(counts).filter(([, value]) => value > 0).map(([name, value]) => ({ name, value }));
+    return Object.entries(counts).filter(([, value]) => value > 0).map(([name, value]) => ({ name, value, label: name === "unclassified" ? "Outside configured phase" : name }));
   }, [latest]);
 
   const onlineCount = configuredSensorIds.filter(id => sensorHealthById[id] === "Online").length;
@@ -211,14 +210,7 @@ export function Monitor() {
             </div> : !chart.length ? <div className="grid h-full place-items-center text-center">
               <span className="text-sm text-metal-400">No readings recorded yet for this greenhouse</span>
             </div> : <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                <defs>
-                  {sensors.map((sensor, i) => <linearGradient key={sensor.id} id={`lux-fill-${sensor.id}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0.35} />
-                    <stop offset="95%" stopColor={LINE_COLORS[i % LINE_COLORS.length]} stopOpacity={0.03} />
-                  </linearGradient>)}
-                </defs>
-
+              <LineChart data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--surface-border)" />
                 <XAxis
                   dataKey="time"
@@ -250,21 +242,19 @@ export function Monitor() {
                   strokeOpacity={0.7}
                   label={{ value: line.label, position: "insideTopRight", fontSize: 10, fill: line.color }}
                 />)}
-                {sensors.map((sensor, i) => <Area
+                {sensors.map((sensor, i) => <Line
                   key={sensor.id}
                   type="linear"
-                  data={sensorSeries(chart,sensor.id,sources[sensor.id] === "minute" ? 90_000 : 15_000)}
                   isAnimationActive={false}
                   dataKey={sensor.id}
-                  name={`${sensor.name} (${sources[sensor.id] === "minute" ? "minute avg" : "raw"})`}
+                  name={`${sensor.name} (minute avg)`}
                   stroke={LINE_COLORS[i % LINE_COLORS.length]}
                   strokeWidth={2}
-                  fill={`url(#lux-fill-${sensor.id})`}
-                  dot={false}
+                  dot={{ r: 2 }}
                   activeDot={{ r: 4 }}
-                  connectNulls={false}
+                  connectNulls
                 />)}
-              </AreaChart>
+              </LineChart>
             </ResponsiveContainer>}
           </div>
         </Card>
@@ -288,15 +278,16 @@ export function Monitor() {
               <div className="h-40 min-w-0">
                 {distribution.length ? <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={34} outerRadius={56} paddingAngle={2}>
+                    <Pie data={distribution} dataKey="value" nameKey="label" innerRadius={34} outerRadius={56} paddingAngle={2}>
                       {distribution.map(d => <Cell key={d.name} fill={STATUS_COLORS[d.name as keyof typeof STATUS_COLORS]} />)}
                     </Pie>
                     <Tooltip contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }} />
                   </PieChart>
-                </ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No status data</div>}
+                </ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No phase status available</div>}
               </div>
 
               <div className="space-y-3 text-sm">
+                <p className="text-xs text-metal-500">Status uses minute average lux for the recorded phase. Alerts follow the configured monitoring window.</p>
                 <InfoRow label="Phase" value={greenhouse ? phaseLabel : "—"} />
                 <InfoRow label="Target" value={greenhouse ? target : "—"} />
                 <InfoRow label="Window" value={greenhouse ? phaseWindow : "—"} />
@@ -305,9 +296,9 @@ export function Monitor() {
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3 border-t border-metal-700 pt-4 text-xs text-metal-400">
-              {(["safe", "warning", "violation"] as const).map(key => <span key={key} className="flex items-center gap-1.5">
+              {(["safe", "warning", "violation", "unclassified"] as const).map(key => <span key={key} className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLORS[key] }} />
-                {key}
+                {key === "unclassified" ? "Outside configured phase" : key}
               </span>)}
             </div>
 
@@ -335,14 +326,14 @@ export function Monitor() {
         <div className="mt-3 max-h-56 overflow-y-auto overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="sticky top-0 border-b border-metal-700 bg-metal-800 text-metal-400">
-              <tr><th className="p-3">Greenhouse</th><th className="p-3">Sensor</th><th className="p-3">Status</th><th className="p-3">Lux</th><th className="p-3">Phase</th><th className="p-3">Recorded</th></tr>
+              <tr><th className="p-3">Greenhouse</th><th className="p-3">Sensor</th><th className="p-3">Status</th><th className="p-3">Average lux</th><th className="p-3">Phase</th><th className="p-3">Recorded</th></tr>
             </thead>
 
             <tbody>
               {selectedReadings.length ? selectedReadings.map(reading => <tr key={reading.id} className="border-b border-metal-700 last:border-0">
                 <td className="p-3 text-metal-100">{greenhouse?.name ?? "—"}</td>
                 <td className="p-3 text-metal-400">{reading.sensor_id}</td>
-                <td className="p-3"><Badge tone={reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : "green"}>{reading.classification}</Badge></td>
+                <td className="p-3"><Badge tone={reading.classification === "unclassified" ? "slate" : reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge></td>
                 <td className="p-3 font-mono text-metal-100">{reading.lux.toFixed(2)}</td>
                 <td className="p-3 text-metal-400">{reading.phase_type}</td>
                 <td className="p-3 text-metal-400">{new Date(reading.recorded_at).toLocaleString()}</td>

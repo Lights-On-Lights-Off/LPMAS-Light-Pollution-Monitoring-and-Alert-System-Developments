@@ -526,7 +526,7 @@ function ActivityLogsView() {
       const startISO = new Date(exportStart).toISOString();
       const endISO = new Date(exportEnd).toISOString();
       const result = await getHardwareActivity(undefined, [], startISO, endISO);
-      const headers = ["Timestamp", "Greenhouse", "Sensor ID", "Lux", "Phase", "Classification"];
+      const headers = ["Timestamp", "Greenhouse", "Sensor ID", "Average lux", "Phase", "Classification"];
       const rows = result.readings.map(r => [new Date(r.recorded_at).toLocaleString(), greenhouseLabel(r.greenhouse_id), r.sensor_id, r.lux.toFixed(2), r.phase_type, r.classification]);
       if (exportFormat === "csv") downloadCSV("system-hardware-logs.csv", headers, rows);
       else downloadPDF("system-hardware-logs.pdf", headers, rows, "System Hardware Logs", buildLuxTrendChartImage(result.readings));
@@ -562,7 +562,7 @@ function ActivityLogsView() {
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="font-bold text-[var(--foreground)]">SYSTEM HARDWARE LOGS</h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">All sensor readings for the selected time range, regardless of greenhouse assignment or active status. Downloads pull the same raw data from the Raspberry Pi's SQLite database for the date range you choose.</p>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">All sensor readings for the selected time range, regardless of greenhouse assignment or active status. Readings and downloads use per-minute average lux for the date range you choose.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select aria-label="Hardware log time range" value={range} onChange={e => {
@@ -575,6 +575,7 @@ function ActivityLogsView() {
               <option value="1h">Last 1hr</option>
               <option value="3h">Last 3hrs</option>
               <option value="today">Today</option>
+              <option value="all">All</option>
             </select>
             <button onClick={openExportModal} type="button" className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] px-3.5 py-2 text-sm font-medium">
               <Download size={16} />
@@ -592,7 +593,7 @@ function ActivityLogsView() {
                 <th className="w-[18%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Timestamp</th>
                 <th className="w-[17%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Greenhouse</th>
                 <th className="w-[15%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Sensor ID</th>
-                <th className="w-[12%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Lux</th>
+                <th className="w-[12%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Average lux</th>
                 <th className="w-[19%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Phase</th>
                 <th className="w-[19%] px-4 py-3.5 text-center align-middle text-xs font-semibold tracking-wide text-metal-300">Classification</th>
               </tr>
@@ -606,7 +607,7 @@ function ActivityLogsView() {
                   <td className="px-4 py-3.5 text-center align-middle font-mono text-sm font-semibold text-metal-100">{r.lux.toFixed(2)}</td>
                   <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-400">{r.phase_type}</td>
                   <td className="px-4 py-3.5 text-center align-middle">
-                    <Badge tone={r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification}</Badge>
+                    <Badge tone={r.classification === "unclassified" ? "slate" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
                   </td>
                 </tr>
               )) : (
@@ -621,11 +622,11 @@ function ActivityLogsView() {
             <div key={r.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 break-all font-mono text-sm font-semibold text-[var(--foreground)]">{r.sensor_id}</p>
-                <Badge tone={r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification}</Badge>
+                <Badge tone={r.classification === "unclassified" ? "slate" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
               </div>
               <div className="mt-3 space-y-1.5">
                 <CardField label="Greenhouse" value={greenhouseLabel(r.greenhouse_id)} />
-                <CardField label="Lux" value={r.lux.toFixed(2)} mono />
+                <CardField label="Average lux" value={r.lux.toFixed(2)} mono />
                 <CardField label="Phase" value={r.phase_type} />
                 <CardField label="Recorded" value={new Date(r.recorded_at).toLocaleString()} />
               </div>

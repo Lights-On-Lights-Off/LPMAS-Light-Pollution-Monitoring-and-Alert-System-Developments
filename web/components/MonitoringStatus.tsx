@@ -9,7 +9,6 @@ export function MonitoringStatus() {
     configError,
     sensorsFetchedAt,
     sensorHealthById,
-    sources,
     data,
     refresh,
   } = useDashboardData();
@@ -40,11 +39,8 @@ export function MonitoringStatus() {
             ? "unavailable"
             : "connected"} · Sensor registry checked: {sensorsFetchedAt
             ? new Date(sensorsFetchedAt).toLocaleTimeString()
-            : "never"}. Live summary uses{" "}
-          {Object.values(sources).includes("minute")
-            ? "minute averages where newer than raw readings"
-            : "raw readings"}. Minute statuses reflect the most severe sample in
-          the bucket.
+            : "never"}. Lux displays use per-minute averages. Status reflects
+          average intensity for the recorded phase; alerts follow the configured monitoring window.
         </p>
         {configError && (
           <p className="mt-1 text-xs text-theme-danger">

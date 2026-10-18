@@ -16,7 +16,7 @@ export function AvailableSensors({greenhouseId}: {greenhouseId: string; interval
         const sensor = sensors.find(s => s.sensor_id === id);
         const status = sensorHealthById[id] ?? "Unknown";
         return <div key={id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-theme-border p-3">
-          <div><p className="font-mono text-sm text-theme-text">{id}</p><p className="mt-1 text-xs text-theme-muted">{sensor ? `${formatLux(sensor.lux)} · last reading ${formatLastSeen(sensor.last_reading_at,Date.now())}` : "No recorded measurement"}</p></div>
+          <div><p className="font-mono text-sm text-theme-text">{id}</p><p className="mt-1 text-xs text-theme-muted">{sensor ? `${formatLux(sensor.lux)} minute average · last reading ${formatLastSeen(sensor.last_reading_at,Date.now())}` : "No recorded measurement"}</p></div>
           <Badge tone={status === "Online" ? "green" : status === "Offline" ? "red" : "slate"}>{status}</Badge>
         </div>;
       })}

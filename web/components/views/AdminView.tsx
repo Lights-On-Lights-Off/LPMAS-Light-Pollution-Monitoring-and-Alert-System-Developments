@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Activity, BarChart3, ClipboardList, Database, Eye, Pencil, Phone, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, Badge } from "../ui";
+import { IncidentExportButton } from "../IncidentExportButton";
 import { Modal } from "../Modal";
 import { ActivityLogTable, type ActivityLogRow } from "../ActivityLogTable";
 import { downloadCsv } from "@/lib/csv";
@@ -139,22 +140,22 @@ export function AdminView({ section }: { section: string }) {
   const systemActivity = useMemo(() => {
     const buckets = new Map<string, { time: string; sensorUpdates: number; systemActions: number }>();
     overviewAggregates.forEach(row => {
-      const date = new Date(row.bucket_start);
+      const date = new Date(row.updated_at);
       date.setMinutes(Math.floor(date.getMinutes() / 10) * 10, 0, 0);
       const key = date.toISOString();
-      const bucket = buckets.get(key) ?? { time: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), sensorUpdates: 0, systemActions: 0 };
-      bucket.sensorUpdates += 1;
+      const bucket = buckets.get(key) ?? { time: date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), sensorUpdates: 0, systemActions: 0 };
+      bucket.sensorUpdates += row.sample_count;
       buckets.set(key, bucket);
     });
     overviewActivity.forEach(log => {
       const date = new Date(log.created_at);
       date.setMinutes(Math.floor(date.getMinutes() / 10) * 10, 0, 0);
       const key = date.toISOString();
-      const bucket = buckets.get(key) ?? { time: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), sensorUpdates: 0, systemActions: 0 };
+      const bucket = buckets.get(key) ?? { time: date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), sensorUpdates: 0, systemActions: 0 };
       bucket.systemActions += 1;
       buckets.set(key, bucket);
     });
-    return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
+    return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).slice(-36).map(([, value]) => value);
   }, [overviewActivity, overviewAggregates]);
 
   const reportingSensors = monitoring.sensors.filter(s => monitoring.sensorHealthById[s.sensor_id] === "Online").length;
@@ -162,30 +163,43 @@ export function AdminView({ section }: { section: string }) {
   const openIncidents = overviewIncidents.filter(incident => incident.status !== "resolved").length;
   const activeGreenhouses = greenhouses.filter(greenhouse => greenhouse.is_active === 1).length;
   const activeGreenhouseSensorIds = useMemo(() => new Set(greenhouses.filter(g => g.is_active === 1).flatMap(g => g.sensor_ids)), [greenhouses]);
-  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => ({sensor_id:s.sensor_id,lux:s.lux,recorded_at:s.last_reading_at ?? "",health:monitoring.sensorHealthById[s.sensor_id] ?? "Unknown"}));
+  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => {
+    const latest = [...monitoring.data.readings].reverse().find(r => r.sensor_id === s.sensor_id);
+    return {sensor_id:s.sensor_id,lux:latest?.lux ?? null,recorded_at:latest?.recorded_at ?? "",health:monitoring.sensorHealthById[s.sensor_id] ?? "Unknown"};
+  }).sort((a,b) => (Date.parse(b.recorded_at) || 0)-(Date.parse(a.recorded_at) || 0));
+
   const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
   const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
 
+  const overviewInFlight = useRef(false);
   async function loadOverviewData() {
-    if (!supabase) { setOverviewError("Supabase is not configured."); return; }
+    if (overviewInFlight.current) return;
+    overviewInFlight.current = true;
+    try {
+      if (!supabase) { setOverviewError("Supabase is not configured."); return; }
 
-    setOverviewLoading(true);
-    setOverviewError(null);
+      setOverviewLoading(true);
+      setOverviewError(null);
 
-    const [aggregateResult, incidentResult, activityResult] = await Promise.all([
-      supabase.from("sensor_minute_aggregates").select("sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at").order("bucket_start", { ascending: false }).limit(500),
-      supabase.from("monitoring_incidents").select("id, pi_incident_id, sensor_id, greenhouse_id, phase_type, opened_at, resolved_at, status, peak_lux, lowest_lux, reason, resolution_reason, updated_at").order("opened_at", { ascending: false }).limit(100),
-      supabase.from("activity_logs").select("id, username, role, action, resource, resource_id, details, created_at").neq("action", "NAVIGATE").order("created_at", { ascending: false }).limit(100)
-    ]);
+      const [aggregateResult, incidentResult, activityResult] = await Promise.all([
+        supabase.from("sensor_minute_aggregates").select("sensor_id, greenhouse_id, bucket_start, phase_type, sample_count, avg_lux, min_lux, max_lux, safe_count, warning_count, violation_count, updated_at").order("updated_at", { ascending: false }).limit(500),
+        supabase.from("monitoring_incidents").select("id, pi_incident_id, sensor_id, greenhouse_id, phase_type, opened_at, resolved_at, status, peak_lux, lowest_lux, reason, resolution_reason, updated_at").order("opened_at", { ascending: false }).limit(100),
+        supabase.from("activity_logs").select("id, username, role, action, resource, resource_id, details, created_at").neq("action", "NAVIGATE").order("created_at", { ascending: false }).limit(100)
+      ]);
 
-    const errors = [aggregateResult.error, incidentResult.error, activityResult.error].filter(Boolean);
+      const errors = [aggregateResult.error, incidentResult.error, activityResult.error].filter(Boolean);
 
-    setOverviewAggregates(aggregateResult.error ? [] : (aggregateResult.data ?? []) as SensorAggregate[]);
-    setOverviewIncidents(incidentResult.error ? [] : (incidentResult.data ?? []) as MonitoringIncident[]);
-    setOverviewActivity(activityResult.error ? [] : (activityResult.data ?? []) as ActivityLog[]);
+      if (!aggregateResult.error) setOverviewAggregates((aggregateResult.data ?? []) as SensorAggregate[]);
+      if (!incidentResult.error) setOverviewIncidents((incidentResult.data ?? []) as MonitoringIncident[]);
+      if (!activityResult.error) setOverviewActivity((activityResult.data ?? []) as ActivityLog[]);
 
-    if (errors.length) setOverviewError(errors.map(item => item?.message).join(" · "));
-    setOverviewLoading(false);
+      if (errors.length) setOverviewError(errors.map(item => item?.message).join(" · "));
+    } catch (error) {
+      setOverviewError(error instanceof Error ? error.message : "Activity unavailable.");
+    } finally {
+      overviewInFlight.current = false;
+      setOverviewLoading(false);
+    }
   }
 
   async function refreshTeam() {
@@ -420,14 +434,15 @@ export function AdminView({ section }: { section: string }) {
     if (showLoading) setActivityLoading(false);
   }
 
-  useEffect(() => { refreshTeam(); }, []);
+  useEffect(() => { refreshTeam(); void loadOverviewData(); }, []);
   useEffect(() => {
     setGreenhouses(monitoring.greenhouses);setGreenhouseLoading(monitoring.loading);setGreenhouseError(monitoring.configError);
   },[monitoring.greenhouses,monitoring.loading,monitoring.configError]);
-  useEffect(() => { loadOverviewData(); }, []);
+
   useEffect(() => {
     if (section !== "Overview") return;
-    const interval = setInterval(loadOverviewData, 30_000);
+    void loadOverviewData();
+    const interval = setInterval(loadOverviewData, 5_000);
     return () => clearInterval(interval);
   }, [section]);
   useEffect(() => {
@@ -609,7 +624,7 @@ export function AdminView({ section }: { section: string }) {
                     <BarChart3 size={18} className="shrink-0 text-theme-accent" />
                     <p className="text-base font-bold text-theme-text">System activity</p>
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-theme-muted">Recorded sensor aggregate updates and user/system actions.</p>
+                  <p className="mt-1 text-xs leading-5 text-theme-muted">Recent sensor samples and user/system actions.</p>
                 </div>
                 <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-[11px] font-medium text-theme-muted">Supabase</span>
               </div>
@@ -634,7 +649,7 @@ export function AdminView({ section }: { section: string }) {
                       <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: "var(--theme-text-muted)" }} width={30} />
                       <Tooltip contentStyle={{ borderRadius: 12, background: "var(--theme-surface)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
                       <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                      <Area type="monotone" dataKey="sensorUpdates" name="Sensor updates" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
+                      <Area type="monotone" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
                       <Area type="monotone" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
                     </AreaChart>
                   </ResponsiveContainer>
@@ -705,7 +720,7 @@ export function AdminView({ section }: { section: string }) {
                 </div>
                 <p className="mt-1 text-xs leading-5 text-theme-muted">Incidents recorded by the monitoring system.</p>
               </div>
-              <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-[11px] font-medium text-theme-muted">{overviewIncidents.length} incident{overviewIncidents.length === 1 ? "" : "s"}</span>
+              <div className="flex items-center gap-3"><span className="text-xs text-theme-muted">{overviewIncidents.length} incidents</span><IncidentExportButton greenhouseNames={Object.fromEntries(greenhouses.map(g => [g.id,g.name]))}/></div>
             </div>
 
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
@@ -1094,10 +1109,10 @@ export function AdminView({ section }: { section: string }) {
           </Modal>
 
           <Card>
-            <div className="mb-5"><p className="font-bold text-theme-text">Assigned sensors</p><p className="mt-1 text-sm text-theme-muted">Assigned sensors, including offline devices. Status comes from the shared sensor registry.</p></div>
+            <div className="mb-5"><p className="font-bold text-theme-text">Assigned sensors</p><p className="mt-1 text-sm text-theme-muted">Latest minute average for each assigned sensor, most recent first. Status comes from the shared sensor registry.</p></div>
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-              <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
-                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux.toFixed(2)} lx</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(reading.recorded_at).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
+              <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest average lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
+                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux === null ? "No average yet" : `${reading.lux.toFixed(2)} lx`}</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{reading.recorded_at ? new Date(reading.recorded_at).toLocaleString() : "—"}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
               </table>
             </div>
           </Card>
