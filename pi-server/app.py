@@ -956,7 +956,8 @@ def acknowledge_incident(incident_id):
 def hardware_activity():
     try: start, end = history_bounds()
     except ValueError as error: return jsonify({"error": str(error)}), 400
-    if start is None or end is None or end-start > 31*86400:
+    all_history = request.args.get("all") == "true"
+    if end is None or (not all_history and (start is None or end-start > 31*86400)):
         return jsonify({"error":"Choose a history range of at most 31 days"}), 400
     try:
         after_id = int(request.args.get('after_id', '0'))
@@ -966,13 +967,25 @@ def hardware_activity():
     if len(sensor_ids) > 100:
         conn.close()
         return jsonify({'error':'Too many sensor filters'}), 400
-    query = "SELECT * FROM readings WHERE 1=1"; params = []
+    minute_averages = request.args.get("average") == "minute"
+    if minute_averages:
+        query = """SELECT MAX(id) AS id, sensor_id, greenhouse_id, phase_type, config_version,
+            AVG(lux) AS lux, COUNT(*) AS sample_count,
+            strftime('%Y-%m-%dT%H:%M:%fZ', MAX(recorded_at_epoch), 'unixepoch') AS recorded_at,
+            'unclassified' AS classification FROM readings WHERE 1=1"""
+    else:
+        query = "SELECT * FROM readings WHERE 1=1"
+    params = []
     if greenhouse_id: query += " AND greenhouse_id = ?"; params.append(greenhouse_id)
     if sensor_ids:
         query += f" AND sensor_id IN ({','.join('?' for _ in sensor_ids)})"; params.extend(sensor_ids)
     if start is not None: query += " AND recorded_at_epoch >= ?"; params.append(start)
     if end is not None: query += " AND recorded_at_epoch <= ?"; params.append(end)
-    query += " AND id > ? ORDER BY id ASC LIMIT 1001"; params.append(after_id)
+    if minute_averages:
+        query += " GROUP BY sensor_id, greenhouse_id, phase_type, config_version, CAST(recorded_at_epoch / 60 AS INTEGER) HAVING MAX(id) > ? ORDER BY MAX(id) ASC LIMIT 1001"
+    else:
+        query += " AND id > ? ORDER BY id ASC LIMIT 1001"
+    params.append(after_id)
     rows = conn.execute(query, params).fetchall(); conn.close()
     page = rows[:1000]
     return jsonify({"readings": [dict(row) for row in page], "count": len(page),

@@ -165,17 +165,10 @@ export function ManagerOverview(
   }, [selectedConfig, assignedIds.join(",")]);
 
   const chartData = useMemo(() => {
-    const rows = history.length
-      ? history.map((r) => ({
-        time: Date.parse(r.bucket_start),
-        sensor_id: r.sensor_id,
-        lux: r.avg_lux,
-      }))
-      : scopedReadings.slice(-100).map((r) => ({
-        time: Date.parse(r.recorded_at),
-        sensor_id: r.sensor_id,
-        lux: r.lux,
-      }));
+    const rows = [
+      ...history.map((r) => ({ time: Date.parse(r.bucket_start), sensor_id: r.sensor_id, lux: r.avg_lux })),
+      ...scopedReadings.slice(-100).map((r) => ({ time: Math.floor(Date.parse(r.recorded_at)/60_000)*60_000, sensor_id: r.sensor_id, lux: r.lux })),
+    ];
     const buckets = new Map<number, Record<string, number>>();
     for (const r of rows) {
       const row = buckets.get(r.time) ?? { time: r.time };
@@ -189,11 +182,7 @@ export function ManagerOverview(
   // stale Supabase fallback is never presented as if it were live.
   const chartAsOf = useMemo(() => {
     if (!selectedConfig) return null;
-    const source = history.length
-      ? history.map((row) => row.bucket_start)
-      : readings.filter((r) => r.greenhouse_id === selectedGreenhouse).map(
-        (r) => r.recorded_at,
-      );
+    const source = [...history.map(row => row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
     if (!source.length) return null;
     return source.reduce((newest, value) => {
       const time = new Date(value).getTime();
@@ -275,8 +264,7 @@ export function ManagerOverview(
                 )}
               </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                One-minute averages from Supabase; raw samples when history is
-                unavailable.
+                One-minute average lux from cloud history and the latest local readings.
               </p>
             </div>
           </div>
@@ -356,13 +344,13 @@ export function ManagerOverview(
                         data={sensorSeries(
                           chartData,
                           id,
-                          history.length ? 90_000 : 15_000,
+                          Infinity,
                         )}
                         isAnimationActive={false}
                         type="linear"
                         dataKey={id}
                         name={`${id} (${
-                          history.length ? "minute avg" : "raw"
+                          "minute avg"
                         })`}
                         stroke={[
                           "var(--accent)",
@@ -371,7 +359,7 @@ export function ManagerOverview(
                         ][index % 3]}
                         strokeWidth={2}
                         fillOpacity={0.05}
-                        connectNulls={false}
+                        connectNulls
                       />
                     ))}
                   </AreaChart>
@@ -447,7 +435,7 @@ export function ManagerOverview(
                 <tr>
                   <th className="p-3">Greenhouse</th>
                   <th className="p-3">Sensor</th>
-                  <th className="p-3">Lux</th>
+                  <th className="p-3">Average lux</th>
                 </tr>
               </thead>
               <tbody>

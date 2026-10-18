@@ -1,3 +1,4 @@
+import { averageReadings } from "./monitoring-state";
 import { validatePiUrl } from "./pi-url";
 import { supabase } from "./supabase";
 import { buildSensorList, filterSensors } from "./sensor-list";
@@ -175,6 +176,8 @@ export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/a
 export const acknowledgeIncident = (id: number, incidentUid?: string) => api<{ status: string }>(`/api/incidents/${id}/acknowledge`, { method: "POST", body: JSON.stringify({incident_uid:incidentUid}) });
 export async function getHardwareActivity(greenhouseId?: string, sensorIds: string[] = [], start?: string, end?: string): Promise<HardwareActivityResponse> {
   const params = new URLSearchParams({start:start ?? new Date(Date.now()-86400000).toISOString(), end:end ?? new Date().toISOString()});
+  params.set('average', 'minute');
+  if (start === new Date(0).toISOString()) params.set('all', 'true');
   if (greenhouseId) params.set('greenhouse_id', greenhouseId);
   sensorIds.forEach(id => params.append('sensor_id', id));
   const readings: Reading[] = [];
@@ -188,7 +191,8 @@ export async function getHardwareActivity(greenhouseId?: string, sensorIds: stri
     cursor = page.next_after_id;
   }
   readings.sort((a,b) => Date.parse(a.recorded_at)-Date.parse(b.recorded_at) || a.id-b.id);
-  return {readings, count:readings.length};
+  const averages = averageReadings(readings);
+  return {readings: averages, count:averages.length};
 }
 
 // --- sensor_list ------------------------------------------------------------

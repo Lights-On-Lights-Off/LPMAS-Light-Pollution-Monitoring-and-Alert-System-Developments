@@ -4,6 +4,8 @@ import { Badge, Card } from "./ui";
 import { acknowledgeIncident, type Reading } from "@/lib/api";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { supabase } from "@/lib/supabase";
+import { Modal } from "./Modal";
+import { averageReadings } from "@/lib/monitoring-state";
 import { incidentOutcome } from "@/lib/monitoring-state";
 type Job = {
   id: string;
@@ -19,6 +21,7 @@ type Job = {
   detail: string | null;
 };
 export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
+  const [details, setDetails] = useState<{title: string; body: React.ReactNode} | null>(null);
   const { data, refresh } = useDashboardData();
   const [episodes, setEpisodes] = useState<{incident_uid: string; status: string; opened_at: string}[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]),
@@ -74,99 +77,52 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
     <Card>
       <h2 className="font-bold text-theme-text">Incidents and notifications</h2>
       <p className="mt-1 text-sm text-theme-muted">
-        Three consecutive violation samples under the same configuration confirm
-        a greenhouse alert. A sensor report resolves after a safe reading; greenhouse recovery requires three fresh safe readings from every affected sensor.
-      </p>
-      <p className="mt-1 text-sm text-theme-muted">
-        Acknowledge means you have seen the incident and are handling it; monitoring continues.
-        Resolved means safe readings confirmed recovery. Closed means the monitoring context ended
-        or changed without confirmed recovery. Email notices cover opening, recovery, and closure independently of SMS.
+        Review greenhouse alerts and sensor incidents. Select View Details for notification outcomes and incident history.
       </p>
       {error && (
         <p role="alert" className="mt-3 text-sm text-theme-danger">{error}</p>
       )}
-      <div className="mt-4 space-y-3">
-        {episodes.map(episode => <article key={episode.incident_uid} className="rounded-xl border border-theme-border p-4">
-          <p className="font-semibold text-theme-text">Greenhouse incident {episode.incident_uid.slice(0, 12)} · {episode.status}</p>
-          <p className="mt-1 text-xs text-theme-muted">Opened {new Date(episode.opened_at).toLocaleString()}</p>
-          {jobs.filter(job => job.greenhouse_alert_uid === episode.incident_uid).map(job => <div key={job.id} className="mt-2 text-sm text-theme-muted">
-            <p>{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {job.source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: {job.status === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : job.status}</p>
-            <p className="text-xs">{job.recipient || "Recipient unavailable"}{job.attempted_at ? ` · ${new Date(job.attempted_at).toLocaleString()}` : ""} · {job.attempts} sending attempt</p>
-            {job.detail && <p className="text-xs">{job.detail}</p>}
-          </div>)}
-        </article>)}
-        <p className="text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued even after closure or delayed synchronization. Consumed attempts are never retried.</p>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full min-w-[700px] text-left text-sm">
+          <thead className="border-b border-theme-border text-theme-muted"><tr>
+            <th className="p-3">Greenhouse incident</th><th className="p-3">Opened</th><th className="p-3">Status</th><th className="p-3">Notifications</th>
+          </tr></thead>
+          <tbody>{episodes.map(episode => <tr key={episode.incident_uid} className="border-b border-theme-border">
+            <td className="p-3 font-mono text-xs">{episode.incident_uid.slice(0,12)}</td>
+            <td className="p-3">{new Date(episode.opened_at).toLocaleString()}</td>
+            <td className="p-3 capitalize">{episode.status}</td>
+            <td className="p-3"><button className="rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setDetails({title: "Notification details", body: <div className="space-y-4">{jobs.filter(job => job.greenhouse_alert_uid === episode.incident_uid).map(job => <div key={`${job.source ?? "cloud"}-${job.id}`} className="border-b border-theme-border pb-3 text-sm">
+              <p className="font-semibold">{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {job.source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: {job.status === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : job.status}</p>
+              <p className="mt-1 break-words">{job.recipient || "Recipient unavailable"}{job.attempted_at ? ` · ${new Date(job.attempted_at).toLocaleString()}` : ""} · {job.attempts} sending attempt{job.attempts === 1 ? "" : "s"}</p>
+              {job.detail && <p className="mt-1">{job.detail}</p>}
+            </div>)}{!jobs.some(job => job.greenhouse_alert_uid === episode.incident_uid) && <p>No notification outcomes recorded.</p>}</div>})}>View Details</button></td>
+          </tr>)}{!episodes.length && <tr><td colSpan={4} className="p-5 text-center text-theme-muted">No greenhouse alerts recorded.</td></tr>}</tbody>
+        </table>
       </div>
-      <div className="mt-4 space-y-3">
-        {incidents.slice(0, 30).map((i) => {
-          const outcome = incidentOutcome(i);
-          let trigger: Reading[] = [];
-          try {
-            trigger = typeof i.triggering_readings === "string"
-              ? JSON.parse(i.triggering_readings)
-              : i.triggering_readings ?? [];
-          } catch {}
-          return (
-            <article
-              key={i.incident_uid ?? i.id}
-              className="rounded-xl border border-theme-border p-4"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold text-theme-text">
-                  {i.sensor_id} · {i.phase_type}
-                </p>
-                <Badge
-                  tone={outcome.label === "closed" ? "amber" : i.status === "resolved"
-                    ? "green"
-                    : i.status === "acknowledged"
-                    ? "amber"
-                    : "red"}
-                >
-                  {outcome.label}
-                </Badge>
-              </div>
-              <p className="mt-2 text-xs text-theme-muted">
-                Opened {new Date(i.opened_at).toLocaleString()}
-                {i.resolved_at &&
-                  ` · ${outcome.label === "closed" ? "Closed" : "Resolved"} ${new Date(i.resolved_at).toLocaleString()}`} ·
-                {" "}
-                {i.lowest_lux}–{i.peak_lux} lux
-              </p>
-              {outcome.detail && <p className="mt-1 text-sm text-theme-muted">{outcome.detail}</p>}
-              {!!trigger.length && (
-                <details className="mt-3 text-sm text-theme-muted">
-                  <summary className="cursor-pointer">
-                    Triggering samples
-                  </summary>
-                  <ul className="mt-2 space-y-1">
-                    {trigger.map((r, index) => (
-                      <li key={index}>
-                        {new Date(r.recorded_at).toLocaleTimeString()} · {r.lux}
-                        {" "}
-                        lux
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-              {i.status === "open" && (
-                <button
-                  disabled={busy !== null}
-                  onClick={() => void acknowledge(i.id, i.incident_uid)}
-                  className="mt-3 rounded-lg border border-theme-border px-3 py-2 text-sm font-semibold text-theme-text disabled:opacity-50"
-                >
-                  {busy === i.id ? "Acknowledging…" : "Acknowledge incident"}
-                </button>
-              )}
-            </article>
-          );
-        })}
-        {!incidents.length && (
-          <p className="py-4 text-sm text-theme-muted">
-            No incidents recorded for this greenhouse.
-          </p>
-        )}
+      <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. Consumed attempts are never retried.</p>
+      <h3 className="mt-5 font-semibold text-theme-text">Sensor incidents</h3>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full min-w-[800px] text-left text-sm">
+          <thead className="border-b border-theme-border text-theme-muted"><tr>
+            <th className="p-3">Sensor</th><th className="p-3">Phase</th><th className="p-3">Opened</th><th className="p-3">Closed / resolved</th><th className="p-3">Status</th><th className="p-3">Actions</th>
+          </tr></thead>
+          <tbody>{incidents.slice(0,30).map(i => {
+            const outcome = incidentOutcome(i);
+            let trigger: Reading[] = [];
+            try { trigger = averageReadings(typeof i.triggering_readings === "string" ? JSON.parse(i.triggering_readings) : i.triggering_readings ?? []); } catch {}
+            return <tr key={i.incident_uid ?? i.id} className="border-b border-theme-border">
+              <td className="p-3 font-mono text-xs">{i.sensor_id}</td><td className="p-3 capitalize">{i.phase_type}</td>
+              <td className="p-3">{new Date(i.opened_at).toLocaleString()}</td><td className="p-3">{i.resolved_at ? new Date(i.resolved_at).toLocaleString() : "—"}</td>
+              <td className="p-3"><Badge tone={i.status === "resolved" ? "green" : "amber"}>{outcome.label}</Badge></td>
+              <td className="p-3"><div className="flex items-center gap-2">
+                <button className="whitespace-nowrap rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setDetails({title: "Incident details", body: <div className="space-y-3 text-sm"><p>{i.reason || "Sensor incident"}</p>{outcome.detail && <p>{outcome.detail}</p>}{trigger.length > 0 && <div><p className="font-semibold">Triggering minute averages</p>{trigger.map((r,index) => <p key={index}>{new Date(r.recorded_at).toLocaleString()} · {r.lux.toFixed(2)} lux</p>)}</div>}</div>})}>View Details</button>
+                {i.status === "open" && <button disabled={busy !== null} onClick={() => void acknowledge(i.id,i.incident_uid)} className="rounded-lg border border-theme-border px-3 py-2 font-semibold disabled:opacity-50">{busy === i.id ? "Acknowledging…" : "Acknowledge"}</button>}
+              </div></td>
+            </tr>;
+          })}{!incidents.length && <tr><td colSpan={6} className="p-5 text-center text-theme-muted">No incidents recorded for this greenhouse.</td></tr>}</tbody>
+        </table>
       </div>
+      <Modal open={details !== null} title={details?.title ?? "Incident details"} onClose={() => setDetails(null)} footer={<button className="rounded-lg border border-theme-border px-4 py-2" onClick={() => setDetails(null)}>Close</button>}>{details?.body}</Modal>
     </Card>
   );
 }

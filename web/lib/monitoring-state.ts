@@ -86,51 +86,50 @@ export function freshestReadings(
   raw: Reading[],
   aggregates: MinuteAggregate[],
 ): { readings: Reading[]; sources: Record<string, "raw" | "minute"> } {
-  const rawTimes = new Map<string, number>();
-  const cloudTimes = new Map<string, number>();
-  for (const r of raw) {
-    rawTimes.set(
-      r.sensor_id,
-      Math.max(rawTimes.get(r.sensor_id) ?? 0, Date.parse(r.recorded_at)),
-    );
-  }
-  for (const r of aggregates) {
-    cloudTimes.set(
-      r.sensor_id,
-      Math.max(
-        cloudTimes.get(r.sensor_id) ?? 0,
-        Date.parse(r.last_recorded_at ?? r.bucket_start),
-      ),
-    );
-  }
+  // Use one average per sensor, greenhouse, phase and minute in every view.
+  // Prefer the more recently observed bucket; never merge overlapping cloud
+  // and local buckets, which would count the same samples twice.
+  const buckets = new Map<string, Reading>();
+  const key = (r: Reading) => `${r.sensor_id}|${r.greenhouse_id}|${r.phase_type}|${r.config_version ?? ""}|${Math.floor(Date.parse(r.recorded_at) / 60_000)}`;
   const sources: Record<string, "raw" | "minute"> = {};
-  for (const id of new Set([...rawTimes.keys(), ...cloudTimes.keys()])) {
-    sources[id] = (rawTimes.get(id) ?? 0) >= (cloudTimes.get(id) ?? 0)
-      ? "raw"
-      : "minute";
+  for (const r of aggregates) {
+    const reading: Reading = {
+      config_version: r.config_version, id: r.id, sensor_id: r.sensor_id, greenhouse_id: r.greenhouse_id,
+      lux: r.avg_lux, recorded_at: r.last_recorded_at ?? r.bucket_start,
+      phase_type: r.phase_type, classification: averageLuxStatus(r.avg_lux, r.phase_type),
+    };
+    buckets.set(key(reading), reading);
+    sources[r.sensor_id] = "minute";
   }
-  return {
-    sources,
-    readings: [
-      ...raw.filter((r) => sources[r.sensor_id] === "raw"),
-      ...aggregates.filter((r) => sources[r.sensor_id] === "minute").map(
-        (r) => ({
-          id: r.id,
-          sensor_id: r.sensor_id,
-          greenhouse_id: r.greenhouse_id,
-          lux: r.avg_lux,
-          recorded_at: r.last_recorded_at ?? r.bucket_start,
-          phase_type: r.phase_type,
-          classification:
-            (r.violation_count > 0
-              ? "violation"
-              : r.warning_count > 0
-              ? "warning"
-              : "safe") as Reading["classification"],
-        }),
-      ),
-    ].sort((a, b) => Date.parse(a.recorded_at) - Date.parse(b.recorded_at)),
-  };
+  for (const r of averageReadings(raw)) {
+    const previous = buckets.get(key(r));
+    if (!previous || Date.parse(r.recorded_at) > Date.parse(previous.recorded_at)) buckets.set(key(r), r);
+    sources[r.sensor_id] = "minute";
+  }
+  return { sources, readings: [...buckets.values()].sort((a,b) => Date.parse(a.recorded_at)-Date.parse(b.recorded_at)) };
+}
+
+/** Display status describes average intensity; alert windows remain server-owned. */
+export function averageLuxStatus(lux: number, phase: string): Reading["classification"] {
+  if (phase === "illumination") return lux <= 30 ? "violation" : lux < 50 ? "warning" : "safe";
+  if (phase === "dark") return lux <= 15 ? "safe" : lux <= 29 ? "warning" : "violation";
+  return "unclassified";
+}
+
+export function averageReadings(readings: Reading[]): Reading[] {
+  const buckets = new Map<string, { reading: Reading; sum: number; count: number }>();
+  for (const r of readings) {
+    if (!Number.isFinite(r.lux) || r.lux < 0 || !Number.isFinite(Date.parse(r.recorded_at))) continue;
+    const key = `${r.sensor_id}|${r.greenhouse_id}|${r.phase_type}|${r.config_version ?? ""}|${Math.floor(Date.parse(r.recorded_at)/60_000)}`;
+    const bucket = buckets.get(key) ?? { reading: r, sum: 0, count: 0 };
+    bucket.sum += r.lux;
+    bucket.count++;
+    if (Date.parse(r.recorded_at) > Date.parse(bucket.reading.recorded_at)) bucket.reading = r;
+    buckets.set(key, bucket);
+  }
+  return [...buckets.values()].map(({reading, sum, count}) => ({
+    ...reading, lux: sum/count, classification: averageLuxStatus(sum/count, reading.phase_type),
+  })).sort((a,b) => Date.parse(a.recorded_at)-Date.parse(b.recorded_at));
 }
 
 export function phaseForGreenhouse(

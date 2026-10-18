@@ -9,6 +9,7 @@ export type Phase = {
   is_active: number;
 };
 export type Reading = {
+  config_version?: string;
   id: number;
   sensor_id: string;
   greenhouse_id: string | null;
