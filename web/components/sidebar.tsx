@@ -26,8 +26,12 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
   const [mobileOpen, setMobileOpen] = useState(false);
   const isGlass = surfaceStyle === "glass";
 
-  async function navigate(page: DashboardSection) {
-    if (page !== active) await logActivity("NAVIGATE", page.toLowerCase().replace(/\s+/g, "_"), undefined, { from: active, to: page });
+  function navigate(page: DashboardSection) {
+    // Record the source page before routing, without making navigation wait on the network.
+    if (page !== active) {
+      void logActivity("NAVIGATE", page.toLowerCase().replace(/\s+/g, "_"), undefined, { from: active, to: page })
+        .catch(error => console.error("[sidebar] Unable to log navigation:", error));
+    }
     onNavigate(page);
     setMobileOpen(false);
   }
