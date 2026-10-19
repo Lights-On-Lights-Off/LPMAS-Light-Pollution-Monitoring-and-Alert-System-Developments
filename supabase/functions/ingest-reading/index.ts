@@ -1,6 +1,7 @@
 /** Idempotent Pi ingestion. Supabase derives greenhouse episodes from existing
  * readings; Pi sensor reports remain unchanged. Attempts are consumed before sending. */
 import { backendAuthorized } from "../_shared/backend-auth.ts";
+import type { DeliveryResult } from "../_shared/gmail-delivery.ts";
 import { gmailSender, validEmail } from "../_shared/gmail.ts";
 import {
   buildSendRequest,
@@ -72,7 +73,7 @@ export interface HandlerDeps {
   log(level: "info" | "error", message: string): void;
   spawn(task: Promise<unknown>): void;
   pause?(milliseconds: number): Promise<void>;
-  sendEmail?(recipient: string, message: string): Promise<"accepted" | "failed" | "unknown">;
+  sendEmail?(recipient: string, message: string): Promise<"accepted" | "failed" | "unknown" | DeliveryResult>;
 }
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -225,9 +226,14 @@ async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: numbe
   await Promise.all(jobs.map(async job => {
     let outcome: "accepted" | "failed" | "unknown" = "failed";
     let sending = false;
+    let detail: string | undefined;
     try {
       if (job.channel === "email") {
-        if (validEmail(job.recipient) && deps.sendEmail) outcome = await deps.sendEmail(job.recipient, job.message);
+        if (validEmail(job.recipient) && deps.sendEmail) {
+          const result = await deps.sendEmail(job.recipient, job.message);
+          outcome = typeof result === "string" ? result : result.outcome;
+          if (typeof result !== "string") detail = result.detail;
+        } else detail = "The manager email recipient or Gmail sender is not configured. Save a verified manager and connect Gmail in administrator settings.";
       } else if (job.channel === "sms" && job.recipient) {
         const config = resolveProvider({...await deps.readSettings(), manager_phone: job.recipient});
         const request = config ? buildSendRequest(config, job.message) : null;
@@ -249,9 +255,9 @@ async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: numbe
       p_id: job.id,
       p_attempt_token: job.attempt_token,
       p_outcome: outcome,
-      p_detail: outcome === "accepted" ? "Accepted by provider; recipient delivery unconfirmed"
+      p_detail: detail ?? (outcome === "accepted" ? "Accepted by provider; recipient delivery unconfirmed"
         : outcome === "unknown" ? "Acceptance unknown; attempt will not be retried"
-        : "Not accepted or sending configuration unavailable; attempt will not be retried",
+        : "Not accepted or sending configuration unavailable; use Retry in notification details after correcting the configuration"),
     });
     if (finish.error) throw new Error(finish.error.message);
   }));

@@ -951,6 +951,24 @@ def acknowledge_incident(incident_id):
     finally: conn.close()
 
 
+@app.route("/api/notification-retries", methods=["POST"])
+@require_manager
+def retry_local_notification():
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    try:
+        job_id = str(uuid.UUID(body.get("job_id", "")))
+        request_id = str(uuid.UUID(body.get("request_id", "")))
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({"error": "Valid notification and retry identities required"}), 400
+    conn = get_db()
+    try:
+        return jsonify(local_sms.manual_retry(conn, LOCAL_SMS, job_id, request_id))
+    finally:
+        conn.close()
+
+
 @app.route("/api/hardware-activity", methods=["GET"])
 @require_manager
 def hardware_activity():
