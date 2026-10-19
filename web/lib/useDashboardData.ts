@@ -192,12 +192,13 @@ export function useDashboardData() {
     registryError: snapshot.sensorError, piError: snapshot.piError,
     configurationKnown: snapshot.configurationFetchedAt !== null,
   }), [snapshot]);
+  const sensors = useMemo(() => resolved.sensors.map(sensor => {
+    const latest = [...snapshot.data.readings].reverse().find(r => r.sensor_id === sensor.sensor_id);
+    return { ...sensor, lux: latest?.lux ?? NaN };
+  }), [resolved, snapshot.data.readings]);
   return {
     ...snapshot,
-    sensors: resolved.sensors.map(sensor => {
-      const latest = [...snapshot.data.readings].reverse().find(r => r.sensor_id === sensor.sensor_id);
-      return { ...sensor, lux: latest?.lux ?? NaN };
-    }),
+    sensors,
     sensorHealthById: resolved.health,
     refresh: refreshDashboard,
   };
