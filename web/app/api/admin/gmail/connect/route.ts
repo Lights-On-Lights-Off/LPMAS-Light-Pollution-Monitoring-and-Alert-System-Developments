@@ -1,13 +1,17 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { verifiedAdministrator } from "@/lib/server-auth";
+import { gmailAuthorization } from "@/lib/gmail-authorization";
+import { backendClient, verifiedAdministrator } from "@/lib/server-auth";
 import { configuredWebOrigin, oauthNonce, oauthChallenge } from "@/lib/google-oauth";
 
 export async function POST() {
   const user = await verifiedAdministrator();
   if (!user) return NextResponse.json({error: "Verified administrator required."}, {status: 403});
-  const origin = configuredWebOrigin(), clientId = process.env.GOOGLE_GMAIL_CLIENT_ID;
-  if (!origin || !clientId || !process.env.GOOGLE_GMAIL_CLIENT_SECRET) return NextResponse.json({error: "Gmail connection is not configured."}, {status: 503});
+  const admin=backendClient();
+  const saved=admin ? await gmailAuthorization(admin) : null;
+  const origin = configuredWebOrigin(), clientId = saved?.credentials?.client_id || process.env.GOOGLE_GMAIL_CLIENT_ID;
+  const clientSecret=saved?.credentials?.client_secret || process.env.GOOGLE_GMAIL_CLIENT_SECRET;
+  if (saved?.error || !origin || !clientId || !clientSecret) return NextResponse.json({error: "Gmail connection is not configured."}, {status: 503});
   const state = oauthNonce(), verifier = oauthNonce();
   const jar = await cookies();
   jar.set("lpmas_gmail_oauth", JSON.stringify({state, verifier, userId: user.id}), {

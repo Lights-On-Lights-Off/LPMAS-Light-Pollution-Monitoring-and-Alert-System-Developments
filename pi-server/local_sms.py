@@ -274,3 +274,43 @@ def status(conn, config):
         'configuration_age_seconds': max(0, int(time.time()-cached['saved_at'])) if cached else None,
         'cloud_ownership': saved_config(conn).get('mode', 'unprovisioned'),
         'jobs': {r['status']: r['n'] for r in conn.execute('SELECT status,count(*) AS n FROM local_sms_jobs GROUP BY status')}}
+
+
+def manual_retry(conn, config, job_id, request_id, gateway=None, now=None):
+    """One deliberate resend, with its own durable id; original jobs stay intact."""
+    now = time.time() if now is None else now
+    conn.execute("""CREATE TABLE IF NOT EXISTS local_sms_manual_retries (
+        id TEXT PRIMARY KEY, original_job_id TEXT NOT NULL,
+        status TEXT NOT NULL, detail TEXT NOT NULL, created_at REAL NOT NULL)""")
+    conn.commit()
+    conn.execute('BEGIN IMMEDIATE')
+    previous = conn.execute('SELECT * FROM local_sms_manual_retries WHERE id=?', (request_id,)).fetchone()
+    if previous:
+        conn.rollback()
+        if previous['original_job_id'] != job_id:
+            return {'outcome': 'failed', 'detail': 'Retry identity does not match the original notification.'}
+        return {'outcome': previous['status'], 'detail': previous['detail']}
+    original = conn.execute('SELECT * FROM local_sms_jobs WHERE id=?', (job_id,)).fetchone()
+    latest = conn.execute('SELECT * FROM local_sms_manual_retries WHERE original_job_id=? ORDER BY created_at DESC LIMIT 1', (job_id,)).fetchone()
+    if not original or original['status'] != 'failed':
+        conn.rollback()
+        return {'outcome': 'failed', 'detail': 'Only failed local SMS notifications can be retried.'}
+    if latest and (latest['status'] != 'failed' or now-latest['created_at'] < 30):
+        conn.rollback()
+        return {'outcome': 'unknown', 'detail': 'A resend was already submitted or is still unconfirmed.'}
+    if not armed(conn, config) or not clock_ready(config, now):
+        conn.rollback()
+        return {'outcome': 'failed', 'detail': 'Local SMS is disabled or the Pi clock is not ready. No resend was submitted.'}
+    conn.execute('INSERT INTO local_sms_manual_retries VALUES (?,?,?,?,?)', (request_id, job_id, 'unknown', 'Manual SMS submission unconfirmed.', now))
+    conn.commit()
+    job = {**dict(original), 'id': request_id, 'gateway_id': request_id, 'expires_at': now+FRESHNESS_SECONDS}
+    try:
+        gateway = gateway or Gateway(config)
+        outcome, detail = interpret(gateway.send(job), job)
+    except urllib.error.HTTPError as error:
+        outcome, detail = ('failed', 'Gateway rejected manual SMS submission.') if error.code in (400,401,403,422,429) else ('unknown', 'Manual SMS submission outcome unconfirmed.')
+    except Exception:
+        outcome, detail = 'unknown', 'Manual SMS submission outcome unconfirmed; automatic resend disabled.'
+    conn.execute('UPDATE local_sms_manual_retries SET status=?,detail=? WHERE id=?', (outcome,detail,request_id))
+    conn.commit()
+    return {'outcome': outcome, 'detail': detail}

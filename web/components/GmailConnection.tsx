@@ -10,20 +10,20 @@ export function GmailConnection({ recipientEmail }: { recipientEmail: string | n
   const [testResult, setTestResult] = useState<{ message: string; failed: boolean } | null>(null);
   useEffect(() => {
     let active = true;
-    void fetch("/api/admin/gmail/status", { cache: "no-store", signal: AbortSignal.timeout(10_000) })
+    void fetch("/api/admin/gmail/status", { cache: "no-store", signal: AbortSignal.timeout(25_000) })
       .then(async response => {
         const body = await response.json();
-        if (!response.ok) throw new Error("Email sending status is unavailable.");
+        if (!response.ok) throw new Error(body.error ?? "Email sending status is unavailable.");
         if (!active) return;
         setConfigured(body.configured === true);
         setSender(body.sender_email ?? null);
-        setStatus(body.authorized && body.sender_email ? "authorized" : "unauthorized");
+        setStatus(body.available === false ? "unavailable" : body.authorized && body.sender_email ? "authorized" : "unauthorized");
         const result = new URLSearchParams(window.location.search).get("gmail");
         setNotice(result === "failed" ? "Gmail authorization failed. Use the Gmail matching your verified administrator account."
-          : body.sender_email ? "Gmail authorization is saved. Send a test to check sending functionality."
+          : body.detail ? body.detail : body.sender_email ? "Gmail authorization is saved. Send a test to check sending functionality."
           : body.configured ? "Authorize the Gmail matching your verified administrator account." : "Gmail sending is not configured yet.");
-      }).catch(() => {
-        if (active) { setStatus("unavailable"); setNotice("Email sending status is unavailable."); }
+      }).catch(error => {
+        if (active) { setStatus("unavailable"); setNotice(error instanceof Error ? error.message : "Email sending status is unavailable."); }
       });
     return () => { active = false; };
   }, []);
@@ -51,6 +51,7 @@ export function GmailConnection({ recipientEmail }: { recipientEmail: string | n
     </div>
     {sender && <p className="mt-2 break-all text-sm text-theme-text">Authorized sender: {sender}</p>}
     <p role="status" className="mt-2 text-xs text-theme-muted">{notice}</p>
+    <p className="mt-2 text-xs text-theme-muted">The connection refreshes automatically. Reconnect if Google expires or revokes access.</p>
     <div className="mt-3 flex flex-wrap items-center gap-2">
       <form action="/api/admin/gmail/connect" method="post">
         <button type="submit" disabled={!configured || busy} className="rounded-lg border border-theme-border px-3 py-2 text-sm font-semibold text-theme-text disabled:opacity-50">{sender ? "Reconnect Gmail" : "Authorize my Gmail to send alerts"}</button>

@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { gmailAuthorization } from "@/lib/gmail-authorization";
 import { backendClient, verifiedAdministrator } from "@/lib/server-auth";
 import { configuredWebOrigin, sameNonce } from "@/lib/google-oauth";
 
@@ -15,8 +16,9 @@ export async function GET(request: NextRequest) {
     const state = request.nextUrl.searchParams.get("state") ?? "", code = request.nextUrl.searchParams.get("code");
     const saved = stored ? JSON.parse(stored) : null;
     if (!user || !admin || !saved || saved.userId !== user.id || !state || !sameNonce(state, saved.state) || !code || request.nextUrl.searchParams.has("error")) throw new Error();
-    const clientId = process.env.GOOGLE_GMAIL_CLIENT_ID, clientSecret = process.env.GOOGLE_GMAIL_CLIENT_SECRET;
-    if (!clientId || !clientSecret) throw new Error();
+    const authorization=await gmailAuthorization(admin);
+    const clientId = authorization.credentials?.client_id || process.env.GOOGLE_GMAIL_CLIENT_ID, clientSecret = authorization.credentials?.client_secret || process.env.GOOGLE_GMAIL_CLIENT_SECRET;
+    if (authorization.error || !clientId || !clientSecret) throw new Error();
     const tokens = await fetch("https://oauth2.googleapis.com/token", {method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       body: new URLSearchParams({code, client_id: clientId, client_secret: clientSecret, code_verifier: saved.verifier,
         redirect_uri: `${origin}/api/admin/gmail/callback`, grant_type: "authorization_code"})});
@@ -30,7 +32,7 @@ export async function GET(request: NextRequest) {
     const google = await identity.json();
     if (google.email_verified !== true || typeof google.email !== "string" || google.email.toLowerCase() !== user.email!.toLowerCase()) throw new Error();
     const {error} = await admin.rpc("set_gmail_authorization", {p_admin_user_id: user.id,
-      p_sender_email: google.email.toLowerCase(), p_refresh_token: token.refresh_token});
+      p_sender_email: google.email.toLowerCase(), p_refresh_token: token.refresh_token, p_client_id: clientId, p_client_secret: clientSecret});
     if (error) throw new Error();
     ok = true;
   } catch { /* Never send tokens or upstream details to the browser or logs. */ }

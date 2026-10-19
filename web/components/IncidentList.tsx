@@ -5,23 +5,12 @@ import { acknowledgeIncident, type Reading } from "@/lib/api";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { supabase } from "@/lib/supabase";
 import { Modal } from "./Modal";
+import { NotificationDetails, type NotificationJob as Job } from "./NotificationDetails";
 import { averageReadings } from "@/lib/monitoring-state";
 import { incidentOutcome } from "@/lib/monitoring-state";
-type Job = {
-  id: string;
-  source?: string;
-  send_number?: number;
-  greenhouse_alert_uid: string;
-  event: string;
-  channel: string;
-  recipient: string | null;
-  attempted_at: string | null;
-  status: string;
-  attempts: number;
-  detail: string | null;
-};
 export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
   const [details, setDetails] = useState<{title: string; body: React.ReactNode} | null>(null);
+  const [notificationEpisode,setNotificationEpisode]=useState<string|null>(null);
   const { data, refresh } = useDashboardData();
   const [episodes, setEpisodes] = useState<{incident_uid: string; status: string; opened_at: string}[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]),
@@ -91,15 +80,11 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
             <td className="p-3 font-mono text-xs">{episode.incident_uid.slice(0,12)}</td>
             <td className="p-3">{new Date(episode.opened_at).toLocaleString()}</td>
             <td className="p-3 capitalize">{episode.status}</td>
-            <td className="p-3"><button className="rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setDetails({title: "Notification details", body: <div className="space-y-4">{jobs.filter(job => job.greenhouse_alert_uid === episode.incident_uid).map(job => <div key={`${job.source ?? "cloud"}-${job.id}`} className="border-b border-theme-border pb-3 text-sm">
-              <p className="font-semibold">{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {job.source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: {job.status === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : job.status}</p>
-              <p className="mt-1 break-words">{job.recipient || "Recipient unavailable"}{job.attempted_at ? ` · ${new Date(job.attempted_at).toLocaleString()}` : ""} · {job.attempts} sending attempt{job.attempts === 1 ? "" : "s"}</p>
-              {job.detail && <p className="mt-1">{job.detail}</p>}
-            </div>)}{!jobs.some(job => job.greenhouse_alert_uid === episode.incident_uid) && <p>No notification outcomes recorded.</p>}</div>})}>View Details</button></td>
+            <td className="p-3"><button className="rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setNotificationEpisode(episode.incident_uid)}>View Details</button></td>
           </tr>)}{!episodes.length && <tr><td colSpan={4} className="p-5 text-center text-theme-muted">No greenhouse alerts recorded.</td></tr>}</tbody>
         </table>
       </div>
-      <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. Consumed attempts are never retried.</p>
+      <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. Failed notifications can be resent manually from View Details.</p>
       <h3 className="mt-5 font-semibold text-theme-text">Sensor incidents</h3>
       <div className="mt-2 overflow-x-auto">
         <table className="w-full min-w-[800px] text-left text-sm">
@@ -122,7 +107,9 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
           })}{!incidents.length && <tr><td colSpan={6} className="p-5 text-center text-theme-muted">No incidents recorded for this greenhouse.</td></tr>}</tbody>
         </table>
       </div>
-      <Modal open={details !== null} title={details?.title ?? "Incident details"} onClose={() => setDetails(null)} footer={<button className="rounded-lg border border-theme-border px-4 py-2" onClick={() => setDetails(null)}>Close</button>}>{details?.body}</Modal>
+      <Modal open={details !== null || notificationEpisode !== null} title={notificationEpisode ? "Notification details" : details?.title ?? "Incident details"} onClose={() => {setDetails(null);setNotificationEpisode(null);}} footer={<button className="rounded-lg border border-theme-border px-4 py-2" onClick={() => {setDetails(null);setNotificationEpisode(null);}}>Close</button>}>
+        {notificationEpisode ? <NotificationDetails key={notificationEpisode} episodeId={notificationEpisode} jobs={jobs.filter(job => job.greenhouse_alert_uid === notificationEpisode)}/> : details?.body}
+      </Modal>
     </Card>
   );
 }
