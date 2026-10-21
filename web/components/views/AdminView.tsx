@@ -152,11 +152,14 @@ export function AdminView({ section }: { section: string }) {
 
   const openIncidents = overviewIncidents.filter(incident => incident.status !== "resolved").length;
   const activeGreenhouses = greenhouses.filter(greenhouse => greenhouse.is_active === 1).length;
-  const activeGreenhouseSensorIds = useMemo(() => new Set(greenhouses.filter(g => g.is_active === 1).flatMap(g => g.sensor_ids)), [greenhouses]);
-  const connectedSensors = monitoring.sensors.filter(s => activeGreenhouseSensorIds.has(s.sensor_id)).map(s => {
-    const latest = [...monitoring.data.readings].reverse().find(r => r.sensor_id === s.sensor_id);
-    return {sensor_id:s.sensor_id,lux:latest?.lux ?? null,recorded_at:latest?.recorded_at ?? "",health:monitoring.sensorHealthById[s.sensor_id] ?? "Unknown"};
-  }).sort((a,b) => (Date.parse(b.recorded_at) || 0)-(Date.parse(a.recorded_at) || 0));
+  // The registry receives every measurement, including outside monitoring hours
+  // and without an active greenhouse assignment. Aggregates do not.
+  const allSensors = monitoring.sensors.map(s => ({
+    sensor_id: s.sensor_id,
+    lux: s.last_reading_at && Number.isFinite(Date.parse(s.last_reading_at)) ? s.lux : null,
+    recorded_at: s.last_reading_at ?? "",
+    health: monitoring.sensorHealthById[s.sensor_id] ?? "Unknown",
+  })).sort((a,b) => (Date.parse(b.recorded_at) || 0)-(Date.parse(a.recorded_at) || 0) || a.sensor_id.localeCompare(b.sensor_id));
 
   const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
   const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
@@ -1033,10 +1036,11 @@ export function AdminView({ section }: { section: string }) {
           </Modal>
 
           <Card>
-            <div className="mb-5"><p className="font-bold text-theme-text">Assigned sensors</p><p className="mt-1 text-sm text-theme-muted">Latest minute average for each assigned sensor, most recent first. Status comes from the shared sensor registry.</p></div>
+            <div className="mb-5"><p className="font-bold text-theme-text">All sensors</p><p className="mt-1 text-sm text-theme-muted">Latest reading from every sensor, including unassigned sensors and readings outside monitoring hours. Refreshes every 10 seconds, most recent first.</p></div>
+            {monitoring.sensorError && <p role="status" className="mb-4 text-sm text-theme-danger">Sensor readings could not be refreshed. Retained readings may be stale.</p>}
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-              <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest average lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
-                <tbody>{connectedSensors.length ? connectedSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux === null ? "No average yet" : `${reading.lux.toFixed(2)} lx`}</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{reading.recorded_at ? new Date(reading.recorded_at).toLocaleString() : "—"}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor readings recorded yet.</td></tr>}</tbody>
+              <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
+                <tbody>{allSensors.length ? allSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux === null ? "No reading yet" : `${reading.lux.toFixed(2)} lx`}</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{reading.recorded_at ? new Date(reading.recorded_at).toLocaleString() : "—"}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">{monitoring.loading ? "Loading sensors…" : monitoring.sensorError ? "Sensor readings unavailable." : "No sensors registered yet."}</td></tr>}</tbody>
               </table>
             </div>
           </Card>
