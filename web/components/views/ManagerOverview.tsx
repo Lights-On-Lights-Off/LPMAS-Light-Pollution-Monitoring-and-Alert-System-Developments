@@ -20,6 +20,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ChartDataDetails } from "../ChartDataDetails";
 import { Badge, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { IncidentList } from "../IncidentList";
@@ -200,7 +201,7 @@ export function ManagerOverview(
   }
 
   return (
-    <div className="space-y-6 p-6 md:p-8">
+    <div className="dashboard-content space-y-6">
       <MonitoringStatus />
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -220,7 +221,7 @@ export function ManagerOverview(
           onChange={(e) => setSelectedGreenhouse(e.target.value)}
           disabled={!greenhouseConfigs.length}
           aria-label="Select greenhouse"
-          className="min-w-[150px] max-w-[190px] rounded-lg border border-[color-mix(in_srgb,var(--accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-xs font-medium text-[var(--foreground)] outline-none backdrop-blur-xl disabled:cursor-not-allowed disabled:opacity-70"
+          className="min-w-0 w-full sm:w-64 rounded-lg border border-[color-mix(in_srgb,var(--accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-xs font-medium text-[var(--foreground)] outline-none backdrop-blur-xl disabled:cursor-not-allowed disabled:opacity-70"
         >
           {greenhouseConfigs.length
             ? greenhouseConfigs.map((g) => (
@@ -249,7 +250,7 @@ export function ManagerOverview(
         />
       </div>
 
-      <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
+      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <Card className="min-h-[340px]">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -273,11 +274,11 @@ export function ManagerOverview(
               History unavailable; retained points may be stale.
             </p>
           )}
-          <div className="mt-6 h-[255px]">
+          <div className="chart-frame mt-6">
             {chartData.length
               ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData}>
+                  <AreaChart accessibilityLayer data={chartData} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
                     <defs>
                       <linearGradient
                         id="overviewLuxGradient"
@@ -312,14 +313,22 @@ export function ManagerOverview(
                           hour: "2-digit",
                           minute: "2-digit",
                         })}
-                      tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                      tick={{ fontSize: 12, fill: "var(--text-muted)" }}
                       interval="preserveStartEnd"
+                      minTickGap={40}
+                      tickLine={false}
+                      axisLine={false}
                     />
                     <YAxis
-                      tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-                      width={40}
+                      tick={{ fontSize: 12, fill: "var(--text-muted)" }}
+                      width={44}
+                      tickLine={false}
+                      axisLine={false}
+                      domain={[0, (max: number) => Math.max(max, selectedPhase === "dark" ? 30 : 50) + 10]}
                     />
                     <Tooltip
+                      labelFormatter={value => new Date(Number(value)).toLocaleString()}
+                      formatter={(value: number, name: string) => [`${value.toFixed(2)} lux`, name]}
                       contentStyle={{
                         borderRadius: 12,
                         background: "var(--surface-solid)",
@@ -328,16 +337,16 @@ export function ManagerOverview(
                       }}
                     />
                     <Legend />
-                    <ReferenceLine
+                    {selectedPhase && <ReferenceLine
                       y={selectedPhase === "dark" ? 15 : 50}
                       stroke="var(--success)"
                       strokeDasharray="4 4"
-                    />
-                    <ReferenceLine
-                      y={selectedPhase === "dark" ? 29 : 30}
+                    />}
+                    {selectedPhase && <ReferenceLine
+                      y={30}
                       stroke="var(--danger)"
                       strokeDasharray="4 4"
-                    />
+                    />}
                     {assignedIds.map((id, index) => (
                       <Area
                         key={id}
@@ -349,15 +358,14 @@ export function ManagerOverview(
                         isAnimationActive={false}
                         type="linear"
                         dataKey={id}
-                        name={`${id} (${
-                          "minute avg"
-                        })`}
+                        name={id}
                         stroke={[
                           "var(--accent)",
                           "var(--warning)",
                           "var(--success)",
                         ][index % 3]}
-                        strokeWidth={2}
+                        strokeWidth={2.5}
+                        strokeDasharray={[undefined, "8 4", "2 4"][index % 3]}
                         fillOpacity={0.05}
                         connectNulls
                       />
@@ -373,6 +381,8 @@ export function ManagerOverview(
                 </div>
               )}
           </div>
+          <p className="mt-3 text-xs text-theme-muted">Intensity in lux · dashed reference lines show the safe and violation boundaries for the active phase.</p>
+          <ChartDataDetails points={chartData} series={assignedIds} />
         </Card>
 
         <Card className="min-h-[340px]">
@@ -429,7 +439,7 @@ export function ManagerOverview(
             </h2>
             <Activity size={17} className="text-[var(--muted-foreground)]" />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>
@@ -471,7 +481,7 @@ export function ManagerOverview(
             </h2>
             <Wifi size={17} className="text-[var(--muted-foreground)]" />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>
@@ -512,7 +522,7 @@ export function ManagerOverview(
               className="text-[var(--muted-foreground)]"
             />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>

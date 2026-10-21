@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowLeft, Eye, EyeOff, LockKeyhole, Mail } from "lucide-react";
@@ -78,7 +79,7 @@ export function Login() {
       <ArrowLeft size={17} /> Back to home
     </Link>
     <form onSubmit={submit} className="metal-panel relative w-full max-w-md rounded-3xl border border-metal-600 p-8 shadow-soft">
-      <img src="/Hayag-logo.png" alt="LPMAS" className="mx-auto h-14 w-14 object-contain" />
+      <Image width={48} height={48} src="/Hayag-logo.png" alt="LPMAS" className="mx-auto h-14 w-14 object-contain" />
       <h1 className="mt-5 text-center text-2xl font-bold text-metal-50">Welcome to LPMAS</h1>
       <p className="mt-2 text-center text-sm text-metal-400">Sign in to access the Flowerland monitoring dashboard.</p>
       <label htmlFor="login-email" className="mt-7 block text-sm font-semibold text-metal-200">Email</label>

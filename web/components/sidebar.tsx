@@ -1,5 +1,6 @@
 // components/sidebar.tsx
 "use client";
+import Image from "next/image";
 import { DialogFrame } from "./Modal";
 import { useState } from "react";
 import { Activity, BellRing, Gauge, LogOut, Menu, Settings, ShieldCheck, House, Paintbrush, X } from "lucide-react";
@@ -47,7 +48,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
 
   const navContent = <>
     <div className="relative mb-10 flex items-center gap-3 px-2">
-      <img src="/Hayag-logo.png" alt="Hayag logo" className="h-11 w-11 rounded-2xl object-contain shadow-lg" />
+      <Image width={48} height={48} src="/Hayag-logo.png" alt="Hayag logo" className="h-11 w-11 rounded-2xl object-contain shadow-lg" />
       <div>
         <p className="font-bold tracking-wide text-[var(--foreground)]">LPMAS</p>
         <p className="text-xs text-[var(--accent)]">Flowerland Monitor</p>
@@ -91,7 +92,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
 
   return <>
     {/* Desktop sidebar — now theme-aware via .glass-navbar, which already has Clay/Glass CSS overrides in globals.css */}
-    <aside className="glass-navbar relative hidden h-screen w-72 shrink-0 flex-col overflow-hidden border-r p-5 text-[var(--foreground)] lg:sticky lg:top-0 lg:flex">
+    <aside className="glass-navbar relative hidden h-dvh w-72 shrink-0 flex-col overflow-y-auto border-r p-5 text-[var(--foreground)] lg:sticky lg:top-0 lg:flex">
       {isGlass && <>
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />
         <div className="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full bg-[var(--accent)]/8 blur-3xl" />
@@ -113,12 +114,12 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
     {mobileOpen && (
       <DialogFrame title="Dashboard navigation" onClose={() => setMobileOpen(false)} className="fixed inset-0 z-50 lg:hidden">
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
-        <aside className="glass-card-strong relative flex h-full w-72 max-w-[82vw] flex-col overflow-hidden px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] text-[var(--foreground)]">
+        <aside className="glass-card-strong relative flex h-dvh w-72 max-w-[82vw] flex-col overflow-y-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] text-[var(--foreground)]">
           {isGlass && <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.06] via-transparent to-[var(--accent)]/[0.02]" />}
           <button
             onClick={() => setMobileOpen(false)}
             aria-label="Close menu"
-            className="absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 grid h-9 w-9 place-items-center rounded-lg text-[var(--muted-foreground)] transition hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] hover:text-[var(--foreground)]"
+            className="absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 grid h-11 w-11 place-items-center rounded-lg text-[var(--muted-foreground)] transition hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] hover:text-[var(--foreground)]"
           >
             <X size={18} />
           </button>

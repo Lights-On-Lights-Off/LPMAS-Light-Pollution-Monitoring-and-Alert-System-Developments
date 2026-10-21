@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 type BadgeTone = "green" | "amber" | "red" | "slate";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={`glass-card rounded-2xl p-5 text-primary md:p-6 ${className}`}>{children}</section>;
+  return <section className={`glass-card min-w-0 rounded-2xl p-4 text-primary sm:p-5 lg:p-6 ${className}`}>{children}</section>;
 }
 
 export function Badge({ children, tone = "green" }: { children: ReactNode; tone?: BadgeTone }) {
@@ -14,7 +14,7 @@ export function Badge({ children, tone = "green" }: { children: ReactNode; tone?
     slate: "bg-slate-500/10 text-theme-muted ring-slate-500/20"
   };
 
-  return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${colors[tone]}`}>{children}</span>;
+  return <span className={`inline-flex max-w-full items-center break-words rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${colors[tone]}`}>{children}</span>;
 }
 export function EmptyRow({ colSpan, text }: { colSpan: number; text: string }) {
   return (

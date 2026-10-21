@@ -11,14 +11,14 @@
   --surface-border: rgba(255, 255, 255, 0.72);
   --text-primary: #142033;
   --text-secondary: #52627a;
-  --text-muted: #718096;
+  --text-muted: #52627a;
   --accent: #2677d9;
   --accent-hover: #1768c7;
   --accent-soft: rgba(38, 119, 217, 0.12);
   --accent-border: rgba(38, 119, 217, 0.28);
-  --success: #22965a;
-  --warning: #c58a18;
-  --danger: #d44949;
+  --success: #187542;
+  --warning: #93610d;
+  --danger: #bd303b;
   --neutral: #718096;
 
   /* Aliases for the metal, leaf, ink, and theme Tailwind color tokens in
@@ -74,7 +74,9 @@ body {
   background-size: cover;
   background-attachment: fixed;
   color: var(--foreground);
-  font-family: var(--font-everett), sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -87,7 +89,7 @@ h5,
 h6,
 button,
 nav {
-  font-family: var(--font-helvetica), sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
 }
 
 body::before {
@@ -262,7 +264,10 @@ textarea {
   --surface-border: rgba(255, 255, 255, 0.14);
   --text-primary: #edf5ff;
   --text-secondary: #b4c3d7;
-  --text-muted: #8494aa;
+  --text-muted: #b4c3d7;
+  --success: #7bd9a0;
+  --warning: #f3c56b;
+  --danger: #ff929a;
   --accent: #62a8ff;
   --accent-hover: #82b9ff;
   --accent-soft: rgba(98, 168, 255, 0.15);
@@ -473,4 +478,56 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Shared layout and interaction rules for monitoring and management pages. */
+@layer base {
+  h1, h2, h3 { text-wrap: balance; line-height: 1.25; letter-spacing: -0.025em; }
+  h2 { font-size: 1.0625rem; }
+  p { overflow-wrap: anywhere; }
+}
+button, a, input, select, textarea, summary { touch-action: manipulation; }
+button, select, summary { cursor: pointer; }
+button, input:not([type="checkbox"]):not([type="radio"]), select, summary { min-height: 44px; }
+button { min-width: 44px; }
+button, a { transition: background-color 160ms ease, color 160ms ease, opacity 120ms ease; }
+button:active:not(:disabled), a:active { opacity: 0.78; }
+button:disabled, select:disabled { cursor: not-allowed; }
+input, select, textarea { max-width: 100%; }
+select option { background: var(--background); color: var(--foreground); }
+:where(a, button, input, select, textarea, summary) { scroll-margin-block: 6rem; }
+.dashboard-content, .page-container { width: 100%; max-width: 1600px; margin-inline: auto; }
+.dashboard-content { padding: 1.25rem; }
+.page-container { padding: 1.5rem 1rem max(1.5rem, env(safe-area-inset-bottom)); }
+.chart-frame { min-width: 0; height: 280px; }
+.chart-frame .recharts-default-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 12px; }
+.chart-frame .recharts-legend-item { margin-right: 0 !important; overflow-wrap: anywhere; }
+.chart-frame .recharts-tooltip-wrapper { max-width: calc(100% - 16px); z-index: 5; }
+.chart-frame .recharts-default-tooltip { background: var(--background) !important; }
+.chart-frame .recharts-tooltip-item { white-space: normal; }
+.skip-link { position: fixed; top: 8px; left: 8px; z-index: 100; transform: translateY(-180%); padding: 12px 20px; border-radius: 12px; background: var(--background); color: var(--foreground); }
+.skip-link:focus { transform: translateY(0); }
+@media (min-width: 640px) {
+  .dashboard-content, .page-container { padding: 1.5rem; }
+  .chart-frame { height: 340px; }
+}
+@media (min-width: 1024px) {
+  .dashboard-content, .page-container { padding: 2rem; }
+}
+@media (max-width: 639px) {
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px !important; }
+  body { background-attachment: scroll; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-iteration-count: 1 !important; }
+}
+
+.public-header { padding-top: env(safe-area-inset-top); }
+.public-header > nav { max-width: 1600px; margin-inline: auto; gap: 1rem; }
+.page-container { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+@media (min-width: 640px) {
+  .page-container { padding-inline: max(1.5rem, env(safe-area-inset-left)) max(1.5rem, env(safe-area-inset-right)); }
+}
+@media (min-width: 1024px) {
+  .page-container { padding-inline: max(2rem, env(safe-area-inset-left)) max(2rem, env(safe-area-inset-right)); }
 }

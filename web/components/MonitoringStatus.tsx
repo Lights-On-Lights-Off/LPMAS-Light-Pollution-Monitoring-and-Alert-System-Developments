@@ -20,7 +20,7 @@ export function MonitoringStatus() {
       role="status"
       className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-theme-border bg-theme-surface px-4 py-3 text-sm text-theme-text"
     >
-      <div>
+      <div className="min-w-0 flex-1">
         <p className="font-semibold">
           {loading
             ? "Checking monitoring connections…"
@@ -30,7 +30,9 @@ export function MonitoringStatus() {
             ? "Monitoring connection degraded"
             : "Monitoring connected"}
         </p>
-        <p className="mt-1 text-xs text-theme-muted">
+        <details className="mt-1 text-xs text-theme-muted">
+          <summary className="cursor-pointer py-2 font-medium">Connection details</summary>
+          <p className="max-w-3xl leading-6">
           Pi: {loading ? "checking" : piError ? "unavailable" : "connected"}
           {" "}
           · Cloud: {sensorsFetchedAt === null
@@ -42,6 +44,7 @@ export function MonitoringStatus() {
             : "never"}. Lux displays use per-minute averages. Status reflects
           average intensity for the recorded phase; alerts follow the configured monitoring window.
         </p>
+        </details>
         {configError && (
           <p className="mt-1 text-xs text-theme-danger">
             Configuration unavailable; retained configuration may be outdated.

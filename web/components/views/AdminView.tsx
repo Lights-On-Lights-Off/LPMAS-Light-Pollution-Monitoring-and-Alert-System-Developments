@@ -41,7 +41,7 @@ const TITLES: Record<string, { title: string; description: string }> = {
 };
 
 const ROLES: Role[] = ["manager", "admin"];
-const LINE_COLORS = ["var(--theme-accent)", "var(--theme-accent-hover)"];
+const LINE_COLORS = ["var(--theme-accent)", "var(--warning)"];
 
 type ActivityLog = ActivityLogRow;
 type SensorAggregate = { sensor_id: string; greenhouse_id: string; bucket_start: string; phase_type: string; sample_count: number; avg_lux: number; min_lux: number; max_lux: number; safe_count: number; warning_count: number; violation_count: number; updated_at: string };
@@ -558,7 +558,7 @@ export function AdminView({ section }: { section: string }) {
   const controlClassName = "block w-full min-w-0 rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm text-[var(--foreground)] outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))] transition placeholder:text-[var(--muted-foreground)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_30%,var(--border))] disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <div className="space-y-5 p-5 md:p-7">
+    <div className="dashboard-content space-y-6">
       <MonitoringStatus />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -616,7 +616,7 @@ export function AdminView({ section }: { section: string }) {
             </Card>
           </div>
 
-          <div className="grid items-stretch gap-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(330px,0.8fr)]">
+          <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,0.8fr)]">
             <Card className="min-w-0 min-h-[370px]">
               <div className="mb-5 flex items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -629,10 +629,10 @@ export function AdminView({ section }: { section: string }) {
                 <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-[11px] font-medium text-theme-muted">Supabase</span>
               </div>
 
-              <div className="h-[285px]">
+              <div className="chart-frame">
                 {systemActivity.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={systemActivity} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                    <AreaChart accessibilityLayer data={systemActivity} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
                       <defs>
                         <linearGradient id="admin-sensor" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor={LINE_COLORS[0]} stopOpacity={0.25} />
@@ -645,12 +645,12 @@ export function AdminView({ section }: { section: string }) {
                       </defs>
 
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--theme-border)" />
-                      <XAxis dataKey="time" tick={{ fontSize: 10, fill: "var(--theme-text-muted)" }} tickMargin={8} interval="preserveStartEnd" />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: "var(--theme-text-muted)" }} width={30} />
-                      <Tooltip contentStyle={{ borderRadius: 12, background: "var(--theme-surface)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
-                      <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                      <Area type="monotone" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
-                      <Area type="monotone" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
+                      <XAxis dataKey="time" tick={{ fontSize: 12, fill: "var(--theme-text-muted)" }} tickMargin={8} interval="preserveStartEnd" />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "var(--theme-text-muted)" }} width={30} />
+                      <Tooltip contentStyle={{ borderRadius: 12, background: "var(--background)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
+                      <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+                      <Area isAnimationActive={false} type="linear" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
+                      <Area isAnimationActive={false} strokeDasharray="8 4" type="linear" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : (
