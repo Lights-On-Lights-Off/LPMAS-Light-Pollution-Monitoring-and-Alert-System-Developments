@@ -43,7 +43,7 @@ export function NotificationDetails({episodeId,jobs}: {episodeId:string;jobs:Not
     } finally {await load().catch(() => setReady(false));setNow(Date.now());setBusy(null);container.current?.focus();}
   }
   return <div ref={container} tabIndex={-1} role="group" aria-label="Notification resend outcomes" className="space-y-4 focus-visible:ring-2 focus-visible:ring-theme-accent">
-    <p className="text-xs text-theme-muted">Retry resends the original incident notice. Email uses the currently saved manager recipient. Only confirmed failures can be retried; accepted or unconfirmed sends are not resent.</p>
+    <p className="text-xs text-theme-muted">Retry resends the original incident notice. Each retry targets the original failed destination. Email recipients must still be assigned. Only confirmed failures can be retried; accepted or unconfirmed sends are not resent.</p>
     {historyError && <p role="alert" className="text-sm text-theme-danger">{historyError}</p>}
     {error && <p role="alert" className="text-sm text-theme-danger">{error}</p>}
     {notice && <p role="status" className="text-sm text-theme-text">{notice}</p>}

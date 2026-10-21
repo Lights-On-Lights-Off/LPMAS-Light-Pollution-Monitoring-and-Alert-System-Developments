@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-export function GmailConnection({ recipientEmail }: { recipientEmail: string | null }) {
+export function GmailConnection({ recipientEmails }: { recipientEmails: string[] }) {
   const [configured, setConfigured] = useState(false);
   const [sender, setSender] = useState<string | null>(null);
   const [status, setStatus] = useState<"checking" | "authorized" | "unauthorized" | "unavailable">("checking");
@@ -36,10 +36,10 @@ export function GmailConnection({ recipientEmail }: { recipientEmail: string | n
       const response = await fetch("/api/admin/gmail/test", { method: "POST", signal: AbortSignal.timeout(30_000) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Test email failed.");
-      setTestResult({ message: body.message, failed: false });
+      setTestResult({ message: body.message, failed: body.failed === true });
     } catch (error) {
       setTestResult({ message: error instanceof Error && error.name !== "TimeoutError" ? error.message
-        : "Acceptance could not be confirmed. Check the manager's inbox before sending another test.", failed: true });
+        : "Acceptance could not be confirmed. Check the recipient inboxes before sending another test.", failed: true });
     } finally { setBusy(false); }
   }
 
@@ -56,12 +56,12 @@ export function GmailConnection({ recipientEmail }: { recipientEmail: string | n
       <form action="/api/admin/gmail/connect" method="post">
         <button type="submit" disabled={!configured || busy} className="rounded-lg border border-theme-border px-3 py-2 text-sm font-semibold text-theme-text disabled:opacity-50">{sender ? "Reconnect Gmail" : "Authorize my Gmail to send alerts"}</button>
       </form>
-      <button type="button" onClick={() => void sendTest()} disabled={busy || !configured || status !== "authorized" || !recipientEmail} className="rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">{busy ? "Sending…" : "Send test email"}</button>
+      <button type="button" onClick={() => void sendTest()} disabled={busy || !configured || status !== "authorized" || !recipientEmails.length} className="rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">{busy ? "Sending…" : `Send test email${recipientEmails.length === 1 ? "" : "s"}`}</button>
     </div>
-    <p className="mt-2 break-all text-xs text-theme-muted">{recipientEmail ? `Test recipient: ${recipientEmail}` : "Select and save a verified manager to enable the email test."}</p>
+    <p className="mt-2 break-all text-xs text-theme-muted">{recipientEmails.length ? `Test recipients: ${recipientEmails.join(", ")}` : "Save at least one verified email recipient to enable the email test."}</p>
     <details className="mt-3 rounded-lg border border-theme-border p-3">
       <summary className="cursor-pointer text-sm font-semibold text-theme-text">Preview violation and resolved emails</summary>
-      <p className="mt-2 text-xs text-theme-muted">The saved manager receives one email per event with the same message as the SMS. Violation SMS is sent up to three times, at least 10 seconds apart; resolution SMS is sent once. Names and incident references below are examples.</p>
+      <p className="mt-2 text-xs text-theme-muted">Each assigned email recipient receives one email per event with incident details and next steps. Violation SMS is sent up to three times, at least 10 seconds apart; resolution SMS is sent once. Names and incident references below are examples.</p>
       <div className="mt-3 space-y-3 text-sm text-theme-text">
         <div><p className="font-semibold">Subject: LPMAS greenhouse violation</p><p className="mt-1">LPMAS ALERT: Greenhouse GH-01 has a confirmed light violation. Incident 12345678-abcd.</p></div>
         <div><p className="font-semibold">Subject: LPMAS greenhouse resolved</p><p className="mt-1">LPMAS RESOLVED: Greenhouse GH-01 has returned to safe light levels. Incident 12345678-abcd.</p></div>
