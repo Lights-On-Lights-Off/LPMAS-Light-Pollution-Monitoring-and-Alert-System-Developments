@@ -1,3 +1,4 @@
+import { parseAlertRecipients } from "@/lib/alert-recipients";
 import { NextRequest, NextResponse } from "next/server";
 import {
   createServerClient,
@@ -25,6 +26,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SETTINGS_KEYS = [
   "manager_phone",
   "manager_user_id",
+  "notification_recipients",
   "default_illumination_start",
   "default_illumination_end",
   "dark_phase_duration_days",
@@ -71,6 +73,7 @@ function buildSettingsResponse(
   updatedAt: string | null
 ) {
   return {
+    alert_recipients: JSON.parse(byKey.get("notification_recipients")?.value ?? "[]"),
     manager_phone: byKey.get("manager_phone")?.value ?? "",
     manager_user_id: byKey.get("manager_user_id")?.value ?? "",
     default_illumination_start: byKey.get("default_illumination_start")?.value ?? "",
@@ -278,6 +281,21 @@ export async function PATCH(request: NextRequest) {
       { error: "Request body must be an object." },
       { status: 400 }
     );
+  }
+
+  if ("alert_recipients" in body) {
+    if (Object.keys(body).some(key => key !== "alert_recipients")) {
+      return NextResponse.json({ error: "Save recipient assignments separately from system settings." }, { status: 400 });
+    }
+    let recipients;
+    try { recipients = parseAlertRecipients((body as Record<string, unknown>).alert_recipients); }
+    catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid recipients." }, { status: 400 }); }
+    const { error } = await admin.rpc("set_alert_recipients", { p_recipients: recipients });
+    if (error) return NextResponse.json({ error: error.message }, { status: error.code === "P0001" || error.code === "22P02" ? 400 : 503 });
+    return NextResponse.json({ alert_recipients: recipients });
+  }
+  if ("notification_recipients" in body || "manager_user_id" in body || "manager_phone" in body) {
+    return NextResponse.json({ error: "Use the alert recipient list to manage assignments." }, { status: 409 });
   }
 
   const updates: { key: SettingsKey; value: string }[] = [];

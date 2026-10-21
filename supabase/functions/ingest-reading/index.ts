@@ -219,7 +219,7 @@ interface NotificationJob {
 }
 async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: number; scheduleCopies: boolean }> {
   const claim = await deps.client.rpc("claim_greenhouse_notifications", {
-    p_limit: 5,
+    p_limit: 20,
   });
   if (claim.error) throw new Error(claim.error.message);
   const jobs = (claim.data ?? []) as NotificationJob[];
@@ -233,7 +233,7 @@ async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: numbe
           const result = await deps.sendEmail(job.recipient, job.message);
           outcome = typeof result === "string" ? result : result.outcome;
           if (typeof result !== "string") detail = result.detail;
-        } else detail = "The manager email recipient or Gmail sender is not configured. Save a verified manager and connect Gmail in administrator settings.";
+        } else detail = "The email recipient or Gmail sender is not configured. Save verified alert recipients and connect Gmail in administrator settings.";
       } else if (job.channel === "sms" && job.recipient) {
         const config = resolveProvider({...await deps.readSettings(), manager_phone: job.recipient});
         const request = config ? buildSendRequest(config, job.message) : null;
@@ -265,7 +265,18 @@ async function drainNotificationBatch(deps: HandlerDeps): Promise<{ count: numbe
 }
 
 export async function drainNotifications(deps: HandlerDeps): Promise<number> {
-  const first = await drainNotificationBatch(deps);
+  async function drainDue() {
+    let count = 0, scheduleCopies = false;
+    // Up to 20 recipients on each channel; drain bounded batches so additional
+    // recipients do not wait behind a full first batch until SMS expires.
+    for (let batch = 0; batch < 3; batch++) {
+      const result = await drainNotificationBatch(deps);
+      count += result.count; scheduleCopies ||= result.scheduleCopies;
+      if (result.count < 20) break;
+    }
+    return { count, scheduleCopies };
+  }
+  const first = await drainDue();
   let count = first.count;
   if (first.scheduleCopies) {
     const pause = deps.pause ?? (milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds)));
@@ -273,7 +284,7 @@ export async function drainNotifications(deps: HandlerDeps): Promise<number> {
     // a restart can also recover them through the regular Pi worker ticks.
     for (let copy = 2; copy <= 3; copy++) {
       await pause(10_000);
-      count += (await drainNotificationBatch(deps)).count;
+      count += (await drainDue()).count;
     }
   }
   return count;
