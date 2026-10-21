@@ -49,3 +49,32 @@ export function sensorSeries(points: Record<string,number>[],id: string,maxGapMs
   }
   return result;
 }
+
+/** Choose the newest observation of each minute, regardless of which fetch finished last. */
+export function minuteHistoryPoints(
+  history: import("./monitoring-types.ts").MinuteAggregate[], readings: Reading[],
+  greenhouseId: string, sensorIds: readonly string[],
+): Record<string, number>[] {
+  const samples = [
+    ...history.filter(row => row.greenhouse_id === greenhouseId).map(row => ({
+      time: Date.parse(row.bucket_start), observed: Date.parse(row.last_recorded_at ?? row.updated_at), sensor: row.sensor_id, lux: row.avg_lux,
+    })),
+    ...readings.filter(row => row.greenhouse_id === greenhouseId).map(row => ({
+      time: Math.floor(Date.parse(row.recorded_at) / 60_000) * 60_000,
+      observed: Date.parse(row.recorded_at), sensor: row.sensor_id, lux: row.lux,
+    })),
+  ];
+  const newest = new Map<string, typeof samples[number]>();
+  for (const sample of samples) {
+    if (!sensorIds.includes(sample.sensor) || !Number.isFinite(sample.time) || !Number.isFinite(sample.observed) || !Number.isFinite(sample.lux)) continue;
+    const key = `${sample.time}|${sample.sensor}`;
+    if (!newest.has(key) || sample.observed > newest.get(key)!.observed) newest.set(key, sample);
+  }
+  const points = new Map<number, Record<string, number>>();
+  for (const sample of newest.values()) {
+    const point = points.get(sample.time) ?? { time: sample.time };
+    point[sample.sensor] = sample.lux;
+    points.set(sample.time, point);
+  }
+  return [...points.values()].sort((a,b) => a.time - b.time);
+}

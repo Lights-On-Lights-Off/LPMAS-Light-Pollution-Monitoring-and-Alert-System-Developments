@@ -23,13 +23,14 @@ import {
 import { ChartDataDetails } from "../ChartDataDetails";
 import { Badge, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
+import { CurrentReadings } from "../CurrentReadings";
 import { IncidentList } from "../IncidentList";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { type MinuteAggregate } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { type GreenhouseConfig, toLocalConfig } from "@/lib/greenhouse-config";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
-import { sensorSeries } from "@/lib/chartData";
+import { minuteHistoryPoints, sensorSeries } from "@/lib/chartData";
 
 export function ManagerOverview(
   { data, loading, error }: {
@@ -115,12 +116,15 @@ export function ManagerOverview(
 
   useEffect(() => {
     let active = true;
+    let fetching = false;
     async function loadHistory() {
+      if (fetching) return;
       if (!selectedConfig || !supabase || !assignedIds.length) {
         setHistoryError(null);
         setHistory([]);
         return;
       }
+      fetching = true;
       const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const rows: MinuteAggregate[] = [];
       try {
@@ -131,7 +135,7 @@ export function ManagerOverview(
         ) {
           const result = await supabase.from("sensor_minute_aggregates")
             .select(
-              "id,sensor_id,greenhouse_id,bucket_start,phase_type,sample_count,avg_lux,min_lux,max_lux,safe_count,warning_count,violation_count,updated_at",
+              "id,sensor_id,greenhouse_id,bucket_start,phase_type,sample_count,avg_lux,min_lux,max_lux,safe_count,warning_count,violation_count,updated_at,last_recorded_at,config_version",
             )
             .eq("greenhouse_id", selectedConfig.id).gte("bucket_start", start)
             .order("bucket_start", { ascending: true }).order("id", {
@@ -154,6 +158,8 @@ export function ManagerOverview(
             e instanceof Error ? e.message : "History unavailable",
           );
         }
+      } finally {
+        fetching = false;
       }
     }
     setHistory([]);
@@ -163,27 +169,16 @@ export function ManagerOverview(
       active = false;
       clearInterval(interval);
     };
-  }, [selectedConfig, assignedIds.join(",")]);
+  }, [selectedGreenhouse, assignedIds.join(",")]);
 
-  const chartData = useMemo(() => {
-    const rows = [
-      ...history.map((r) => ({ time: Date.parse(r.bucket_start), sensor_id: r.sensor_id, lux: r.avg_lux })),
-      ...scopedReadings.slice(-100).map((r) => ({ time: Math.floor(Date.parse(r.recorded_at)/60_000)*60_000, sensor_id: r.sensor_id, lux: r.lux })),
-    ];
-    const buckets = new Map<number, Record<string, number>>();
-    for (const r of rows) {
-      const row = buckets.get(r.time) ?? { time: r.time };
-      row[r.sensor_id] = r.lux;
-      buckets.set(r.time, row);
-    }
-    return [...buckets.values()].sort((a, b) => a.time - b.time);
-  }, [history, data.readings, selectedGreenhouse]);
+  const chartData = useMemo(() => minuteHistoryPoints(history, readings, selectedGreenhouse, assignedIds),
+    [history, readings, selectedGreenhouse, assignedIds.join(",")]);
 
   // Newest timestamp behind whatever the chart is currently showing, so a
   // stale Supabase fallback is never presented as if it were live.
   const chartAsOf = useMemo(() => {
     if (!selectedConfig) return null;
-    const source = [...history.map(row => row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
+    const source = [...history.map(row => row.last_recorded_at ?? row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
     if (!source.length) return null;
     return source.reduce((newest, value) => {
       const time = new Date(value).getTime();
@@ -231,6 +226,8 @@ export function ManagerOverview(
         </select>
       </label>
 
+      <CurrentReadings sensorIds={assignedIds} greenhouseName={selectedConfig?.name} />
+
       <div className="grid gap-5 md:grid-cols-3">
         <SummaryCard
           icon={<Radio size={18} />}
@@ -256,7 +253,7 @@ export function ManagerOverview(
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="font-bold text-[var(--foreground)]">
-                  Lux Intensity Trend
+                  Minute-average lux history
                 </h2>
                 {chartAsOf && (
                   <span className="text-xs text-[var(--muted-foreground)]">
@@ -265,7 +262,7 @@ export function ManagerOverview(
                 )}
               </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                One-minute average lux from cloud history and the latest local readings.
+                One point per minute. The current minute updates every 10 seconds; older history refreshes every 30 seconds.
               </p>
             </div>
           </div>

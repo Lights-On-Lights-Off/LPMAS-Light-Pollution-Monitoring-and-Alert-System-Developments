@@ -1,3 +1,4 @@
+import { notificationSubject, notificationSubjectHeader } from "./notification-content.ts";
 export interface GmailCredentials {
   sender_email: string;
   refresh_token: string;
@@ -38,8 +39,8 @@ export async function sendGmailDetailed(credentials: GmailCredentials, clientId:
   const authorization = await refreshGmail(credentials,clientId,clientSecret,fetchImpl);
   if (!("accessToken" in authorization)) return {outcome:"failed",detail:authorization.detail};
   const body=btoa(String.fromCharCode(...new TextEncoder().encode(message)));
-  const subject=subjectOverride ?? (message.startsWith("LPMAS RESOLVED") ? "LPMAS greenhouse resolved" : message.startsWith("LPMAS CLOSED") ? "LPMAS greenhouse closed" : "LPMAS greenhouse violation");
-  const mime=`From: ${credentials.sender_email}\r\nTo: ${recipient}\r\nSubject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${body}`;
+  const subjectHeader=notificationSubjectHeader(subjectOverride ?? notificationSubject(message));
+  const mime=`From: ${credentials.sender_email}\r\nTo: ${recipient}\r\nSubject: ${subjectHeader}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${body}`;
   const raw=btoa(mime).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
   try {
     const response=await fetchImpl("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {

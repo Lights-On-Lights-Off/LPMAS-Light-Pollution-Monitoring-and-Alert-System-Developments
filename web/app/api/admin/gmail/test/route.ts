@@ -1,3 +1,4 @@
+import { testEmailMessage } from "../../../../../../supabase/functions/_shared/notification-content";
 import { NextRequest, NextResponse } from "next/server";
 import { backendClient, verifiedAdministrator } from "@/lib/server-auth";
 import { configuredWebOrigin } from "@/lib/google-oauth";
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
   }
   const credentials=authorization.credentials;
   const result=await sendGmailDetailed(credentials,credentials.client_id ?? "",credentials.client_secret ?? "",recipient.email,
-    `LPMAS test email. If you received this, email alert delivery is working. Sent ${new Date().toISOString()}.`,
+    testEmailMessage(),
     (url,init) => fetch(url,init),"LPMAS test email");
   if(result.outcome !== "accepted") return NextResponse.json({error:result.detail},{status:result.outcome === "unknown" ? 504 : 502});
   return NextResponse.json({message:"Test email accepted by Gmail. Check the manager's inbox and spam folder; delivery is unconfirmed."});

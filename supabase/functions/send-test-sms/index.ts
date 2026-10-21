@@ -176,7 +176,7 @@ export function readRecipientField(body: string | null | undefined): RecipientFi
  */
 export function buildTestMessage(now: Date = new Date()): string {
   const stamp = now.toISOString().replace("T", " ").slice(0, 16);
-  return `[LPMAS] Test SMS. If you received this, alert delivery is working. Sent ${stamp} UTC.`;
+  return `LPMAS TEST: SMS channel check. No greenhouse incident. Sent ${stamp} UTC. Review the saved alert recipient.`;
 }
 
 // ===========================================================================

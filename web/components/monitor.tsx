@@ -8,6 +8,7 @@ import { ChartDataDetails } from "@/components/ChartDataDetails";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
+import { CurrentReadings } from "@/components/CurrentReadings";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
 const LINE_COLORS = ["var(--accent)", "var(--warning)", "var(--success)", "var(--danger)", "var(--text-secondary)"];
@@ -79,13 +80,12 @@ export function Monitor() {
       .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
       .slice(-30);
 
-    // Numeric epoch preserves actual elapsed time. Each plotted sensor has
-    // its own timestamps; connectNulls joins asynchronous sensor samples.
+    // One point per minute; fresh samples update the running average.
+    // Sensors keep their own minute buckets when samples arrive asynchronously.
     const map = new Map<number, Record<string, number>>();
 
     for (const reading of rows) {
-      const raw = new Date(reading.recorded_at).getTime();
-      const time = raw;
+      const time = Math.floor(Date.parse(reading.recorded_at) / 60_000) * 60_000;
       const row = map.get(time) ?? { time };
       row[reading.sensor_id] = reading.lux;
       map.set(time, row);
@@ -143,8 +143,7 @@ export function Monitor() {
     return Array.from({ length: count }, (_, i) => Math.round(first + step * i));
   }, [chart]);
 
-  // Timestamp of the newest reading actually being displayed, whether it came
-  // from the live Pi feed or the Supabase aggregate fallback.
+  // Measurement timestamp behind the newest displayed minute average.
   const asOf = useMemo(() => {
     if (!effectiveReadings.length) return null;
     return effectiveReadings.reduce((newest, reading) => {
@@ -173,18 +172,7 @@ export function Monitor() {
         <p className="mt-2 max-w-2xl text-sm text-theme-muted">Track light intensity, sensor health, and incidents across your greenhouses.</p>
       </header>
       <MonitoringStatus />
-      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <Card className="h-full">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex flex-wrap items-baseline gap-2">
-                <h2 className="font-bold text-metal-50">Lux Intensity Trend</h2>
-                {asOf && <span className="text-xs text-metal-500">as of {new Date(asOf).toLocaleString()}</span>}
-              </div>
-              <p className="mt-1 text-sm text-metal-400">{greenhouse ? `Real sensor readings from ${greenhouse.name}` : "System configuration required before monitoring begins"}</p>
-            </div>
-
-            {greenhouses.length > 0 && <div className="grid w-full min-w-0 gap-3 sm:w-auto sm:grid-cols-2">
+      <div className="mb-5">{greenhouses.length > 0 && <div className="grid w-full min-w-0 gap-3 sm:w-auto sm:grid-cols-2">
               <label className="min-w-0 text-xs font-medium text-theme-muted">Greenhouse<select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} aria-label="Select greenhouse" className="mt-1 block w-full min-w-0 rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-50">
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select></label>
@@ -193,7 +181,20 @@ export function Monitor() {
                 <option value="all">All Sensors</option>
                 {configuredSensorIds.map(id => <option key={id} value={id}>{id}</option>)}
               </select></label>
-            </div>}
+            </div>}</div>
+      <div className="mb-6"><CurrentReadings sensorIds={sensorIds} greenhouseName={greenhouse?.name} /></div>
+      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <Card className="h-full">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h2 className="font-bold text-metal-50">Minute-average lux history</h2>
+                {asOf && <span className="text-xs text-metal-500">as of {new Date(asOf).toLocaleString()}</span>}
+              </div>
+              <p className="mt-1 text-sm text-metal-400">{greenhouse ? `One point per minute from ${greenhouse.name}. The current minute updates as readings arrive.` : "System configuration required before monitoring begins"}</p>
+            </div>
+
+
           </div>
 
           <div className="chart-frame relative mt-6">
@@ -311,8 +312,8 @@ export function Monitor() {
 
       <Card className="mt-5">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-bold text-metal-50">Monitoring Log</h2>
-          <span className="text-xs text-metal-500">Latest 3 readings</span>
+          <h2 className="font-bold text-metal-50">Minute-average log</h2>
+          <span className="text-xs text-metal-500">Latest 3 minute averages</span>
         </div>
 
         <div className="mt-3 hidden max-h-64 overflow-auto md:block">
