@@ -23,7 +23,6 @@ import {
 import { ChartDataDetails } from "../ChartDataDetails";
 import { Badge, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
-import { CurrentReadings } from "../CurrentReadings";
 import { IncidentList } from "../IncidentList";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { type MinuteAggregate } from "@/lib/api";
@@ -225,8 +224,6 @@ export function ManagerOverview(
             : <option value="">No Greenhouse Configured</option>}
         </select>
       </label>
-
-      <CurrentReadings sensorIds={assignedIds} greenhouseName={selectedConfig?.name} />
 
       <div className="grid gap-5 md:grid-cols-3">
         <SummaryCard

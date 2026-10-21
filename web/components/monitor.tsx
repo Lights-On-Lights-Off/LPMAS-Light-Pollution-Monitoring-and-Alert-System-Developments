@@ -8,7 +8,6 @@ import { ChartDataDetails } from "@/components/ChartDataDetails";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
-import { CurrentReadings } from "@/components/CurrentReadings";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
 const LINE_COLORS = ["var(--accent)", "var(--warning)", "var(--success)", "var(--danger)", "var(--text-secondary)"];
@@ -182,7 +181,6 @@ export function Monitor() {
                 {configuredSensorIds.map(id => <option key={id} value={id}>{id}</option>)}
               </select></label>
             </div>}</div>
-      <div className="mb-6"><CurrentReadings sensorIds={sensorIds} greenhouseName={greenhouse?.name} /></div>
       <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <Card className="h-full">
           <div className="flex flex-wrap items-start justify-between gap-4">
