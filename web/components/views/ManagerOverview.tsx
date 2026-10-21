@@ -20,15 +20,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ChartDataDetails } from "../ChartDataDetails";
 import { Badge, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
+import { CurrentReadings } from "../CurrentReadings";
 import { IncidentList } from "../IncidentList";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { type MinuteAggregate } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { type GreenhouseConfig, toLocalConfig } from "@/lib/greenhouse-config";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
-import { sensorSeries } from "@/lib/chartData";
+import { minuteHistoryPoints, sensorSeries } from "@/lib/chartData";
 
 export function ManagerOverview(
   { data, loading, error }: {
@@ -114,12 +116,15 @@ export function ManagerOverview(
 
   useEffect(() => {
     let active = true;
+    let fetching = false;
     async function loadHistory() {
+      if (fetching) return;
       if (!selectedConfig || !supabase || !assignedIds.length) {
         setHistoryError(null);
         setHistory([]);
         return;
       }
+      fetching = true;
       const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const rows: MinuteAggregate[] = [];
       try {
@@ -130,7 +135,7 @@ export function ManagerOverview(
         ) {
           const result = await supabase.from("sensor_minute_aggregates")
             .select(
-              "id,sensor_id,greenhouse_id,bucket_start,phase_type,sample_count,avg_lux,min_lux,max_lux,safe_count,warning_count,violation_count,updated_at",
+              "id,sensor_id,greenhouse_id,bucket_start,phase_type,sample_count,avg_lux,min_lux,max_lux,safe_count,warning_count,violation_count,updated_at,last_recorded_at,config_version",
             )
             .eq("greenhouse_id", selectedConfig.id).gte("bucket_start", start)
             .order("bucket_start", { ascending: true }).order("id", {
@@ -153,6 +158,8 @@ export function ManagerOverview(
             e instanceof Error ? e.message : "History unavailable",
           );
         }
+      } finally {
+        fetching = false;
       }
     }
     setHistory([]);
@@ -162,27 +169,16 @@ export function ManagerOverview(
       active = false;
       clearInterval(interval);
     };
-  }, [selectedConfig, assignedIds.join(",")]);
+  }, [selectedGreenhouse, assignedIds.join(",")]);
 
-  const chartData = useMemo(() => {
-    const rows = [
-      ...history.map((r) => ({ time: Date.parse(r.bucket_start), sensor_id: r.sensor_id, lux: r.avg_lux })),
-      ...scopedReadings.slice(-100).map((r) => ({ time: Math.floor(Date.parse(r.recorded_at)/60_000)*60_000, sensor_id: r.sensor_id, lux: r.lux })),
-    ];
-    const buckets = new Map<number, Record<string, number>>();
-    for (const r of rows) {
-      const row = buckets.get(r.time) ?? { time: r.time };
-      row[r.sensor_id] = r.lux;
-      buckets.set(r.time, row);
-    }
-    return [...buckets.values()].sort((a, b) => a.time - b.time);
-  }, [history, data.readings, selectedGreenhouse]);
+  const chartData = useMemo(() => minuteHistoryPoints(history, readings, selectedGreenhouse, assignedIds),
+    [history, readings, selectedGreenhouse, assignedIds.join(",")]);
 
   // Newest timestamp behind whatever the chart is currently showing, so a
   // stale Supabase fallback is never presented as if it were live.
   const chartAsOf = useMemo(() => {
     if (!selectedConfig) return null;
-    const source = [...history.map(row => row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
+    const source = [...history.map(row => row.last_recorded_at ?? row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
     if (!source.length) return null;
     return source.reduce((newest, value) => {
       const time = new Date(value).getTime();
@@ -200,7 +196,7 @@ export function ManagerOverview(
   }
 
   return (
-    <div className="space-y-6 p-6 md:p-8">
+    <div className="dashboard-content space-y-6">
       <MonitoringStatus />
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -220,7 +216,7 @@ export function ManagerOverview(
           onChange={(e) => setSelectedGreenhouse(e.target.value)}
           disabled={!greenhouseConfigs.length}
           aria-label="Select greenhouse"
-          className="min-w-[150px] max-w-[190px] rounded-lg border border-[color-mix(in_srgb,var(--accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-xs font-medium text-[var(--foreground)] outline-none backdrop-blur-xl disabled:cursor-not-allowed disabled:opacity-70"
+          className="min-w-0 w-full sm:w-64 rounded-lg border border-[color-mix(in_srgb,var(--accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-xs font-medium text-[var(--foreground)] outline-none backdrop-blur-xl disabled:cursor-not-allowed disabled:opacity-70"
         >
           {greenhouseConfigs.length
             ? greenhouseConfigs.map((g) => (
@@ -229,6 +225,8 @@ export function ManagerOverview(
             : <option value="">No Greenhouse Configured</option>}
         </select>
       </label>
+
+      <CurrentReadings sensorIds={assignedIds} greenhouseName={selectedConfig?.name} />
 
       <div className="grid gap-5 md:grid-cols-3">
         <SummaryCard
@@ -249,13 +247,13 @@ export function ManagerOverview(
         />
       </div>
 
-      <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
+      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <Card className="min-h-[340px]">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="font-bold text-[var(--foreground)]">
-                  Lux Intensity Trend
+                  Minute-average lux history
                 </h2>
                 {chartAsOf && (
                   <span className="text-xs text-[var(--muted-foreground)]">
@@ -264,7 +262,7 @@ export function ManagerOverview(
                 )}
               </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                One-minute average lux from cloud history and the latest local readings.
+                One point per minute. The current minute updates every 10 seconds; older history refreshes every 30 seconds.
               </p>
             </div>
           </div>
@@ -273,11 +271,11 @@ export function ManagerOverview(
               History unavailable; retained points may be stale.
             </p>
           )}
-          <div className="mt-6 h-[255px]">
+          <div className="chart-frame mt-6">
             {chartData.length
               ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData}>
+                  <AreaChart accessibilityLayer data={chartData} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
                     <defs>
                       <linearGradient
                         id="overviewLuxGradient"
@@ -312,14 +310,22 @@ export function ManagerOverview(
                           hour: "2-digit",
                           minute: "2-digit",
                         })}
-                      tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                      tick={{ fontSize: 12, fill: "var(--text-muted)" }}
                       interval="preserveStartEnd"
+                      minTickGap={40}
+                      tickLine={false}
+                      axisLine={false}
                     />
                     <YAxis
-                      tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-                      width={40}
+                      tick={{ fontSize: 12, fill: "var(--text-muted)" }}
+                      width={44}
+                      tickLine={false}
+                      axisLine={false}
+                      domain={[0, (max: number) => Math.max(max, selectedPhase === "dark" ? 30 : 50) + 10]}
                     />
                     <Tooltip
+                      labelFormatter={value => new Date(Number(value)).toLocaleString()}
+                      formatter={(value: number, name: string) => [`${value.toFixed(2)} lux`, name]}
                       contentStyle={{
                         borderRadius: 12,
                         background: "var(--surface-solid)",
@@ -328,16 +334,16 @@ export function ManagerOverview(
                       }}
                     />
                     <Legend />
-                    <ReferenceLine
+                    {selectedPhase && <ReferenceLine
                       y={selectedPhase === "dark" ? 15 : 50}
                       stroke="var(--success)"
                       strokeDasharray="4 4"
-                    />
-                    <ReferenceLine
-                      y={selectedPhase === "dark" ? 29 : 30}
+                    />}
+                    {selectedPhase && <ReferenceLine
+                      y={30}
                       stroke="var(--danger)"
                       strokeDasharray="4 4"
-                    />
+                    />}
                     {assignedIds.map((id, index) => (
                       <Area
                         key={id}
@@ -349,15 +355,14 @@ export function ManagerOverview(
                         isAnimationActive={false}
                         type="linear"
                         dataKey={id}
-                        name={`${id} (${
-                          "minute avg"
-                        })`}
+                        name={id}
                         stroke={[
                           "var(--accent)",
                           "var(--warning)",
                           "var(--success)",
                         ][index % 3]}
-                        strokeWidth={2}
+                        strokeWidth={2.5}
+                        strokeDasharray={[undefined, "8 4", "2 4"][index % 3]}
                         fillOpacity={0.05}
                         connectNulls
                       />
@@ -373,6 +378,8 @@ export function ManagerOverview(
                 </div>
               )}
           </div>
+          <p className="mt-3 text-xs text-theme-muted">Intensity in lux · dashed reference lines show the safe and violation boundaries for the active phase.</p>
+          <ChartDataDetails points={chartData} series={assignedIds} />
         </Card>
 
         <Card className="min-h-[340px]">
@@ -429,7 +436,7 @@ export function ManagerOverview(
             </h2>
             <Activity size={17} className="text-[var(--muted-foreground)]" />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>
@@ -471,7 +478,7 @@ export function ManagerOverview(
             </h2>
             <Wifi size={17} className="text-[var(--muted-foreground)]" />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>
@@ -512,7 +519,7 @@ export function ManagerOverview(
               className="text-[var(--muted-foreground)]"
             />
           </div>
-          <div className="max-h-44 overflow-y-auto">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-metal-700 text-metal-400">
                 <tr>

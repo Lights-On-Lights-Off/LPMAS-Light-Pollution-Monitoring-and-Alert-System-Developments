@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
@@ -165,7 +166,7 @@ export function About() {
 
     <footer className="border-t border-metal-700 px-5 py-8">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 text-sm text-metal-500">
-        <div className="flex items-center gap-2 font-semibold text-metal-50"><img src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS</div>
+        <div className="flex items-center gap-2 font-semibold text-metal-50"><Image width={48} height={48} src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS</div>
         <p>Light Pollution Monitoring and Alert System</p>
       </div>
     </footer>

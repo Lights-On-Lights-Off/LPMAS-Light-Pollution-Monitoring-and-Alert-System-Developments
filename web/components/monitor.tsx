@@ -3,26 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, Cell, Legend, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDashboardData } from "@/lib/useDashboardData";
-import type { Reading, Greenhouse, MinuteAggregate } from "@/lib/api";
-import { getGreenhouses } from "@/lib/api";
-import { supabase } from "@/lib/supabase";
+import type { Reading } from "@/lib/api";
+import { ChartDataDetails } from "@/components/ChartDataDetails";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
+import { CurrentReadings } from "@/components/CurrentReadings";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
-type GreenhouseConfig = {
-  id: string;
-  name: string;
-  sensorIds: string[];
-  phaseStart: string;
-  phaseEnd: string;
-};
-
-const CONFIG_KEY = "lpmas-greenhouse-config";
-const LINE_COLORS = ["#d9a441", "#7fb3d5", "#e5484d", "#7bd389", "#b18cff"];
-const STATUS_COLORS = { safe: "#7fbf7f", warning: "#d9a441", violation: "#e5484d", unclassified: "#94a3b8" } as const;
-const ONLINE_WINDOW = 60_000;
+const LINE_COLORS = ["var(--accent)", "var(--warning)", "var(--success)", "var(--danger)", "var(--text-secondary)"];
+const STATUS_COLORS = { safe: "var(--success)", warning: "var(--warning)", violation: "var(--danger)", unclassified: "var(--text-muted)" } as const;
 
 // The two fixed lux thresholds that separate safe / warning / violation for
 // a given phase, drawn as reference lines on the chart. Matches the
@@ -40,7 +30,7 @@ function getThresholdLines(phase: string | null): { value: number; color: string
 }
 
 export function Monitor() {
-  const { data, greenhouses, sensorHealthById, policy, sources } = useDashboardData();
+  const { data, greenhouses, sensorHealthById, policy } = useDashboardData();
   const [selectedGreenhouse, setSelectedGreenhouse] = useState("");
   const [selectedSensor, setSelectedSensor] = useState("all");
 
@@ -90,13 +80,12 @@ export function Monitor() {
       .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
       .slice(-30);
 
-    // Numeric epoch preserves actual elapsed time. Each plotted sensor has
-    // its own timestamps; connectNulls joins asynchronous sensor samples.
+    // One point per minute; fresh samples update the running average.
+    // Sensors keep their own minute buckets when samples arrive asynchronously.
     const map = new Map<number, Record<string, number>>();
 
     for (const reading of rows) {
-      const raw = new Date(reading.recorded_at).getTime();
-      const time = raw;
+      const time = Math.floor(Date.parse(reading.recorded_at) / 60_000) * 60_000;
       const row = map.get(time) ?? { time };
       row[reading.sensor_id] = reading.lux;
       map.set(time, row);
@@ -149,13 +138,12 @@ export function Monitor() {
     if (chart.length < 2) return chart.map(row => row.time);
     const first = chart[0].time;
     const last = chart[chart.length - 1].time;
-    const count = Math.min(6, chart.length);
+    const count = Math.min(4, chart.length);
     const step = (last - first) / (count - 1);
     return Array.from({ length: count }, (_, i) => Math.round(first + step * i));
   }, [chart]);
 
-  // Timestamp of the newest reading actually being displayed, whether it came
-  // from the live Pi feed or the Supabase aggregate fallback.
+  // Measurement timestamp behind the newest displayed minute average.
   const asOf = useMemo(() => {
     if (!effectiveReadings.length) return null;
     return effectiveReadings.reduce((newest, reading) => {
@@ -174,34 +162,42 @@ export function Monitor() {
   };
 
   return <main className="min-h-screen bg-ink font-sans text-metal-100">
+    <a href="#monitor-content" className="skip-link">Skip to monitoring data</a>
     <PublicNavbar />
 
-    <div className="p-5 md:p-8">
+    <div id="monitor-content" tabIndex={-1} className="page-container">
+      <header className="mb-6">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-theme-muted">Greenhouse monitoring</p>
+        <h1 className="text-2xl font-bold text-theme-text sm:text-3xl">Light at a glance</h1>
+        <p className="mt-2 max-w-2xl text-sm text-theme-muted">Track light intensity, sensor health, and incidents across your greenhouses.</p>
+      </header>
       <MonitoringStatus />
-      <div className="grid items-stretch gap-5 xl:grid-cols-[1.7fr_1fr]">
-        <Card className="h-full min-h-[34rem]">
+      <div className="mb-5">{greenhouses.length > 0 && <div className="grid w-full min-w-0 gap-3 sm:w-auto sm:grid-cols-2">
+              <label className="min-w-0 text-xs font-medium text-theme-muted">Greenhouse<select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} aria-label="Select greenhouse" className="mt-1 block w-full min-w-0 rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-50">
+                {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select></label>
+
+              <label className="min-w-0 text-xs font-medium text-theme-muted">Sensor<select aria-label="Select sensor" value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="mt-1 block w-full min-w-0 rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-50">
+                <option value="all">All Sensors</option>
+                {configuredSensorIds.map(id => <option key={id} value={id}>{id}</option>)}
+              </select></label>
+            </div>}</div>
+      <div className="mb-6"><CurrentReadings sensorIds={sensorIds} greenhouseName={greenhouse?.name} /></div>
+      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <Card className="h-full">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
-                <h2 className="font-bold text-metal-50">Lux Intensity Trend</h2>
+                <h2 className="font-bold text-metal-50">Minute-average lux history</h2>
                 {asOf && <span className="text-xs text-metal-500">as of {new Date(asOf).toLocaleString()}</span>}
               </div>
-              <p className="mt-1 text-sm text-metal-400">{greenhouse ? `Real sensor readings from ${greenhouse.name}` : "System configuration required before monitoring begins"}</p>
+              <p className="mt-1 text-sm text-metal-400">{greenhouse ? `One point per minute from ${greenhouse.name}. The current minute updates as readings arrive.` : "System configuration required before monitoring begins"}</p>
             </div>
 
-            {greenhouses.length > 0 && <div className="flex flex-wrap items-center gap-2">
-              <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} aria-label="Select greenhouse" className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
-                {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
 
-              <select aria-label="Select sensor" value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
-                <option value="all">All Sensors</option>
-                {sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}
-              </select>
-            </div>}
           </div>
 
-          <div className="relative mt-6 h-[26rem]">
+          <div className="chart-frame relative mt-6">
             {!greenhouse ? <div className="grid h-full place-items-center text-center">
               <div>
                 <p className="text-sm text-metal-400">System not configured</p>
@@ -210,7 +206,7 @@ export function Monitor() {
             </div> : !chart.length ? <div className="grid h-full place-items-center text-center">
               <span className="text-sm text-metal-400">No readings recorded yet for this greenhouse</span>
             </div> : <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <LineChart accessibilityLayer data={chart} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--surface-border)" />
                 <XAxis
                   dataKey="time"
@@ -218,12 +214,18 @@ export function Monitor() {
                   domain={["dataMin", "dataMax"]}
                   scale="time"
                   ticks={xTicks}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  minTickGap={32}
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={10}
+                  tick={{ fontSize: 12, fill: "var(--text-muted)" }}
                   tickFormatter={value => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 />
                 <YAxis
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-                  width={40}
+                  tick={{ fontSize: 12, fill: "var(--text-muted)" }}
+                  width={44}
+                  tickLine={false}
+                  axisLine={false}
                   domain={[0, (dataMax: number) => Math.max(dataMax, ...thresholdLines.map(line => line.value)) + 20]}
                   allowDecimals={false}
                 />
@@ -240,16 +242,17 @@ export function Monitor() {
                   stroke={line.color}
                   strokeDasharray="4 4"
                   strokeOpacity={0.7}
-                  label={{ value: line.label, position: "insideTopRight", fontSize: 10, fill: line.color }}
+                  label={{ value: line.label, position: "insideTopRight", fontSize: 12, fill: line.color }}
                 />)}
                 {sensors.map((sensor, i) => <Line
                   key={sensor.id}
                   type="linear"
                   isAnimationActive={false}
                   dataKey={sensor.id}
-                  name={`${sensor.name} (minute avg)`}
+                  name={sensor.name}
                   stroke={LINE_COLORS[i % LINE_COLORS.length]}
-                  strokeWidth={2}
+                  strokeWidth={2.5}
+                  strokeDasharray={[undefined, "8 4", "2 4", "10 3 2 3", "6 3"][i % 5]}
                   dot={{ r: 2 }}
                   activeDot={{ r: 4 }}
                   connectNulls
@@ -257,6 +260,8 @@ export function Monitor() {
               </LineChart>
             </ResponsiveContainer>}
           </div>
+          <p className="mt-3 text-xs text-theme-muted">Intensity in lux · one-minute averages · dashed reference lines show phase thresholds.</p>
+          <ChartDataDetails points={chart} series={sensorIds} />
         </Card>
 
         <div className="grid h-full grid-rows-[auto_1fr] gap-5">
@@ -278,7 +283,7 @@ export function Monitor() {
               <div className="h-40 min-w-0">
                 {distribution.length ? <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie data={distribution} dataKey="value" nameKey="label" innerRadius={34} outerRadius={56} paddingAngle={2}>
+                    <Pie isAnimationActive={false} data={distribution} dataKey="value" nameKey="label" innerRadius={34} outerRadius={56} paddingAngle={2}>
                       {distribution.map(d => <Cell key={d.name} fill={STATUS_COLORS[d.name as keyof typeof STATUS_COLORS]} />)}
                     </Pie>
                     <Tooltip contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }} />
@@ -298,32 +303,20 @@ export function Monitor() {
             <div className="mt-5 flex flex-wrap gap-3 border-t border-metal-700 pt-4 text-xs text-metal-400">
               {(["safe", "warning", "violation", "unclassified"] as const).map(key => <span key={key} className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLORS[key] }} />
-                {key === "unclassified" ? "Outside configured phase" : key}
+                {key === "unclassified" ? "Outside configured phase" : key} · {distribution.find(d => d.name === key)?.value ?? 0}
               </span>)}
             </div>
-
-            {greenhouses.length > 0 && <div className="mt-4 flex flex-wrap items-center gap-2">
-              <select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
-                {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
-
-              <select aria-label="Select sensor" value={selectedSensor} onChange={e => handleSensorChange(e.target.value)} className="rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-100">
-                <option value="all">All Sensors</option>
-                {sensors.map(sensor => <option key={sensor.id} value={sensor.id}>{sensor.name}</option>)}
-              </select>
-            </div>}
-
           </Card>
         </div>
       </div>
 
       <Card className="mt-5">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-bold text-metal-50">Monitoring Log</h2>
-          <span className="text-xs text-metal-500">Latest 3 readings</span>
+          <h2 className="font-bold text-metal-50">Minute-average log</h2>
+          <span className="text-xs text-metal-500">Latest 3 minute averages</span>
         </div>
 
-        <div className="mt-3 max-h-56 overflow-y-auto overflow-x-auto">
+        <div className="mt-3 hidden max-h-64 overflow-auto md:block">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="sticky top-0 border-b border-metal-700 bg-metal-800 text-metal-400">
               <tr><th className="p-3">Greenhouse</th><th className="p-3">Sensor</th><th className="p-3">Status</th><th className="p-3">Average lux</th><th className="p-3">Phase</th><th className="p-3">Recorded</th></tr>
@@ -345,6 +338,20 @@ export function Monitor() {
             </tbody>
           </table>
         </div>
+        <div className="mt-4 space-y-3 md:hidden">
+          {selectedReadings.length ? selectedReadings.map(reading => <article key={reading.id} className="rounded-xl border border-theme-border p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="break-all text-sm font-semibold text-theme-text">{reading.sensor_id}</h3>
+              <Badge tone={reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : reading.classification === "unclassified" ? "slate" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge>
+            </div>
+            <p className="mt-3 font-mono text-2xl text-theme-text">{reading.lux.toFixed(2)} <span className="text-sm text-theme-muted">lux</span></p>
+            <div className="mt-3 space-y-2 text-xs">
+              <InfoRow label="Greenhouse" value={greenhouse?.name ?? "—"} />
+              <InfoRow label="Phase" value={reading.phase_type} />
+              <InfoRow label="Recorded" value={new Date(reading.recorded_at).toLocaleString()} />
+            </div>
+          </article>) : <p className="py-5 text-sm text-theme-muted">{!greenhouse ? "Configure a greenhouse before monitoring begins" : "No readings recorded yet"}</p>}
+        </div>
       </Card>
     </div>
   </main>;
@@ -353,13 +360,13 @@ export function Monitor() {
 function Kpi({ label, value, tone }: { label: string; value: number; tone?: "red" }) {
   return <div className="rounded-xl border border-metal-700 bg-white/[0.02] p-3">
     <p className="text-xs text-metal-400">{label}</p>
-    <p className={`mt-1 font-mono text-xl font-bold ${tone === "red" ? "text-red-400" : "text-metal-50"}`}>{value}</p>
+    <p className={`mt-2 font-mono text-3xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
   </div>;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return <div className="flex items-start justify-between gap-3 border-b border-metal-700 pb-2 last:border-0">
-    <span className="text-metal-500">{label}</span>
-    <span className="text-right font-medium text-metal-100">{value}</span>
+    <span className="shrink-0 text-metal-500">{label}</span>
+    <span className="min-w-0 break-words text-right font-medium text-metal-50">{value}</span>
   </div>;
 }

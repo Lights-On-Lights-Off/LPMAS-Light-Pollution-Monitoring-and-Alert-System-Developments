@@ -249,11 +249,11 @@ function GreenhousesView() {
   }
 
   return (
-    <div className="space-y-6 p-6 md:p-8">
+    <div className="dashboard-content space-y-6">
       {dialog}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--foreground)]">GREENHOUSE MANAGEMENT</h1>
+          <h1 className="text-2xl font-bold text-[var(--foreground)]">Greenhouse management</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage greenhouses, real sensors and illumination monitoring windows.</p>
         </div>
         <button onClick={openAddModal} className="rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[color-mix(in_srgb,var(--accent)_28%,transparent)]">
@@ -265,7 +265,7 @@ function GreenhousesView() {
       <Card>
         <div className="flex items-center gap-3">
           <Sprout size={20} className="text-[var(--accent)]" />
-          <h2 className="font-bold text-[var(--foreground)]">GREENHOUSE UNDER MONITORING</h2>
+          <h2 className="font-bold text-[var(--foreground)]">Greenhouses under monitoring</h2>
         </div>
         {greenhouses.length ? (
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -552,16 +552,16 @@ function ActivityLogsView() {
   }
 
   return (
-    <div className="space-y-6 p-6 md:p-8">
+    <div className="dashboard-content space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">ACTIVITY LOGS</h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">Activity logs</h1>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review real hardware readings and manager-level system activity.</p>
       </div>
 
       <Card>
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="font-bold text-[var(--foreground)]">SYSTEM HARDWARE LOGS</h2>
+            <h2 className="font-bold text-[var(--foreground)]">System hardware logs</h2>
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">All sensor readings for the selected time range, regardless of greenhouse assignment or active status. Readings and downloads use per-minute average lux for the date range you choose.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -639,7 +639,7 @@ function ActivityLogsView() {
 
       <Card>
         <div className="mb-5">
-          <h2 className="font-bold text-[var(--foreground)]">USER ACTIVITY LOGS</h2>
+          <h2 className="font-bold text-[var(--foreground)]">User activity logs</h2>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manager-level actions performed in the system.</p>
         </div>
         <ActivityLogTable
@@ -919,7 +919,7 @@ function RecycleBinView() {
   }
 
   return (
-    <div className="space-y-6 p-6 md:p-8">
+    <div className="dashboard-content space-y-6">
       {dialog}
       <div>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Recycle bin</h1>
