@@ -56,6 +56,8 @@ export function AdminView({ section }: { section: string }) {
   const monitoring = useDashboardData();
   const [team, setTeam] = useState<AdminUser[] | null>(null);
   const [teamError, setTeamError] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteNotice, setInviteNotice] = useState<string | null>(null);
   const [teamLoading, setTeamLoading] = useState(true);
   const [roleFilter, setRoleFilter] = useState<"all" | Role>("all");
   const [editRoleTarget, setEditRoleTarget] = useState<AdminUser | null>(null);
@@ -451,17 +453,19 @@ export function AdminView({ section }: { section: string }) {
   async function submitAddUser(e: FormEvent) {
     e.preventDefault();
     setAddUserBusy(true);
-    setTeamError(null);
+    setInviteError(null);
+    setInviteNotice(null);
 
     try {
       const result = await createAdminUser(addUserForm.email, addUserForm.role, addUserForm.full_name || undefined);
 
+      setInviteNotice(`Invitation requested for ${result.email}. Check the recipient's inbox and spam folder. Email delivery is not confirmed by account creation.`);
       setAddUserOpen(false);
       setAddUserForm({ email: "", full_name: "", role: "manager" });
       await logActivity("CREATE_USER", "profiles", result.id, { email: addUserForm.email, role: addUserForm.role });
       await refreshTeam();
     } catch (e) {
-      setTeamError(e instanceof Error ? e.message : "Failed to add user.");
+      setInviteError(e instanceof Error ? e.message : "Failed to invite user.");
     } finally {
       setAddUserBusy(false);
     }
@@ -738,13 +742,14 @@ export function AdminView({ section }: { section: string }) {
                 {ROLES.map(role => <option key={role} value={role} className="bg-theme-surface-secondary text-theme-text">{role}</option>)}
               </select>
 
-              <button onClick={() => setAddUserOpen(true)} className="flex items-center gap-1.5 rounded-lg bg-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover">
+              <button onClick={() => { setInviteError(null); setInviteNotice(null); setAddUserOpen(true); }} className="flex items-center gap-1.5 rounded-lg bg-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover">
                 <UserPlus size={15} />
                 Add account
               </button>
             </div>
           </div>
 
+          {inviteNotice && <p role="status" className="mb-4 rounded-xl border border-theme-border p-3 text-sm text-theme-text">{inviteNotice}</p>}
           {teamError && (
             <p className="mb-4 shrink-0 rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{teamError}</p>
           )}
@@ -1116,17 +1121,18 @@ export function AdminView({ section }: { section: string }) {
       )}
       <Modal
         open={addUserOpen}
-        onClose={() => setAddUserOpen(false)}
-        title="Add user"
-        description="Invite a new account and assign an administrator or manager role."
+        onClose={() => { if (!addUserBusy) setAddUserOpen(false); }}
+        title="Invite user"
+        description="Send an email invitation and assign a role. The user chooses their own password using the invitation link; no default password is assigned."
         footer={
           <>
-            <button type="button" onClick={() => setAddUserOpen(false)} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent">Cancel</button>
-            <button type="submit" form="add-user-form" disabled={addUserBusy} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover disabled:opacity-50">{addUserBusy ? "Adding…" : "Add user"}</button>
+            <button type="button" disabled={addUserBusy} onClick={() => setAddUserOpen(false)} className="rounded-lg border border-theme-accent/60 px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft hover:border-theme-accent">Cancel</button>
+            <button type="submit" form="add-user-form" disabled={addUserBusy} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover disabled:opacity-50">{addUserBusy ? "Sending invitation…" : "Send invitation"}</button>
           </>
         }
       >
         <form id="add-user-form" onSubmit={submitAddUser} className="space-y-4">
+          {inviteError && <p role="alert" className="rounded-xl border border-theme-danger/30 bg-theme-danger/10 p-3 text-sm text-theme-danger">{inviteError}</p>}
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold text-theme-secondary-text">Email</span>
             <input type="email" required value={addUserForm.email} onChange={e => setAddUserForm(form => ({ ...form, email: e.target.value }))} className={controlClassName} />
