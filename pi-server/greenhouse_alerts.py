@@ -55,7 +55,13 @@ def update_episode(conn, uid, at, member_changed=False, context_current=None):
         if member_changed:
             conn.execute('UPDATE greenhouse_alerts SET version=version+1 WHERE incident_uid=?', (uid,))
         return False
-    conn.execute('UPDATE greenhouse_alerts SET version=version+1,status=?,resolved_at=? WHERE incident_uid=? AND status=\'open\'', ('closed' if unsafe_closure else 'resolved', at, uid))
+    # Reading capture precedes incident processing. The episode cannot close
+    # before a member that resolved a few milliseconds later in this transaction.
+    closed_at = max([datetime.fromisoformat(at)] + [
+        datetime.fromisoformat(member['resolved_at'])
+        for member in members if member['resolved_at']
+    ]).isoformat(timespec='microseconds')
+    conn.execute('UPDATE greenhouse_alerts SET version=version+1,status=?,resolved_at=? WHERE incident_uid=? AND status=\'open\'', ('closed' if unsafe_closure else 'resolved', closed_at, uid))
     if invalid_context:
         conn.execute("UPDATE greenhouse_alerts SET status='closed' WHERE incident_uid=?", (uid,))
     return True
