@@ -6,6 +6,8 @@ import {
 } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { validAccountEmail } from "@/lib/account-email";
+import { configuredWebOrigin } from "@/lib/google-oauth";
+import { describeInvitationError } from "@/lib/user-invitation";
 
 type Role = "admin" | "manager";
 
@@ -342,6 +344,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const webOrigin = configuredWebOrigin();
+  if (!webOrigin) {
+    return NextResponse.json({ error: "The invitation password setup URL is not configured. Set LPMAS_WEB_ORIGIN to the application's public origin." }, { status: 503 });
+  }
+
   /*
    * The database trigger creates the initial profile as manager.
    * We then explicitly set the requested role below.
@@ -353,6 +360,7 @@ export async function POST(req: NextRequest) {
     await admin.auth.admin.inviteUserByEmail(
       email,
       {
+        redirectTo: `${webOrigin}/reset-password`,
         data: {
           full_name: fullName || null,
         },
@@ -361,7 +369,7 @@ export async function POST(req: NextRequest) {
 
   if (inviteError) {
     return NextResponse.json(
-      { error: inviteError.message },
+      { error: describeInvitationError(inviteError.message, inviteError.code) },
       { status: 400 }
     );
   }

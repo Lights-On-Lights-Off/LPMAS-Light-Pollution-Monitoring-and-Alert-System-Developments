@@ -26,6 +26,7 @@ export interface IncidentSnapshot {
   peak_lux: number;
   lowest_lux: number;
   reason: string;
+  description?: string | null;
   config_version?: string | null;
   resolution_reason?: "safe_reading" | "phase_ended" | "assignment_changed" |
     "configuration_changed" | "monitoring_window_ended" | null;
@@ -158,6 +159,10 @@ export function validateDelivery(
         ? !timestamp(i.resolved_at)
         : i.resolved_at !== null)
     ) return fail("Invalid incident snapshot");
+    if (i.description != null && (typeof i.description !== "string" ||
+      !i.description.trim() || Array.from(i.description).length > 2000)) {
+      return fail("Invalid incident description");
+    }
     if (i.config_version != null && !identifier(i.config_version)) {
       return fail("Invalid incident configuration");
     }

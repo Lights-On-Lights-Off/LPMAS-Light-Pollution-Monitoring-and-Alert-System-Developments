@@ -29,7 +29,7 @@ export function IncidentExportButton({ greenhouseNames }: { greenhouseNames: Rec
       const incidents: Incident[] = [];
       for (let offset=0; ; offset+=1000) {
         const result = await supabase.from("monitoring_incidents")
-          .select("id,sensor_id,greenhouse_id,phase_type,opened_at,resolved_at,status,reason,resolution_reason")
+          .select("id,sensor_id,greenhouse_id,phase_type,opened_at,resolved_at,status,reason,resolution_reason,description")
           .gte("opened_at",from.toISOString()).lte("opened_at",to.toISOString())
           .order("opened_at",{ascending:false}).order("id",{ascending:false})
           .range(offset,offset+999).abortSignal(AbortSignal.timeout(10_000));
@@ -44,7 +44,7 @@ export function IncidentExportButton({ greenhouseNames }: { greenhouseNames: Rec
         Greenhouse: i.greenhouse_id ? greenhouseNames[i.greenhouse_id] ?? i.greenhouse_id : "Unassigned",
         Phase: i.phase_type, Status: incidentOutcome(i).label,
         Resolved: i.resolved_at ? new Date(i.resolved_at).toLocaleString() : "",
-        Reason: i.reason ?? "", Outcome: incidentOutcome(i).detail ?? "",
+        Reason: i.reason ?? "", Description: i.description ?? "", Outcome: incidentOutcome(i).detail ?? "",
       }));
       if (format === "csv") downloadCsv("incident-report.csv",rows);
       else {
