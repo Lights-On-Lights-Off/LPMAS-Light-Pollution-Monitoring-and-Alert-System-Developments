@@ -173,7 +173,7 @@ export async function deleteGreenhouse(id: string): Promise<void> {
 export const getReadings = (sensorId?: string, limit = 100, start?: string, end?: string) => { const params = new URLSearchParams(); params.set("limit", limit.toString()); if (sensorId) params.set("sensor_id", sensorId); if (start) params.set("start", start); if (end) params.set("end", end); return api<Reading[]>(`/api/readings?${params.toString()}`); };
 export const getActivePhase = () => api<Phase | null>("/api/phase/active");
 export const getIncidents = (status?: Incident["status"]) => api<Incident[]>(`/api/incidents${status ? `?status=${status}` : ""}`);
-export const acknowledgeIncident = (id: number, incidentUid?: string) => api<{ status: string }>(`/api/incidents/${id}/acknowledge`, { method: "POST", body: JSON.stringify({incident_uid:incidentUid}) });
+export const acknowledgeIncident = (id: number, description: string, incidentUid?: string) => api<Incident>(`/api/incidents/${id}/acknowledge`, { method: "POST", body: JSON.stringify({incident_uid:incidentUid,description}) });
 export async function getHardwareActivity(greenhouseId?: string, sensorIds: string[] = [], start?: string, end?: string): Promise<HardwareActivityResponse> {
   const params = new URLSearchParams({start:start ?? new Date(Date.now()-86400000).toISOString(), end:end ?? new Date().toISOString()});
   params.set('average', 'minute');

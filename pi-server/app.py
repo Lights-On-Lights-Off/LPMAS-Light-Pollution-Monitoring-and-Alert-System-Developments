@@ -206,6 +206,7 @@ def init_db():
         ("incidents", "config_version", "TEXT"),
         ("incidents", "context_version", "TEXT"),
         ("incidents", "resolution_reason", "TEXT"),
+        ("incidents", "description", "TEXT"),
     ):
         if column not in table_columns(conn, table):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
@@ -935,19 +936,29 @@ def get_incidents():
 @app.route("/api/incidents/<int:incident_id>/acknowledge", methods=["POST"])
 @require_manager
 def acknowledge_incident(incident_id):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    description = body.get("description")
+    if not isinstance(description, str) or not description.strip() or len(description.strip()) > 2000:
+        return jsonify({"error": "Enter a description of what happened (1–2000 characters)."}), 400
+    description = description.strip()
     conn = get_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
         if not row: return jsonify({"error":"Incident not found"}),404
-        supplied = (request.get_json(silent=True) or {}).get("incident_uid")
+        supplied = body.get("incident_uid")
         if supplied != row["incident_uid"]: return jsonify({"error":"Incident identity changed; refresh before acknowledging"}),409
         if row["status"] == "resolved": return jsonify({"error":"Incident already resolved"}),409
         if row["status"] == "open":
-            conn.execute("UPDATE incidents SET status='acknowledged',version=version+1 WHERE id=?",(incident_id,))
+            conn.execute("UPDATE incidents SET status='acknowledged',description=?,version=version+1 WHERE id=?",(description,incident_id))
             enqueue_delivery(conn,{"kind":"incident","delivery_id":str(uuid.uuid4()),"recorded_at":now_iso(),"incident":incident_snapshot(conn,incident_id)})
+        elif row["description"] != description:
+            return jsonify({"error": "Incident already acknowledged with a different description; refresh to view it."}), 409
+        snapshot = incident_snapshot(conn, incident_id)
         conn.commit(); _outbox_wake.set()
-        return jsonify({"status":"acknowledged"})
+        return jsonify(snapshot)
     finally: conn.close()
 
 

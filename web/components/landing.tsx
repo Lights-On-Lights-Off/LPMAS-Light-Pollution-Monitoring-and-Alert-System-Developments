@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
@@ -71,7 +72,7 @@ export function Landing() {
     <header className="sticky top-0 z-30 border-b border-metal-700 bg-ink/80 backdrop-blur-xl">
       <nav className="mx-auto flex h-[72px] max-w-6xl items-center justify-between px-5">
         <Link href="/" className="flex items-center gap-3">
-          <img src="/Hayag-logo.png" alt="Hayag logo" className="h-9 w-9 rounded-xl object-contain" />
+          <Image width={48} height={48} src="/Hayag-logo.png" alt="Hayag logo" className="h-9 w-9 rounded-xl object-contain" />
           <span className="text-sm font-bold tracking-tight">LPMAS</span>
         </Link>
         <div className="hidden items-center gap-8 text-sm text-metal-300 md:flex">
@@ -164,7 +165,7 @@ export function Landing() {
 
     <footer className="border-t border-metal-700 px-5 py-8">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 text-sm text-metal-500">
-        <div className="flex items-center gap-2 font-semibold text-metal-50"><img src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS</div>
+        <div className="flex items-center gap-2 font-semibold text-metal-50"><Image width={48} height={48} src="/Hayag-logo.png" alt="" className="h-5 w-5 object-contain" /> LPMAS</div>
         <p>Light Pollution Monitoring and Alert System</p>
       </div>
     </footer>

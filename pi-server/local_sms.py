@@ -101,8 +101,21 @@ def initialize(conn):
             status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
             attempted_at REAL, gateway_id TEXT, detail TEXT, version INTEGER NOT NULL DEFAULT 1,
             next_poll_at REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL,
-            UNIQUE(episode_uid,event,send_number));
+            UNIQUE(episode_uid,event,send_number,recipient));
     """)
+    # SQLite cannot drop an inline unique constraint. Rebuild only the old
+    # three-column index, preserving job IDs, consumed attempts and reports.
+    for index in conn.execute("PRAGMA index_list(local_sms_jobs)").fetchall():
+        columns = [row['name'] for row in conn.execute('PRAGMA index_info("' + index['name'] + '")')]
+        if index['unique'] and columns == ['episode_uid', 'event', 'send_number']:
+            schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='local_sms_jobs'").fetchone()[0]
+            schema = schema.replace('local_sms_jobs', 'local_sms_jobs_multi', 1)
+            schema = re.sub(r'UNIQUE\s*\(episode_uid,\s*event,\s*send_number\)',
+                'UNIQUE(episode_uid,event,send_number,recipient)', schema, flags=re.I)
+            conn.executescript('BEGIN IMMEDIATE; ' + schema + '; '
+                'INSERT INTO local_sms_jobs_multi SELECT * FROM local_sms_jobs; '
+                'DROP TABLE local_sms_jobs; ALTER TABLE local_sms_jobs_multi RENAME TO local_sms_jobs; COMMIT;')
+            break
     # First installation baselines all old episodes. Upgrades cannot replay them.
     initialized = conn.execute("SELECT 1 FROM supabase_sync_state WHERE key='local_sms_initialized'").fetchone()
     if not initialized:
@@ -117,10 +130,20 @@ def cache_config(conn, snapshot, now=None):
         raise ValueError('Cloud ownership configuration missing; apply migration 0025 first')
     if not isinstance(settings.get('enabled'), bool):
         raise ValueError('Invalid notification enablement')
-    phone = normalize_phone(settings.get('recipient', ''))
-    if settings['enabled'] and settings['mode'] == 'local' and not phone:
+    raw_phones = settings.get('recipients', [settings.get('recipient', '')] if settings.get('recipient') else [])
+    if not isinstance(raw_phones, list) or len(raw_phones) > 20:
+        raise ValueError('Choose up to 20 SMS recipients')
+    phones = []
+    for raw in raw_phones:
+        phone = normalize_phone(raw)
+        if not phone:
+            raise ValueError('Every SMS recipient needs a valid Philippine mobile number')
+        if phone not in phones:
+            phones.append(phone)
+    if 'recipients' not in settings and settings['enabled'] and settings['mode'] == 'local' and not phones:
         raise ValueError('A valid manager mobile number is required')
-    normalized = {**settings, 'recipient': phone or '', 'timezone': snapshot.get('timezone', 'Asia/Manila')}
+    normalized = {**settings, 'recipients': phones, 'recipient': phones[0] if phones else '',
+        'timezone': snapshot.get('timezone', 'Asia/Manila')}
     if normalized['timezone'] != 'Asia/Manila':
         raise ValueError('Cloud and Pi monitoring timezone must be Asia/Manila')
     conn.execute('INSERT INTO local_sms_config VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot,saved_at=excluded.saved_at',
@@ -134,7 +157,7 @@ def saved_config(conn):
 
 def armed(conn, config):
     settings = saved_config(conn)
-    return config.get('enabled') is True and settings.get('mode') == 'local' and settings.get('enabled') is True and bool(settings.get('recipient'))
+    return config.get('enabled') is True and settings.get('mode') == 'local' and settings.get('enabled') is True and bool(settings.get('recipients', [settings['recipient']] if settings.get('recipient') else []))
 
 
 def sync_events(conn, config, now=None):
@@ -153,7 +176,8 @@ def sync_events(conn, config, now=None):
         name = re.sub(r'[^ -~]', '?', episode['greenhouse_id'])[:24]
         text = ('LPMAS ALERT: Greenhouse ' + name + ' has a confirmed light violation.' if event == 'opened' else
             'LPMAS RESOLVED: Greenhouse ' + name + ' has returned to safe light levels.') + ' Incident ' + episode['incident_uid'][:12] + '.'
-        enqueue(conn, episode['incident_uid'], event, 1, settings['recipient'], text, min(stamp, now), now)
+        for recipient in settings.get('recipients', [settings['recipient']]):
+            enqueue(conn, episode['incident_uid'], event, 1, recipient, text, min(stamp, now), now)
 
 
 def enqueue(conn, uid, event, number, recipient, message, due, now):
@@ -174,6 +198,11 @@ def claim(conn, config, now):
     expire(conn, now)
     job = None
     if armed(conn, config):
+        settings = saved_config(conn)
+        phones = settings.get('recipients', [settings['recipient']])
+        placeholders = ','.join('?' for _ in phones)
+        conn.execute("UPDATE local_sms_jobs SET status='skipped',detail='Recipient no longer assigned',version=version+1 "
+            "WHERE status='pending' AND recipient NOT IN (" + placeholders + ")", phones)
         job = conn.execute("SELECT * FROM local_sms_jobs WHERE status='pending' AND available_at<=? ORDER BY available_at,id LIMIT 1", (now,)).fetchone()
     else:
         conn.execute("UPDATE local_sms_jobs SET status='skipped',detail='Local sending disabled',version=version+1 WHERE status='pending'")
