@@ -20,7 +20,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChartDataDetails } from "../ChartDataDetails";
 import { Badge, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { IncidentList } from "../IncidentList";
@@ -400,7 +399,6 @@ export function ManagerOverview(
               )}
           </div>
           <p className="mt-3 text-xs text-theme-muted">Actual intensity in lux · dashed lines show safe and violation boundaries. {logarithmic ? "Logarithmic spacing keeps low readings visible alongside spikes, including zero-lux readings." : "Linear spacing shows absolute lux differences."}</p>
-          <ChartDataDetails points={chartData} series={assignedIds} />
         </Card>
 
         <Card className="min-h-[340px]">
