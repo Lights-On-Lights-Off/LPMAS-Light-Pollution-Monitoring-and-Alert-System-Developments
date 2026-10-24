@@ -29,6 +29,7 @@ import { type MinuteAggregate } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { type GreenhouseConfig, toLocalConfig } from "@/lib/greenhouse-config";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
+import { greenhouseMonitoringWindow, windowContains, plotLuxPoints } from "@/lib/monitoring-window";
 import { minuteHistoryPoints, sensorSeries } from "@/lib/chartData";
 
 export function ManagerOverview(
@@ -39,6 +40,7 @@ export function ManagerOverview(
   },
 ) {
   const monitoring = useDashboardData();
+  const [chartScale, setChartScale] = useState<"log" | "linear">("log");
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [greenhouseConfigs, setGreenhouseConfigs] = useState<
     GreenhouseConfig[]
@@ -86,6 +88,12 @@ export function ManagerOverview(
     g.id === selectedGreenhouse
   );
   const assignedIds = selectedConfig?.sensorIds ?? [];
+  const selectedGreenhouseRecord = monitoring.greenhouses.find(g => g.id === selectedGreenhouse);
+  const chartWindow = greenhouseMonitoringWindow(selectedGreenhouseRecord, monitoring.policy.dark_phase_days, monitoring.now || Date.now());
+  const windowStart = chartWindow?.start;
+  const windowEnd = chartWindow?.end;
+  const windowPhase = chartWindow?.phase;
+
   const selectedPhase = phaseForGreenhouse(
     monitoring.greenhouses.find((g) => g.id === selectedGreenhouse),
     monitoring.policy.dark_phase_days,
@@ -118,13 +126,14 @@ export function ManagerOverview(
     let fetching = false;
     async function loadHistory() {
       if (fetching) return;
-      if (!selectedConfig || !supabase || !assignedIds.length) {
+      if (!selectedConfig || !supabase || !assignedIds.length || windowStart == null || windowEnd == null || !windowPhase) {
         setHistoryError(null);
         setHistory([]);
         return;
       }
       fetching = true;
-      const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const start = new Date(windowStart).toISOString();
+      const end = new Date(windowEnd).toISOString();
       const rows: MinuteAggregate[] = [];
       try {
         for (
@@ -136,7 +145,7 @@ export function ManagerOverview(
             .select(
               "id,sensor_id,greenhouse_id,bucket_start,phase_type,sample_count,avg_lux,min_lux,max_lux,safe_count,warning_count,violation_count,updated_at,last_recorded_at,config_version",
             )
-            .eq("greenhouse_id", selectedConfig.id).gte("bucket_start", start)
+            .eq("greenhouse_id", selectedConfig.id).eq("phase_type", windowPhase).gte("bucket_start", start).lt("bucket_start", end)
             .order("bucket_start", { ascending: true }).order("id", {
               ascending: true,
             }).range(offset, offset + 999).abortSignal(
@@ -168,22 +177,24 @@ export function ManagerOverview(
       active = false;
       clearInterval(interval);
     };
-  }, [selectedGreenhouse, assignedIds.join(",")]);
+  }, [selectedGreenhouse, assignedIds.join(","), windowStart, windowEnd, windowPhase]);
 
-  const chartData = useMemo(() => minuteHistoryPoints(history, readings, selectedGreenhouse, assignedIds),
-    [history, readings, selectedGreenhouse, assignedIds.join(",")]);
-
-  // Newest timestamp behind whatever the chart is currently showing, so a
-  // stale Supabase fallback is never presented as if it were live.
-  const chartAsOf = useMemo(() => {
-    if (!selectedConfig) return null;
-    const source = [...history.map(row => row.last_recorded_at ?? row.bucket_start), ...scopedReadings.map(r => r.recorded_at)];
-    if (!source.length) return null;
-    return source.reduce((newest, value) => {
-      const time = new Date(value).getTime();
-      return time > newest ? time : newest;
-    }, 0);
-  }, [history, readings, selectedConfig, assignedIds.join(",")]);
+  const chartData = useMemo(() => {
+    const now = monitoring.now || Date.now();
+    const inWindow = (stamp: string, phase: string) => windowContains(chartWindow, stamp, phase, now);
+    return minuteHistoryPoints(
+      history.filter(row => inWindow(row.bucket_start, row.phase_type)),
+      readings.filter(row => inWindow(row.recorded_at, row.phase_type)),
+      selectedGreenhouse, assignedIds,
+    );
+  }, [history, readings, selectedGreenhouse, assignedIds.join(","), windowStart, windowEnd, windowPhase, monitoring.now]);
+  const logarithmic = chartScale === "log";
+  const plottedData = useMemo(() => plotLuxPoints(chartData, logarithmic), [chartData, logarithmic]);
+  const peakLux = Math.max(selectedPhase === "dark" ? 30 : 50, ...chartData.flatMap(point => assignedIds.map(id => point[id] ?? 0)));
+  const logTicks = (peakLux < 100 ? [0, 1, 5, 15, 30, 50] : [0, 10, 100, 1000, 10000, 100000])
+    .filter(value => value <= peakLux + 10).map(value => value + 1);
+  const chartAsOf = chartData.length ? chartData[chartData.length - 1].time : null;
+  const displayTime = (time: number) => new Date(time).toLocaleString([], { timeZone: "Asia/Manila", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
   async function refreshReport() {
     setReportRefreshing(true);
@@ -259,9 +270,17 @@ export function ManagerOverview(
                 )}
               </div>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                One point per minute. The current minute updates every 10 seconds; older history refreshes every 30 seconds.
+                Current or latest monitoring window only. One point per minute, refreshed every 10 seconds.
               </p>
+              <p className="mt-1 text-xs text-theme-muted">{chartWindow ? `${chartWindow.active ? "Current" : "Latest"} ${chartWindow.phase} window: ${displayTime(chartWindow.start)} – ${displayTime(chartWindow.end - 60_000)} (Asia/Manila)` : "No monitoring window available for the active phase."}</p>
             </div>
+            <label className="flex items-center gap-2 text-sm text-theme-text">
+              Scale
+              <select aria-label="Lux chart scale" value={chartScale} onChange={e => setChartScale(e.target.value as "log" | "linear")} className="min-h-11 rounded-lg border border-theme-border bg-theme-surface px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
+                <option value="log">Logarithmic</option>
+                <option value="linear">Linear</option>
+              </select>
+            </label>
           </div>
           {historyError && (
             <p role="status" className="mt-2 text-xs text-theme-danger">
@@ -272,7 +291,7 @@ export function ManagerOverview(
             {chartData.length
               ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart accessibilityLayer data={chartData} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
+                  <AreaChart accessibilityLayer data={plottedData} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
                     <defs>
                       <linearGradient
                         id="overviewLuxGradient"
@@ -318,11 +337,15 @@ export function ManagerOverview(
                       width={44}
                       tickLine={false}
                       axisLine={false}
-                      domain={[0, (max: number) => Math.max(max, selectedPhase === "dark" ? 30 : 50) + 10]}
+                      scale={logarithmic ? "log" : "linear"}
+                      ticks={logarithmic ? logTicks : undefined}
+                      domain={[logarithmic ? 1 : 0, (max: number) => Math.max(max, (selectedPhase === "dark" ? 30 : 50) + (logarithmic ? 1 : 0)) + 10]}
+                      allowDecimals={false}
+                      tickFormatter={value => (logarithmic ? Number(value) - 1 : Number(value)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
                     />
                     <Tooltip
                       labelFormatter={value => new Date(Number(value)).toLocaleString()}
-                      formatter={(value: number, name: string) => [`${value.toFixed(2)} lux`, name]}
+                      formatter={(value: number, name: string) => [`${(logarithmic ? value - 1 : value).toFixed(2)} lux`, name]}
                       contentStyle={{
                         borderRadius: 12,
                         background: "var(--surface-solid)",
@@ -332,12 +355,12 @@ export function ManagerOverview(
                     />
                     <Legend />
                     {selectedPhase && <ReferenceLine
-                      y={selectedPhase === "dark" ? 15 : 50}
+                      y={(selectedPhase === "dark" ? 15 : 50) + (logarithmic ? 1 : 0)}
                       stroke="var(--success)"
                       strokeDasharray="4 4"
                     />}
                     {selectedPhase && <ReferenceLine
-                      y={30}
+                      y={30 + (logarithmic ? 1 : 0)}
                       stroke="var(--danger)"
                       strokeDasharray="4 4"
                     />}
@@ -345,9 +368,9 @@ export function ManagerOverview(
                       <Area
                         key={id}
                         data={sensorSeries(
-                          chartData,
+                          plottedData,
                           id,
-                          Infinity,
+                          90_000,
                         )}
                         isAnimationActive={false}
                         type="linear"
@@ -361,7 +384,8 @@ export function ManagerOverview(
                         strokeWidth={2.5}
                         strokeDasharray={[undefined, "8 4", "2 4"][index % 3]}
                         fillOpacity={0.05}
-                        connectNulls
+                        connectNulls={false}
+                        dot={{ r: 2 }}
                       />
                     ))}
                   </AreaChart>
@@ -371,11 +395,11 @@ export function ManagerOverview(
                 <div className="grid h-full place-items-center text-sm text-[var(--muted-foreground)]">
                   {!greenhouseConfigs.length
                     ? "No Greenhouse Configured"
-                    : "No readings recorded yet"}
+                    : "No readings in this monitoring window"}
                 </div>
               )}
           </div>
-          <p className="mt-3 text-xs text-theme-muted">Intensity in lux · dashed reference lines show the safe and violation boundaries for the active phase.</p>
+          <p className="mt-3 text-xs text-theme-muted">Actual intensity in lux · dashed lines show safe and violation boundaries. {logarithmic ? "Logarithmic spacing keeps low readings visible alongside spikes, including zero-lux readings." : "Linear spacing shows absolute lux differences."}</p>
           <ChartDataDetails points={chartData} series={assignedIds} />
         </Card>
 
