@@ -2,6 +2,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { createPortal } from "react-dom";
 
 export function DialogFrame({ children, onClose, title, className = "" }: {children: ReactNode; onClose: () => void; title: string; className?: string}) {
   const ref = useRef<HTMLDivElement>(null);
@@ -25,7 +26,7 @@ export function DialogFrame({ children, onClose, title, className = "" }: {child
     root.addEventListener("keydown",key);
     return () => {root.removeEventListener("keydown",key);document.body.style.overflow=overflow;previous?.focus();};
   },[]);
-  return <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className={className} onClick={event => {if(event.target === event.currentTarget) onClose();}}>{children}</div>;
+  return typeof document === "undefined" ? null : createPortal(<div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className={className} onClick={event => {if(event.target === event.currentTarget) onClose();}}>{children}</div>, document.body);
 }
 export function useConfirm() {
   const [prompt,setPrompt] = useState<string|null>(null);

@@ -182,8 +182,8 @@ export function Monitor() {
             </div>}</div>
       </header>
       <div className="mb-3"><MonitoringStatus compact /></div>
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <Card>
+      <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <Card className="flex flex-col">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
@@ -193,7 +193,7 @@ export function Monitor() {
             </div>
           </div>
 
-          <div className="chart-frame relative mt-3">
+          <div className="public-lux-frame chart-frame relative mt-3">
             {!greenhouse ? <div className="grid h-full place-items-center text-center">
               <div>
                 <p className="text-sm text-metal-400">System not configured</p>
@@ -289,7 +289,7 @@ export function Monitor() {
               </div>
 
               <div className="space-y-2 text-sm">
-                <p className="text-xs text-metal-500">Status uses minute average lux for the recorded phase. Alerts follow the configured monitoring window.</p>
+                <p className="text-xs text-metal-500">Minute-average status. Alerts follow the monitoring window.</p>
                 <InfoRow label="Phase" value={greenhouse ? phaseLabel : "—"} />
                 <InfoRow label="Target" value={greenhouse ? target : "—"} />
                 <InfoRow label="Window" value={greenhouse ? phaseWindow : "—"} />
@@ -357,7 +357,7 @@ export function Monitor() {
 function Kpi({ label, value, tone }: { label: string; value: number; tone?: "red" }) {
   return <div className="rounded-xl border border-metal-700 bg-white/[0.02] px-3 py-2">
     <p className="text-xs text-metal-400">{label}</p>
-    <p className={`mt-1 text-3xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
+    <p className={`mt-0.5 text-2xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
   </div>;
 }
 

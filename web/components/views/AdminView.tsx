@@ -582,7 +582,7 @@ export function AdminView({ section }: { section: string }) {
             </Card>
           </div>
 
-          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,0.8fr)]">
+          <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,0.8fr)]">
             <Card className="min-w-0">
               <div className="mb-4 flex items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -615,8 +615,8 @@ export function AdminView({ section }: { section: string }) {
                       <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "var(--theme-text-muted)" }} width={30} />
                       <Tooltip position={{ x: 12, y: 8 }} contentStyle={{ borderRadius: 12, background: "var(--background)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
                       <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
-                      <Area isAnimationActive={false} type="linear" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
-                      <Area isAnimationActive={false} strokeDasharray="8 4" type="linear" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
+                      <Area connectNulls isAnimationActive={false} type="linear" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
+                      <Area connectNulls isAnimationActive={false} strokeDasharray="8 4" type="linear" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : (
@@ -632,18 +632,17 @@ export function AdminView({ section }: { section: string }) {
                     <Activity size={18} className="shrink-0 text-theme-accent" />
                     <h2 className="text-base font-bold text-theme-text">Sensor Status</h2>
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-theme-muted">Current reporting state and greenhouse assignment.</p>
+                  <p className="mt-1 text-xs leading-5 text-theme-muted">Current reporting state of each sensor.</p>
                 </div>
                 <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-xs font-medium text-theme-muted">{allSensorIds.length} sensors</span>
               </div>
 
               <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-                <table role="table" className="responsive-table w-full min-w-[520px] border-collapse text-sm">
+                <table role="table" className="w-full table-fixed border-collapse text-sm">
                   <thead className="bg-theme-surface-secondary">
                     <tr className="border-b border-theme-accent/30">
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Sensor ID</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th>
-                      <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Assigned</th>
+                      <th className="px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Sensor ID</th>
+                      <th className="px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th>
                     </tr>
                   </thead>
 
@@ -651,23 +650,21 @@ export function AdminView({ section }: { section: string }) {
                     {allSensorIds.length > 0 ? (
                       allSensorIds.map(id => {
                         const health = monitoring.sensorHealthById[id] ?? "Unknown";
-                        const greenhouse = monitoring.greenhouses.find(item => item.is_active === 1 && item.sensor_ids.includes(id));
 
                         return (
                           <tr key={id} className="border-b border-theme-border/80">
-                            <td data-label="Sensor ID" className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{id}</td>
-                            <td data-label="Status" className="px-5 py-3.5 text-center">
+                            <td data-label="Sensor ID" className="px-3 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{id}</td>
+                            <td data-label="Status" className="px-3 py-3.5 text-center">
                               <Badge tone={healthTone(health)}>
                                 {health}
                               </Badge>
                             </td>
-                            <td data-label="Assigned" className="px-5 py-3.5 text-center text-theme-secondary-text">{monitoring.configurationFetchedAt === null ? monitoring.configError ? "Assignment unavailable" : "Checking…" : greenhouse?.name ?? "Unassigned"}</td>
                           </tr>
                         );
                       })
                     ) : (
                       <tr>
-                        <td colSpan={3} className="px-5 py-10 text-center text-sm text-theme-muted">No sensor records are available.</td>
+                        <td colSpan={2} className="px-3 py-10 text-center text-sm text-theme-muted">No sensor records are available.</td>
                       </tr>
                     )}
                   </tbody>

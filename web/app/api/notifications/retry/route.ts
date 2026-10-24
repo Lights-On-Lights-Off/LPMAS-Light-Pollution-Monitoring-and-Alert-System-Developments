@@ -17,7 +17,9 @@ export async function POST(request: NextRequest) {
   let body;
   try { body=await request.json(); } catch { return NextResponse.json({error:"Invalid retry request."},{status:400}); }
   if(!body || !uuid.test(body.job_id ?? "") || !uuid.test(body.request_id ?? "") || !["cloud","local"].includes(body.source)) return NextResponse.json({error:"Invalid retry request."},{status:400});
-  const claim=await admin.rpc("claim_manual_notification_retry",{p_id:body.request_id,p_source:body.source,p_job_id:body.job_id,p_actor_id:user.id});
+  if(body.intent !== undefined && body.intent !== "resend_sms") return NextResponse.json({error:"Invalid resend action."},{status:400});
+  const manualSms=body.intent === "resend_sms";
+  const claim=await admin.rpc(manualSms ? "claim_manual_sms_resend" : "claim_manual_notification_retry",{p_id:body.request_id,p_source:body.source,p_job_id:body.job_id,p_actor_id:user.id});
   if(claim.error) return NextResponse.json({error:claim.error.code === "P0001" ? claim.error.message : "Manual retry is unavailable. Check the database migration and notification configuration."},{status:409});
   const job=claim.data;
   if(!job) return NextResponse.json({error:"Retry could not be claimed."},{status:409});
@@ -34,7 +36,7 @@ export async function POST(request: NextRequest) {
       if(setting.error || !setting.data?.value || !session.data.session?.access_token) result={outcome:"failed",detail:"The local SMS system is unavailable. No resend was submitted."};
       else {
         const origin=validatePiUrl(process.env.NEXT_PUBLIC_PI_API_URL || setting.data.value,process.env.NODE_ENV !== "production");
-        const response=await fetch(`${origin}/api/notification-retries`,{method:"POST",redirect:"error",signal:AbortSignal.timeout(15_000),headers:{Authorization:`Bearer ${session.data.session.access_token}`,"Content-Type":"application/json"},body:JSON.stringify({request_id:job.id,job_id:job.original_job_id})});
+        const response=await fetch(`${origin}/api/notification-retries`,{method:"POST",redirect:"error",signal:AbortSignal.timeout(15_000),headers:{Authorization:`Bearer ${session.data.session.access_token}`,"Content-Type":"application/json"},body:JSON.stringify({request_id:job.id,job_id:job.original_job_id,...(manualSms ? {intent:"resend_sms"} : {})})});
         const payload=await response.json().catch(() => ({}));
         if(response.ok && ["accepted","sent","delivered","failed","unknown"].includes(payload.outcome)) result={outcome:payload.outcome,detail:typeof payload.detail === "string" ? payload.detail : "Local SMS resend outcome unconfirmed."};
         else if([400,401,403,404,409,503].includes(response.status)) result={outcome:"failed",detail:"The Pi could not accept the manual SMS retry. Check that the updated Pi service is running and local SMS is enabled."};

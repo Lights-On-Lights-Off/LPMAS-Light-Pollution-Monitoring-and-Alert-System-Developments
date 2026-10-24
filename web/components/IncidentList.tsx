@@ -31,7 +31,7 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
       if (!active) return;
       if (alerts.error) { setError("Greenhouse alert outcomes unavailable."); return; }
       setEpisodes(alerts.data ?? []);
-      const ids = (alerts.data ?? []).map(row => row.incident_uid);
+      const ids = notificationEpisode ? [notificationEpisode] : (alerts.data ?? []).map(row => row.incident_uid);
       if (!ids.length) { setJobs([]); setError(null); return; }
       const result = await supabase.from("greenhouse_notification_jobs").select(
         "id,greenhouse_alert_uid,event,channel,status,attempts,recipient,attempted_at,detail",
@@ -52,7 +52,7 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
       active = false;
       clearInterval(timer);
     };
-  }, [greenhouseId]);
+  }, [greenhouseId, notificationEpisode]);
   function closeAcknowledge() {
     if (!submitting.current) setAcknowledgeTarget(null);
   }
@@ -111,7 +111,7 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
           </tr>)}{!episodes.length && <tr><td colSpan={4} className="p-5 text-center text-theme-muted">No greenhouse alerts recorded.</td></tr>}</tbody>
         </table>
       </div>
-      <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. Failed notifications can be resent manually from View Details.</p>
+      <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. SMS can be resent manually from View Details; email retries require a confirmed failure.</p>
       <h3 className="mt-5 font-semibold text-theme-text">Sensor incidents</h3>
       <div className="mt-2 overflow-x-auto">
         <table role="table" className="responsive-table w-full min-w-[800px] text-left text-sm">
