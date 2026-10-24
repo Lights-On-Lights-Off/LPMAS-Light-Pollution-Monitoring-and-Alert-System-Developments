@@ -60,6 +60,7 @@ export function Modal({
         footer stay put and only the middle content scrolls. */}
     <div
       className="metal-panel flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-2xl border border-metal-600 p-5 shadow-soft sm:p-6"
+      style={{ background: "var(--surface-solid)" }}
       onClick={e => e.stopPropagation()}
     >
       <div className="mb-5 flex shrink-0 items-start justify-between gap-4">

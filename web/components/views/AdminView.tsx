@@ -525,17 +525,17 @@ export function AdminView({ section }: { section: string }) {
 
   return (
     <div className="dashboard-content space-y-4">
-      <MonitoringStatus compact />
-      <header className="flex flex-wrap items-start justify-between gap-4">
+      <header className="dashboard-heading flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-theme-text">{meta.title}</h1>
           <p className="mt-1 text-sm text-theme-muted">{meta.description}</p>
         </div>
         <Badge tone={activityTone}>{activityStatus}</Badge>
       </header>
+      <MonitoringStatus compact />
 
       {section === "Overview" && (
-        <div className="space-y-5">
+        <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Card compact>
               <div className="flex items-start justify-between gap-3">
@@ -582,9 +582,9 @@ export function AdminView({ section }: { section: string }) {
             </Card>
           </div>
 
-          <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,0.8fr)]">
-            <Card className="min-w-0 min-h-[370px]">
-              <div className="mb-5 flex items-center justify-between gap-4">
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,0.8fr)]">
+            <Card className="min-w-0">
+              <div className="mb-4 flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <BarChart3 size={18} className="shrink-0 text-theme-accent" />
@@ -625,8 +625,8 @@ export function AdminView({ section }: { section: string }) {
               </div>
             </Card>
 
-            <Card className="min-w-0 min-h-[370px]">
-              <div className="mb-5 flex items-start justify-between gap-3">
+            <Card className="min-w-0">
+              <div className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <Activity size={18} className="shrink-0 text-theme-accent" />
@@ -677,7 +677,7 @@ export function AdminView({ section }: { section: string }) {
           </div>
 
           <Card className="min-w-0">
-            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <ClipboardList size={18} className="text-theme-accent" />
@@ -729,14 +729,14 @@ export function AdminView({ section }: { section: string }) {
 
       {section === "Team" && (
         <Card className="flex min-w-0 flex-col">
-          <div className="mb-5 flex shrink-0 flex-wrap items-center justify-between gap-4">
+          <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-bold text-theme-text">All Accounts</h2>
               <p className="mt-1 text-xs leading-5 text-theme-muted">Manage administrator and manager access.</p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <select value={roleFilter} onChange={e => setRoleFilter(e.target.value as "all" | Role)} className={`${controlClassName} w-auto min-w-[112px]`}>
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+              <select aria-label="Filter accounts by role" value={roleFilter} onChange={e => setRoleFilter(e.target.value as "all" | Role)} className={`${controlClassName} !w-auto flex-1 sm:flex-none min-w-[112px]`}>
                 <option value="all" className="bg-theme-surface-secondary text-theme-text">All roles</option>
                 {ROLES.map(role => <option key={role} value={role} className="bg-theme-surface-secondary text-theme-text">{role}</option>)}
               </select>
@@ -760,8 +760,8 @@ export function AdminView({ section }: { section: string }) {
               <table role="table" className="responsive-table w-full min-w-[820px] border-collapse text-sm">
                 <thead className="sticky top-0 z-10 bg-theme-surface-secondary">
                   <tr className="border-b border-theme-border/80">
-                    <th className="w-[28%] px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Name</th>
-                    <th className="w-[30%] px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Email</th>
+                    <th className="w-[28%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-muted">Name</th>
+                    <th className="w-[30%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-theme-text">Email</th>
                     <th className="w-[17%] px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Role</th>
                     <th className="w-[25%] px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Actions</th>
                   </tr>
@@ -774,26 +774,26 @@ export function AdminView({ section }: { section: string }) {
 
                       return (
                         <tr key={user.id} className="border-b border-theme-border/80">
-                          <td data-label="Name" className="px-5 py-[18px] text-center">
-                            <div className="flex items-center justify-center gap-2.5">
+                          <td data-label="Name" className="px-4 py-3 text-left">
+                            <div className="flex items-start justify-start gap-3">
                               <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-theme-accent-soft text-xs font-bold uppercase text-theme-accent">
                                 {(user.full_name || user.email || "U").charAt(0)}
                               </span>
 
-                              <div className="text-center">
-                                <p className="font-semibold text-theme-text">{user.full_name || "Unnamed"}</p>
+                              <div className="min-w-0 flex-1 text-left">
+                                <p className="break-words font-semibold text-theme-text">{user.full_name || "Unnamed"}</p>
                                 {isCurrentUser && <p className="mt-0.5 text-xs text-theme-accent">Current account</p>}
                               </div>
                             </div>
                           </td>
 
-                          <td data-label="Email" className="px-5 py-[18px] text-center text-theme-secondary-text">{user.email}</td>
+                          <td data-label="Email" className="break-words px-4 py-3 text-left text-theme-secondary-text">{user.email}</td>
 
-                          <td data-label="Role" className="px-5 py-[18px] text-center">
+                          <td data-label="Role" className="px-5 py-3 text-center">
                             <span className="inline-flex rounded-full bg-theme-surface-secondary px-2.5 py-1 text-xs font-semibold capitalize text-theme-muted">{user.role}</span>
                           </td>
 
-                          <td data-label="Actions" className="px-5 py-[18px] text-center">
+                          <td data-label="Actions" className="px-5 py-3 text-center">
                             <div className="flex items-center justify-center gap-2">
                               <button
                                 type="button"
@@ -837,38 +837,61 @@ export function AdminView({ section }: { section: string }) {
       )}
 
       {section === "System settings" && (
-        <div className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Card><p className="text-sm text-theme-muted">Greenhouses active</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p><p className="mt-1 text-xs text-theme-subtle">Currently active sites</p></Card>
-            <Card><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p></Card>
-            <Card><p className="text-sm text-theme-muted">Open incidents</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p><p className="mt-1 text-xs text-theme-subtle">Requires attention</p></Card>
-            <Card><p className="text-sm text-theme-muted">Users</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team?.length ?? "—"}</p><p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p></Card>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <Card compact><p className="text-sm text-theme-muted">Greenhouses active</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p><p className="mt-1 text-xs text-theme-subtle">Currently active sites</p></Card>
+            <Card compact><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p></Card>
+            <Card compact><p className="text-sm text-theme-muted">Open incidents</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p><p className="mt-1 text-xs text-theme-subtle">Requires attention</p></Card>
+            <Card compact><p className="text-sm text-theme-muted">Users</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team?.length ?? "—"}</p><p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p></Card>
           </div>
 
-          <div className="grid items-stretch gap-5 xl:grid-cols-2">
-            <Card className="min-w-0">
-              <div className="mb-5 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h2 className="text-base font-bold text-theme-text">Monitoring configuration</h2></div>
-                  <p className="mt-1 text-xs leading-5 text-theme-muted">System monitoring rules applied to configured greenhouse schedules.</p>
+          <Card className="configuration-card">
+            <h2 className="mb-4 text-lg font-bold text-theme-text">Monitoring &amp; System Configuration</h2>
+            <div className="grid items-start gap-5 lg:grid-cols-2">
+              <section className="min-w-0">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h3 className="text-base font-semibold text-theme-text">Monitoring configuration</h3></div>
+                    <p className="mt-1 text-xs leading-5 text-theme-muted">System monitoring rules applied to configured greenhouse schedules.</p>
+                  </div>
+                  <button type="button" onClick={() => setMonitoringEditOpen(true)} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Eye size={14} /> View</button>
                 </div>
-                <button type="button" onClick={() => setMonitoringEditOpen(true)} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Eye size={14} /> View</button>
-              </div>
-              {data.phase ? (
+                {data.phase ? (
+                  <dl className="grid gap-4 sm:grid-cols-2">
+                    <SettingRow label="Current phase" value={data.phase.phase_type} />
+                    <SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} />
+                    <SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} />
+                    <SettingRow label="Violation confirmation" value="3 consecutive readings" />
+                    <SettingRow label="Illumination rule" value="≥ 50 safe · 31–49 warning · ≤ 30 violation" />
+                    <SettingRow label="Dark rule" value="0–15 safe · 16–29 warning · ≥ 30 violation" />
+                  </dl>
+                ) : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
+              </section>
+              <section className="min-w-0 border-t border-theme-border pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h3 className="text-base font-semibold text-theme-text">System configuration</h3></div>
+                    <p className="mt-1 text-xs leading-5 text-theme-muted">Sender name, offline threshold and the phase schedule every greenhouse starts from. Lux thresholds themselves remain fixed, unaffected by this.</p>
+                  </div>
+                  <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
+                </div>
                 <dl className="grid gap-4 sm:grid-cols-2">
-                  <SettingRow label="Current phase" value={data.phase.phase_type} />
-                  <SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} />
-                  <SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} />
-                  <SettingRow label="Violation confirmation" value="3 consecutive readings" />
-                  <SettingRow label="Illumination rule" value="≥ 50 safe · 31–49 warning · ≤ 30 violation" />
-                  <SettingRow label="Dark rule" value="0–15 safe · 16–29 warning · ≥ 30 violation" />
+                  <SettingRow label="SMS sender" value={savedSmsDispatchMode === "local" ? "Raspberry Pi · local SMSGate" : "Cloud"} />
+                  <SettingRow label="SMS gateway" value={smsProvider === "smsgate" ? "SMSGate" : smsProvider === "textbee" ? "TextBee" : "Not set"} />
+                  <SettingRow label="Offline threshold" value={`${offlineThreshold} seconds`} />
+                  <SettingRow label="Dark phase duration" value={`${darkPhaseDays || String(DARK_PHASE_DAYS_DEFAULT)} days`} />
+                  <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
+                  <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
+                  <SettingRow label="Gateway credentials" value={savedSmsDispatchMode === "local" ? "Managed on Pi" : gatewayConfigured ? "Stored" : "Not set"} />
                 </dl>
-              ) : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
-            </Card>
+              </section>
+            </div>
+          </Card>
 
-            <Card className="min-w-0">
-              <AlertRecipientSettings users={team ?? []} usersLoading={teamLoading} usersError={teamError} />
-              <div className="mt-3 flex items-center justify-between gap-3 text-xs">
+          <Card className="alert-settings-card">
+            <AlertRecipientSettings users={team ?? []} usersLoading={teamLoading} usersError={teamError}>
+              <div className="min-w-0">
+              <div className="flex items-center justify-between gap-3 text-xs">
                 <span className="text-theme-muted">SMS provider status</span>
                 <span
                   className={
@@ -888,7 +911,7 @@ export function AdminView({ section }: { section: string }) {
                   the field starts blank and saving a new one replaces it. */}
               <div className="mt-5 space-y-4 border-t border-theme-border/70 pt-5">
                 <div className="flex flex-wrap items-end gap-3">
-                  <div className="min-w-[240px] flex-1">
+                  <div className="min-w-0 basis-52 flex-1">
                     <PhNumberField
                       id="test-sms-phone"
                       label="Send a test message to"
@@ -912,28 +935,8 @@ export function AdminView({ section }: { section: string }) {
                   <p role={testSmsFailed ? "alert" : "status"} className={`text-sm ${testSmsFailed ? "text-theme-danger" : "text-theme-success"}`}>{testSmsMessage}</p>
                 )}
               </div>
-            </Card>
-          </div>
-
-
-
-          <Card>
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h2 className="text-base font-bold text-theme-text">System configuration</h2></div>
-                <p className="mt-1 text-xs leading-5 text-theme-muted">Sender name, offline threshold and the phase schedule every greenhouse starts from. Lux thresholds themselves remain fixed, unaffected by this.</p>
               </div>
-              <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
-            </div>
-            <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <SettingRow label="SMS sender" value={savedSmsDispatchMode === "local" ? "Raspberry Pi · local SMSGate" : "Cloud"} />
-              <SettingRow label="SMS gateway" value={smsProvider === "smsgate" ? "SMSGate" : smsProvider === "textbee" ? "TextBee" : "Not set"} />
-              <SettingRow label="Offline threshold" value={`${offlineThreshold} seconds`} />
-              <SettingRow label="Dark phase duration" value={`${darkPhaseDays || String(DARK_PHASE_DAYS_DEFAULT)} days`} />
-              <SettingRow label="Default illumination from" value={defaultIllumStart || "Not set"} />
-              <SettingRow label="Default illumination to" value={defaultIllumEnd || "Not set"} />
-              <SettingRow label="Gateway credentials" value={savedSmsDispatchMode === "local" ? "Managed on Pi" : gatewayConfigured ? "Stored" : "Not set"} />
-            </dl>
+            </AlertRecipientSettings>
           </Card>
 
           <Modal
@@ -1040,7 +1043,7 @@ export function AdminView({ section }: { section: string }) {
           </Modal>
 
           <Card>
-            <div className="mb-5"><p className="font-bold text-theme-text">All sensors</p><p className="mt-1 text-sm text-theme-muted">Latest reading from every sensor, including unassigned sensors and readings outside monitoring hours. Refreshes every 10 seconds, most recent first.</p></div>
+            <div className="mb-4"><p className="font-bold text-theme-text">All sensors</p><p className="mt-1 text-sm text-theme-muted">Latest reading from every sensor, including unassigned sensors and readings outside monitoring hours. Refreshes every 10 seconds, most recent first.</p></div>
             {monitoring.sensorError && <p role="status" className="mb-4 text-sm text-theme-danger">Sensor readings could not be refreshed. Retained readings may be stale.</p>}
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
               <table role="table" className="responsive-table w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
@@ -1050,34 +1053,34 @@ export function AdminView({ section }: { section: string }) {
           </Card>
 
           <Modal open={monitoringEditOpen} onClose={() => setMonitoringEditOpen(false)} title="View monitoring configuration" description="Review the active monitoring policy. Greenhouse dates, monitoring windows and sensor assignments remain managed by Greenhouse Management." footer={<button onClick={() => setMonitoringEditOpen(false)} className="rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground hover:bg-theme-accent-hover">Done</button>}>
-            {data.phase ? <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><SettingRow label="Current phase" value={data.phase.phase_type} /><SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} /><SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} /><SettingRow label="Confirmation" value="3 consecutive readings" /></div><div className="rounded-xl border border-theme-accent/20 bg-theme-accent-soft p-4"><p className="text-sm font-semibold text-theme-text">System-defined thresholds</p><div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs"><div><p className="text-theme-muted">Illumination</p><p className="mt-1 font-medium text-theme-text">≥ 50 safe · 31–49 warning · ≤ 30 violation</p></div><div><p className="text-theme-muted">Dark</p><p className="mt-1 font-medium text-theme-text">0–15 safe · 16–29 warning · ≥ 30 violation</p></div></div></div><p className="text-xs text-theme-muted">Thresholds are fixed by the monitoring service and are intentionally not editable here.</p></div> : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
+            {data.phase ? <div className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><SettingRow label="Current phase" value={data.phase.phase_type} /><SettingRow label="Monitoring window" value={data.phase.window_start && data.phase.window_end ? `${data.phase.window_start} – ${data.phase.window_end}` : "Continuous dark phase"} /><SettingRow label="Phase dates" value={`${data.phase.starts_on} – ${data.phase.ends_on}`} /><SettingRow label="Confirmation" value="3 consecutive readings" /></div><div className="rounded-xl border border-theme-accent/20 bg-theme-accent-soft p-4"><p className="text-sm font-semibold text-theme-text">System-defined thresholds</p><div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs"><div><p className="text-theme-muted">Illumination</p><p className="mt-1 font-medium text-theme-text">≥ 50 safe · 31–49 warning · ≤ 30 violation</p></div><div><p className="text-theme-muted">Dark</p><p className="mt-1 font-medium text-theme-text">0–15 safe · 16–29 warning · ≥ 30 violation</p></div></div></div><p className="text-xs text-theme-muted">Thresholds are fixed by the monitoring service and are intentionally not editable here.</p></div> : <p className="text-sm text-theme-muted">No active phase is currently configured.</p>}
           </Modal>
 
 
         </div>
       )}
       {section === "Activity Logs" && (
-        <div className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Card>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <Card compact>
               <p className="text-sm text-theme-muted">Greenhouses active</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p>
               <p className="mt-1 text-xs text-theme-subtle">Currently active sites</p>
             </Card>
 
-            <Card>
+            <Card compact>
               <p className="text-sm text-theme-muted">Sensors online</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p>
               <p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p>
             </Card>
 
-            <Card>
+            <Card compact>
               <p className="text-sm text-theme-muted">Open incidents</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p>
               <p className="mt-1 text-xs text-theme-subtle">Requires attention</p>
             </Card>
 
-            <Card>
+            <Card compact>
               <p className="text-sm text-theme-muted">Users</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team ? team.length : "—"}</p>
               <p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p>
@@ -1095,7 +1098,7 @@ export function AdminView({ section }: { section: string }) {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <select value={activityRoleFilter} onChange={e => setActivityRoleFilter(e.target.value as "all" | Role)} className={`${controlClassName} w-auto min-w-[112px]`}>
+                <select value={activityRoleFilter} onChange={e => setActivityRoleFilter(e.target.value as "all" | Role)} className={`${controlClassName} !w-auto flex-1 sm:flex-none min-w-[112px]`}>
                   <option value="all" className="bg-theme-surface-secondary text-theme-text">All roles</option>
                   {ROLES.map(role => <option key={role} value={role} className="bg-theme-surface-secondary text-theme-text">{role}</option>)}
                 </select>
