@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, Cell, Legend, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDashboardData } from "@/lib/useDashboardData";
 import type { Reading } from "@/lib/api";
-import { ChartDataDetails } from "@/components/ChartDataDetails";
 import { Card, Badge } from "@/components/ui";
 import { PublicNavbar } from "@/components/public-navbar";
 import { MonitoringStatus } from "@/components/MonitoringStatus";
@@ -259,7 +258,6 @@ export function Monitor() {
             </ResponsiveContainer>}
           </div>
           <p className="mt-3 text-xs text-theme-muted">Intensity in lux · one-minute averages · dashed reference lines show phase thresholds.</p>
-          <ChartDataDetails points={chart} series={sensorIds} />
         </Card>
 
         <div className="grid h-full grid-rows-[auto_1fr] gap-5">
