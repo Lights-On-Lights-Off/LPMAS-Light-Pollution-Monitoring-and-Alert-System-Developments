@@ -350,7 +350,7 @@ if (import.meta.main) {
   );
   Deno.serve(createHandler({
     client,
-    sendEmail: gmailSender(client),
+    sendEmail: gmailSender(client, Deno.env.get("LPMAS_WEB_ORIGIN")),
     serviceRoleKey: Deno.env.get("LPMAS_BACKEND_JWT") ?? serviceRoleKey,
     async readSettings() {
       const { data, error } = await client.from("system_settings").select(
