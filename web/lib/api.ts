@@ -105,6 +105,8 @@ type GreenhouseRow = {
   phase_end: string;
   window_start: string;
   window_end: string;
+  dark_window_start: string;
+  dark_window_end: string;
   is_active: boolean;
   updated_at: string;
   greenhouse_sensors: { sensor_id: string }[] | null;
@@ -114,7 +116,7 @@ export async function getGreenhouses(): Promise<Greenhouse[]> {
   if (!supabase) throw new Error("Supabase is not configured");
   const { data, error } = await supabase
     .from("greenhouses")
-    .select("id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at, greenhouse_sensors(sensor_id)")
+    .select("id, name, phase_start, phase_end, window_start, window_end, dark_window_start, dark_window_end, is_active, updated_at, greenhouse_sensors(sensor_id)")
     .eq("is_active", true)
     .order("name", { ascending: true }).abortSignal(AbortSignal.timeout(10_000));
 
@@ -127,13 +129,15 @@ export async function getGreenhouses(): Promise<Greenhouse[]> {
     phase_end: row.phase_end,
     window_start: toHHMM(row.window_start),
     window_end: toHHMM(row.window_end),
+    dark_window_start: toHHMM(row.dark_window_start ?? "00:00"),
+    dark_window_end: toHHMM(row.dark_window_end ?? "23:59"),
     is_active: row.is_active ? 1 : 0,
     updated_at: row.updated_at,
     sensor_ids: (row.greenhouse_sensors ?? []).map(s => s.sensor_id)
   }));
 }
 
-export async function saveGreenhouse(greenhouse: { id: string; name: string; sensor_ids: string[]; phase_start: string; phase_end: string; window_start: string; window_end: string }): Promise<Greenhouse> {
+export async function saveGreenhouse(greenhouse: { id: string; name: string; sensor_ids: string[]; phase_start: string; phase_end: string; window_start: string; window_end: string; dark_window_start: string; dark_window_end: string }): Promise<Greenhouse> {
   const range = parseIlluminationRange(greenhouse.phase_start, greenhouse.phase_end);
   if (!range.ok) throw new Error(range.error!);
   if (!supabase) throw new Error("Supabase is not configured");
@@ -144,7 +148,9 @@ export async function saveGreenhouse(greenhouse: { id: string; name: string; sen
     p_phase_start: greenhouse.phase_start,
     p_phase_end: greenhouse.phase_end,
     p_window_start: greenhouse.window_start,
-    p_window_end: greenhouse.window_end
+    p_window_end: greenhouse.window_end,
+    p_dark_window_start: greenhouse.dark_window_start,
+    p_dark_window_end: greenhouse.dark_window_end
   });
 
   if (error) throw new Error(error.message.includes("greenhouses_phase_range_check")
@@ -158,6 +164,8 @@ export async function saveGreenhouse(greenhouse: { id: string; name: string; sen
     phase_end: row.phase_end,
     window_start: toHHMM(row.window_start),
     window_end: toHHMM(row.window_end),
+    dark_window_start: toHHMM(row.dark_window_start ?? "00:00"),
+    dark_window_end: toHHMM(row.dark_window_end ?? "23:59"),
     is_active: row.is_active ? 1 : 0,
     updated_at: row.updated_at,
     sensor_ids: greenhouse.sensor_ids

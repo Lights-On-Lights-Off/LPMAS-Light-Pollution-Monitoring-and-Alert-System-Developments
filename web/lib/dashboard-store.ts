@@ -47,8 +47,8 @@ function configuredPhase(greenhouses: Greenhouse[], days: number, now: number): 
       id: null, greenhouse_id: greenhouse.id, phase_type: phase, is_active: 1,
       starts_on: phase === "dark" ? afterEnd(1) : greenhouse.phase_start,
       ends_on: phase === "dark" ? afterEnd(days) : greenhouse.phase_end,
-      window_start: phase === "dark" ? null : greenhouse.window_start,
-      window_end: phase === "dark" ? null : greenhouse.window_end,
+      window_start: phase === "dark" ? greenhouse.dark_window_start ?? "00:00" : greenhouse.window_start,
+      window_end: phase === "dark" ? greenhouse.dark_window_end ?? "23:59" : greenhouse.window_end,
     };
   }
   return null;

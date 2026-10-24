@@ -7,6 +7,8 @@ export type GreenhouseConfig = {
   phaseEnd: string;
   windowStart: string;
   windowEnd: string;
+  darkWindowStart: string;
+  darkWindowEnd: string;
 };
 
 export function toLocalConfig(g: Greenhouse): GreenhouseConfig {
@@ -18,5 +20,7 @@ export function toLocalConfig(g: Greenhouse): GreenhouseConfig {
     phaseEnd: g.phase_end,
     windowStart: g.window_start,
     windowEnd: g.window_end,
+    darkWindowStart: g.dark_window_start ?? "00:00",
+    darkWindowEnd: g.dark_window_end ?? "23:59",
   };
 }
