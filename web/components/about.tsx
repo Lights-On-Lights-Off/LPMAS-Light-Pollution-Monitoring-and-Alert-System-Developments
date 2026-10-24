@@ -72,16 +72,16 @@ export function About() {
   return <main className="theme-transition w-full max-w-full overflow-x-clip bg-ink font-sans text-metal-100 antialiased">
     <PublicNavbar />
 
-    <section className="relative px-5 pb-24 pt-16 md:pb-32 md:pt-24">
+    <section className="relative px-5 pb-12 pt-10 md:pb-24 md:pt-20">
       <div className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_15%_25%,var(--theme-accent-soft),transparent_40%)]" />
 
-      <div className="relative mx-auto grid max-w-6xl items-center gap-14 lg:grid-cols-[1.05fr_.95fr]">
+      <div className="relative mx-auto grid max-w-6xl items-center gap-8 lg:gap-14 lg:grid-cols-[1.05fr_.95fr]">
         <motion.div initial={reduce ? undefined : { opacity: 0, y: 16 }} animate={reduce ? undefined : { opacity: 1, y: 0 }} transition={{ duration: 0.7, ease: "easeOut" }}>
-          <h1 className="max-w-xl text-[clamp(2.5rem,5vw,4.25rem)] font-black leading-[1.05] tracking-tight">Keep every phase inside its light.</h1>
+          <h1 className="max-w-xl text-[clamp(2rem,5vw,4.25rem)] font-bold leading-[1.05] tracking-tight">Keep every phase inside its light.</h1>
           <p className="mt-6 max-w-lg text-lg leading-8 text-metal-300">LPMAS watches the illumination range and the dark ceiling for every greenhouse phase, and tells your team the moment either one drifts.</p>
 
           <div className="mt-9 flex flex-wrap gap-3">
-            <Link href="/login" className="inline-flex items-center gap-2 rounded-full bg-leaf-500 px-7 py-3.5 font-semibold text-ink transition hover:bg-leaf-100 active:scale-[0.98]">Sign in <ArrowRight size={18} /></Link>
+            <Link href="/login" className="inline-flex items-center gap-2 rounded-full bg-leaf-500 px-7 py-3.5 font-semibold text-theme-accent-foreground transition hover:bg-leaf-600 active:scale-[0.98]">Sign in <ArrowRight size={18} /></Link>
             <Link href="/" className="rounded-full border border-metal-600 px-7 py-3.5 font-semibold transition hover:bg-theme-surface-hover active:scale-[0.98]">View live data</Link>
           </div>
         </motion.div>
@@ -92,7 +92,7 @@ export function About() {
       </div>
     </section>
 
-    <section id="features" className="mx-auto max-w-6xl px-5 py-24 md:py-32">
+    <section id="features" className="mx-auto max-w-6xl px-5 py-12 md:py-24">
       <h2 className="max-w-xl text-3xl font-bold tracking-tight md:text-4xl">Everything in one system</h2>
       <p className="mt-4 max-w-lg leading-7 text-metal-400">Crop phases, live sensor data, alerts and incident history in one place.</p>
 
@@ -109,7 +109,7 @@ export function About() {
       </div>
     </section>
 
-    <section id="how-it-works" className="border-t border-metal-700 px-5 py-24 md:py-32">
+    <section id="how-it-works" className="border-t border-metal-700 px-5 py-12 md:py-24">
       <div className="mx-auto max-w-6xl">
         <h2 className="max-w-xl text-3xl font-bold tracking-tight md:text-4xl">From reading to response</h2>
 
@@ -132,7 +132,7 @@ export function About() {
       </div>
     </section>
 
-    <section id="about" className="border-t border-metal-700 px-5 py-24 md:py-32">
+    <section id="about" className="border-t border-metal-700 px-5 py-12 md:py-24">
       <div className="mx-auto max-w-6xl">
         <div className="max-w-3xl">
           <p className="font-mono text-sm uppercase tracking-widest text-leaf-500">About LPMAS</p>

@@ -22,15 +22,15 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 function actionTone(action: string): "green" | "amber" | "red" | "slate" {
   if (action === "SIGN_IN") return "green";
-  if (action === "SIGN_OUT" || action.startsWith("FAILED_")) return "slate";
+  if (action.startsWith("FAILED_")) return "red";
+  if (action === "SIGN_OUT") return "slate";
   if (action.startsWith("DELETE_") || action === "EMPTY_RECYCLE_BIN") return "red";
   if (action.startsWith("EXPORT_")) return "amber";
   return "green";
 }
 
-function roleTone(role: string): "red" | "amber" | "slate" {
-  if (role === "admin") return "red";
-  if (role === "manager") return "amber";
+function roleTone(_role: string): "slate" {
+  // Roles describe access, not system health.
   return "slate";
 }
 
@@ -136,17 +136,17 @@ export function ActivityLogTable({
             value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }}
             placeholder="Actor, action, page, browser..."
-            className="w-44 rounded-lg border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_6%,var(--surface))] px-2.5 py-1.5 text-xs text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+            className="w-full sm:w-44 rounded-lg border border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_6%,var(--surface))] px-2.5 py-1.5 text-xs text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
           />
         </label>
       </div>
 
-      {error && logs.length > 0 && <p role="alert" className="mb-3 text-sm text-red-400">Unable to refresh activity logs. Showing previously loaded entries. {error}</p>}
+      {error && logs.length > 0 && <p role="alert" className="mb-3 text-sm text-theme-danger">Unable to refresh activity logs. Showing previously loaded entries. {error}</p>}
 
       {loading ? (
         <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">Loading activity logs...</div>
       ) : error && !logs.length ? (
-        <div className="grid min-h-56 place-items-center text-center text-sm text-red-400">Unable to load activity logs.<br />{error}</div>
+        <div className="grid min-h-56 place-items-center text-center text-sm text-theme-danger">Unable to load activity logs.<br />{error}</div>
       ) : !filtered.length ? (
         <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">{logs.length ? "No logs match your search." : "No activity logs available."}</div>
       ) : (

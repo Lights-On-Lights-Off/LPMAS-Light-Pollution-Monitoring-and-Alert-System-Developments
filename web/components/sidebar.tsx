@@ -47,7 +47,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
   const visibleNav = profile ? nav.filter(([, label]) => NAV_BY_ROLE[profile.role].includes(label)) : nav;
 
   const navContent = <>
-    <div className="relative mb-10 flex items-center gap-3 px-2">
+    <div className="relative mb-6 flex items-center gap-3 px-2">
       <Image width={48} height={48} src="/Hayag-logo.png" alt="Hayag logo" className="h-11 w-11 rounded-2xl object-contain shadow-lg" />
       <div>
         <p className="font-bold tracking-wide text-[var(--foreground)]">LPMAS</p>
@@ -55,7 +55,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
       </div>
     </div>
 
-    <nav className="relative space-y-2">
+    <nav aria-label="Dashboard sections" className="relative space-y-1">
       {visibleNav.map(([Icon, label]) => {
         const selected = active === label;
         return <button key={label} aria-current={selected ? "page" : undefined} onClick={() => navigate(label as DashboardSection)} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${selected ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
@@ -65,7 +65,7 @@ export function Sidebar({ active = "Overview", onNavigate }: { active?: Dashboar
         </button>;
       })}
 
-      <button onClick={() => navigate("Appearance")} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${active === "Appearance" ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
+      <button aria-current={active === "Appearance" ? "page" : undefined} onClick={() => navigate("Appearance")} className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${active === "Appearance" ? "[background:color-mix(in_srgb,var(--accent)_18%,transparent)] font-semibold text-[var(--foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.12)]" : "text-[var(--muted-foreground)] hover:[background:color-mix(in_srgb,var(--accent)_8%,transparent)] hover:text-[var(--foreground)]"}`}>
         <Paintbrush size={19} className={active === "Appearance" ? "text-[var(--accent)]" : "text-[var(--muted-foreground)] group-hover:text-[var(--accent)]"} />
         <span>Appearance</span>
         {active === "Appearance" && <span className="ml-auto h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]" />}
