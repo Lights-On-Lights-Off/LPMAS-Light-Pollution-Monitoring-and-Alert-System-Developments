@@ -45,6 +45,8 @@ export type Greenhouse = {
   phase_end: string;
   window_start: string;
   window_end: string;
+  dark_window_start?: string;
+  dark_window_end?: string;
   is_active: number;
   updated_at: string;
   sensor_ids: string[];
