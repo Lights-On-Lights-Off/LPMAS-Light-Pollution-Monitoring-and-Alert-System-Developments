@@ -108,9 +108,9 @@ export function ManagerOverview(
   const warningReads =
     scopedReadings.filter((r) => r.classification === "warning").length;
   const recentActivities = [...scopedReadings].reverse().slice(0, 3);
-  const warnings = [...scopedReadings].reverse().filter((r) =>
-    r.classification === "warning"
-  ).slice(0, 5);
+  const warnings = scopedReadings.filter(r => r.classification === "warning")
+    .sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
+    .slice(0, 3);
 
   useEffect(() => {
     const configs = monitoring.greenhouses.map(toLocalConfig);
@@ -254,7 +254,7 @@ export function ManagerOverview(
         />
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+      <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <Card>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -381,7 +381,7 @@ export function ManagerOverview(
                         strokeWidth={2.5}
                         strokeDasharray={[undefined, "8 4", "2 4"][index % 3]}
                         fillOpacity={0.05}
-                        connectNulls={false}
+                        connectNulls
                         dot={{ r: 2 }}
                       />
                     ))}
@@ -400,7 +400,7 @@ export function ManagerOverview(
           <p className="mt-3 text-xs text-theme-muted">Actual intensity in lux · dashed lines show safe and violation boundaries. {logarithmic ? "Logarithmic spacing keeps low readings visible alongside spikes, including zero-lux readings." : "Linear spacing shows absolute lux differences."}</p>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="font-bold text-[var(--foreground)]">
@@ -423,7 +423,7 @@ export function ManagerOverview(
               />
             </button>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 flex flex-1 flex-col justify-between gap-3">
             <ReportRow
               label="Sensors Detected"
               value={latestBySensor.size.toString()}
@@ -446,7 +446,7 @@ export function ManagerOverview(
         </Card>
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-3">
+      <div className="grid items-stretch gap-4 xl:grid-cols-3">
         <Card>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-bold text-[var(--foreground)]">

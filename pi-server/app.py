@@ -986,7 +986,9 @@ def retry_local_notification():
         return jsonify({"error": "Valid notification and retry identities required"}), 400
     conn = get_db()
     try:
-        return jsonify(local_sms.manual_retry(conn, LOCAL_SMS, job_id, request_id))
+        if body.get("intent") not in (None, "resend_sms"):
+            return jsonify({"error": "Invalid resend action"}), 400
+        return jsonify(local_sms.manual_retry(conn, LOCAL_SMS, job_id, request_id, deliberate=body.get("intent") == "resend_sms"))
     finally:
         conn.close()
 
