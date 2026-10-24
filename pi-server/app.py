@@ -198,6 +198,8 @@ def init_db():
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS delivery_outbox (delivery_id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at REAL NOT NULL DEFAULT 0, last_error TEXT, created_at TEXT NOT NULL)")
     for table, column, declaration in (
+        ("greenhouses", "dark_window_start", "TEXT NOT NULL DEFAULT '00:00'"),
+        ("greenhouses", "dark_window_end", "TEXT NOT NULL DEFAULT '23:59'"),
         ("readings", "reading_uid", "TEXT"),
         ("readings", "config_version", "TEXT NOT NULL DEFAULT 'legacy'"),
         ("incidents", "incident_uid", "TEXT"),
@@ -400,6 +402,12 @@ def get_illumination_phase(conn, greenhouse, at=None):
     }
 
 
+def dark_monitoring_window(greenhouse):
+    keys = greenhouse.keys()
+    return (greenhouse["dark_window_start"][:5] if "dark_window_start" in keys else "00:00",
+            greenhouse["dark_window_end"][:5] if "dark_window_end" in keys else "23:59")
+
+
 def get_dark_phase(conn, greenhouse, at=None):
     if not greenhouse: return None
     illumination_end = parse_date(greenhouse["phase_end"])
@@ -414,8 +422,8 @@ def get_dark_phase(conn, greenhouse, at=None):
         "phase_type": "dark",
         "starts_on": dark_start.isoformat(),
         "ends_on": dark_end.isoformat(),
-        "window_start": None,
-        "window_end": None,
+        "window_start": dark_monitoring_window(greenhouse)[0],
+        "window_end": dark_monitoring_window(greenhouse)[1],
         "is_active": 1
     }
 
@@ -436,12 +444,12 @@ def get_active_phase(conn):
 
 def classify_reading(lux, phase, at=None):
     if not phase: return None
+    local_time = (at or datetime.now(LPMAS_TIMEZONE)).astimezone(LPMAS_TIMEZONE)
+    if not is_within_window(local_time.strftime("%H:%M"), phase.get("window_start") or "00:00", phase.get("window_end") or "23:59"): return "unclassified"
     if phase["phase_type"] == "dark":
         if lux <= DARK_SAFE_MAX: return "safe"
         if lux <= DARK_WARNING_MAX: return "warning"
         return "violation"
-    local_time = (at or datetime.now(LPMAS_TIMEZONE)).astimezone(LPMAS_TIMEZONE)
-    if not is_within_window(local_time.strftime("%H:%M"), phase["window_start"], phase["window_end"]): return "unclassified"
     if lux <= ILLUMINATION_VIOLATION_MAX: return "violation"
     if lux < ILLUMINATION_WARNING_MAX: return "warning"
     return "safe"
@@ -453,13 +461,16 @@ def configuration_version(greenhouse):
     config = {key: greenhouse[key] for key in ("id", "phase_start", "phase_end")} if greenhouse else {}
     if greenhouse:
         config.update({key: greenhouse[key][:5] for key in ("window_start", "window_end")})
+        dark_start, dark_end = dark_monitoring_window(greenhouse)
+        if (dark_start, dark_end) != ("00:00", "23:59"):
+            config.update(dark_window_start=dark_start, dark_window_end=dark_end)
     config["dark_phase_days"] = DARK_PHASE_DAYS
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
 
 def illumination_session(phase, at):
     """Identify a daily window, including its after-midnight continuation."""
-    start, end = phase["window_start"][:5], phase["window_end"][:5]
+    start, end = (phase.get("window_start") or "00:00")[:5], (phase.get("window_end") or "23:59")[:5]
     if start == "00:00" and end == "23:59": return "continuous"
     local = at.astimezone(LPMAS_TIMEZONE)
     day = local.date()
@@ -580,7 +591,7 @@ def reconcile_incidents(conn, at=None, sensor_id=None):
             reason = "phase_ended"
         elif (incident["context_version"] or incident["config_version"]) and (incident["context_version"] or incident["config_version"]) != version:
             reason = "configuration_changed"
-        elif phase["phase_type"] == "illumination":
+        elif phase["phase_type"] in ("illumination", "dark"):
             opened = parse_datetime(incident["opened_at"])
             if classify_reading(0, phase, at) == "unclassified" or (opened and illumination_session(phase, opened) != illumination_session(phase, at)):
                 reason = "monitoring_window_ended"
@@ -608,7 +619,7 @@ def reconcile_greenhouse_alerts(conn, at):
         version = member['context_version'] or member['config_version']
         if version and version != configuration_version(greenhouse):
             return False
-        return phase['phase_type'] != 'illumination' or classify_reading(0, phase, at) != 'unclassified'
+        return classify_reading(0, phase, at) != 'unclassified'
     for member_id in greenhouse_alerts.reconcile_waiting(conn, stamp, context_current):
         enqueue_delivery(conn, {'kind': 'incident', 'delivery_id': str(uuid.uuid4()), 'recorded_at': stamp,
                               'incident': incident_snapshot(conn, member_id)})
@@ -1092,7 +1103,7 @@ def sync_greenhouses_from_supabase(snapshot=None):
     # fetch fails, local data is left untouched rather than wiped.
     if not supabase_configured(): return 0
     greenhouses = snapshot['greenhouses'] if snapshot else supabase_select("greenhouses", {
-        "select": "id,name,phase_start,phase_end,window_start,window_end,is_active,updated_at",
+        "select": "id,name,phase_start,phase_end,window_start,window_end,dark_window_start,dark_window_end,is_active,updated_at",
         "is_active": "eq.true"
     })
     sensors = snapshot['greenhouse_sensors'] if snapshot else supabase_select("greenhouse_sensors", {"select": "greenhouse_id,sensor_id"})
@@ -1111,6 +1122,7 @@ def sync_greenhouses_from_supabase(snapshot=None):
                 "INSERT INTO greenhouses (id, name, phase_start, phase_end, window_start, window_end, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?)",
                 (row["id"], row["name"], row["phase_start"], row["phase_end"], row["window_start"][:5], row["window_end"][:5], 1 if row["is_active"] else 0, row["updated_at"])
             )
+            conn.execute("UPDATE greenhouses SET dark_window_start=?,dark_window_end=? WHERE id=?", (*dark_monitoring_window(row), row['id']))
         for row in sensors:
             conn.execute(
                 "INSERT INTO greenhouse_sensors (greenhouse_id, sensor_id) VALUES (?,?)",
@@ -1135,6 +1147,8 @@ def apply_configuration_snapshot(snapshot):
             raise ValueError('Invalid phase dates')
         if not parse_time(row['window_start']) or not parse_time(row['window_end']):
             raise ValueError('Invalid monitoring window')
+        if not parse_time(row.get('dark_window_start', '00:00')) or not parse_time(row.get('dark_window_end', '23:59')):
+            raise ValueError('Invalid dark monitoring window')
     ids = {r['id'] for r in snapshot['greenhouses']}
     assignments = snapshot['greenhouse_sensors']
     if len({r['sensor_id'] for r in assignments}) != len(assignments) or any(r['greenhouse_id'] not in ids for r in assignments):
@@ -1152,6 +1166,7 @@ def apply_configuration_snapshot(snapshot):
         for row in snapshot['greenhouses']:
             conn.execute('INSERT INTO greenhouses(id,name,phase_start,phase_end,window_start,window_end,is_active,updated_at) VALUES (?,?,?,?,?,?,?,?)',
                 (row['id'],row['name'],row['phase_start'],row['phase_end'],row['window_start'][:5],row['window_end'][:5],int(row['is_active']),row['updated_at']))
+            conn.execute("UPDATE greenhouses SET dark_window_start=?,dark_window_end=? WHERE id=?", (*dark_monitoring_window(row), row['id']))
         for row in snapshot['greenhouse_sensors']:
             conn.execute('INSERT INTO greenhouse_sensors(greenhouse_id,sensor_id) VALUES (?,?)', (row['greenhouse_id'],row['sensor_id']))
         DARK_PHASE_DAYS = days

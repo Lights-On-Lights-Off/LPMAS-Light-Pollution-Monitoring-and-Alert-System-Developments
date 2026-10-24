@@ -81,6 +81,8 @@ function GreenhousesView() {
   const [phaseEnd, setPhaseEnd] = useState("");
   const [windowStart, setWindowStart] = useState("18:30");
   const [windowEnd, setWindowEnd] = useState("23:00");
+  const [darkWindowStart, setDarkWindowStart] = useState("00:00");
+  const [darkWindowEnd, setDarkWindowEnd] = useState("23:59");
   const [selectedSensors, setSelectedSensors] = useState<string[]>([]);
   const [sensorPickerOpen, setSensorPickerOpen] = useState(false);
   const [detectedSensors, setDetectedSensors] = useState<string[]>([]);
@@ -115,6 +117,8 @@ function GreenhousesView() {
     setPhaseEnd(defaultPhase.end);
     setWindowStart("18:30");
     setWindowEnd("23:00");
+    setDarkWindowStart("00:00");
+    setDarkWindowEnd("23:59");
     setSelectedSensors([]);
     setSensorPickerOpen(false);
     setSaveError(null);
@@ -128,6 +132,8 @@ function GreenhousesView() {
     setPhaseEnd(greenhouse.phaseEnd);
     setWindowStart(greenhouse.windowStart);
     setWindowEnd(greenhouse.windowEnd);
+    setDarkWindowStart(greenhouse.darkWindowStart ?? "00:00");
+    setDarkWindowEnd(greenhouse.darkWindowEnd ?? "23:59");
     setSelectedSensors(greenhouse.sensorIds);
     setSensorPickerOpen(false);
     setSaveError(null);
@@ -148,6 +154,8 @@ function GreenhousesView() {
     setPhaseEnd("");
     setWindowStart("18:30");
     setWindowEnd("23:00");
+    setDarkWindowStart("00:00");
+    setDarkWindowEnd("23:59");
     setSelectedSensors([]);
     setSaveError(null);
   }
@@ -173,7 +181,7 @@ function GreenhousesView() {
   }
 
   async function confirmGreenhouse() {
-    if (!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !windowStart || !windowEnd || saving) return;
+    if (!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !windowStart || !windowEnd || !darkWindowStart || !darkWindowEnd || saving) return;
     if (!phaseRange.ok) { setSaveError(phaseRange.error); return; }
     setSaving(true);
     setSaveError(null);
@@ -185,7 +193,9 @@ function GreenhousesView() {
       phase_start: phaseStart,
       phase_end: phaseEnd,
       window_start: windowStart,
-      window_end: windowEnd
+      window_end: windowEnd,
+      dark_window_start: darkWindowStart,
+      dark_window_end: darkWindowEnd
     };
 
     try {
@@ -204,7 +214,9 @@ function GreenhousesView() {
         phase_start: phaseStart,
         phase_end: phaseEnd,
         window_start: windowStart,
-        window_end: windowEnd
+        window_end: windowEnd,
+        dark_window_start: darkWindowStart,
+        dark_window_end: darkWindowEnd
       });
       setModalOpen(false);
       setSensorPickerOpen(false);
@@ -214,6 +226,8 @@ function GreenhousesView() {
       setPhaseEnd("");
       setWindowStart("18:30");
       setWindowEnd("23:00");
+      setDarkWindowStart("00:00");
+      setDarkWindowEnd("23:59");
       setSelectedSensors([]);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save greenhouse configuration");
@@ -254,7 +268,7 @@ function GreenhousesView() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">Greenhouse management</h1>
-          <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage greenhouses, real sensors and illumination monitoring windows.</p>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage greenhouses, real sensors and monitoring windows for both phases.</p>
         </div>
         <button onClick={openAddModal} className="rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] px-4 py-2.5 text-sm font-semibold text-[var(--foreground)] ring-1 ring-[color-mix(in_srgb,var(--accent)_28%,transparent)]">
           + Add Greenhouse
@@ -275,7 +289,8 @@ function GreenhousesView() {
                   <p className="font-semibold text-[var(--foreground)]">{g.name}</p>
                   <div className="mt-3 space-y-1.5 text-xs text-[var(--muted-foreground)]">
                     <p>Illumination: {g.phaseStart} → {g.phaseEnd}</p>
-                    <p>Window: {g.windowStart} → {g.windowEnd}</p>
+                    <p>Illumination window: {g.windowStart} → {g.windowEnd}</p>
+                    <p>Dark window: {g.darkWindowStart} → {g.darkWindowEnd}</p>
                     <p>Sensors: {g.sensorIds.length ? g.sensorIds.join(", ") : "—"}</p>
                   </div>
                 </div>
@@ -332,7 +347,7 @@ function GreenhousesView() {
               </div>
 
               <div>
-                <p className="mb-2 text-sm font-medium">Monitoring Time Window</p>
+                <p className="mb-2 text-sm font-medium">Illumination Monitoring Window</p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label>
                     <span className="mb-2 block text-xs text-[var(--muted-foreground)]">Start</span>
@@ -344,6 +359,21 @@ function GreenhousesView() {
                   </label>
                 </div>
               </div>
+
+              <fieldset>
+                <legend className="mb-2 text-sm font-medium">Dark Phase Monitoring Window</legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label>
+                    <span className="mb-2 block text-xs text-[var(--muted-foreground)]">Dark window start</span>
+                    <input type="time" required value={darkWindowStart} onChange={e => setDarkWindowStart(e.target.value)} className="w-full rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))]" />
+                  </label>
+                  <label>
+                    <span className="mb-2 block text-xs text-[var(--muted-foreground)]">Dark window end</span>
+                    <input type="time" required value={darkWindowEnd} onChange={e => setDarkWindowEnd(e.target.value)} className="w-full rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))]" />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-theme-muted">All times use Asia/Manila. An end earlier than the start continues after midnight. Use 00:00–23:59 for all-day monitoring.</p>
+              </fieldset>
 
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -383,7 +413,7 @@ function GreenhousesView() {
               <button onClick={closeModal} disabled={saving} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] disabled:opacity-50">Cancel</button>
               <button
                 onClick={confirmGreenhouse}
-                disabled={!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !phaseRange.ok || !windowStart || !windowEnd || saving}
+                disabled={!name.trim() || !selectedSensors.length || !phaseStart || !phaseEnd || !phaseRange.ok || !windowStart || !windowEnd || !darkWindowStart || !darkWindowEnd || saving}
                 className="rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] px-5 py-2.5 text-sm font-semibold disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Confirm"}
