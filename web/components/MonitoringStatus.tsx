@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useDashboardData } from "@/lib/useDashboardData";
 
-export function MonitoringStatus() {
+export function MonitoringStatus({ compact = false }: { compact?: boolean }) {
   const { loading, aggregateError, incidentError, sensorError, configError,
     sensorsFetchedAt, lastFetchedAt, sensorHealthById, refresh } = useDashboardData();
   const [refreshing, setRefreshing] = useState(false);
@@ -19,12 +19,13 @@ export function MonitoringStatus() {
     setRefreshing(true);
     try { await refresh(); } finally { setRefreshing(false); }
   }
-  return <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-theme-border bg-theme-surface px-4 py-3 text-sm text-theme-text">
+  return <div className={`monitoring-status flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-xl border border-theme-border bg-theme-surface text-sm text-theme-text ${compact ? "px-3 py-2" : "px-4 py-3"}`}>
     <div className="min-w-0 flex-1">
-      <p role="status" aria-atomic="true" className="font-semibold">{title}</p>
-      <p className="mt-1 text-xs text-theme-muted">Current readings check every 10 seconds. Charts and history show minute averages.</p>
+      <p role="status" aria-atomic="true" className={`font-semibold ${sensorError || stale ? "text-theme-warning" : reporting ? "text-theme-success" : health.some(status => status === "Offline") ? "text-theme-danger" : "text-theme-warning"}`}>{title}</p>
+      {!compact && <p className="mt-1 text-xs text-theme-muted">Current readings check every 10 seconds. Charts and history show minute averages.</p>}
       <details className="mt-1 text-xs text-theme-muted">
         <summary className="cursor-pointer py-2 font-medium">Refresh details</summary>
+        {compact && <p className="max-w-3xl leading-6">Current readings check every 10 seconds. Charts and history show minute averages.</p>}
         <p className="max-w-3xl leading-6">Current readings last checked: {sensorsFetchedAt ? new Date(sensorsFetchedAt).toLocaleTimeString() : "not yet"}.
           {" "}Minute averages last checked: {lastFetchedAt ? new Date(lastFetchedAt).toLocaleTimeString() : "not yet"}.
           {" "}Each reading card shows when its measurement was taken. A successful check does not make an old measurement current.</p>

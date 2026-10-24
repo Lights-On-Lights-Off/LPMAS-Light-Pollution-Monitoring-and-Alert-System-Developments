@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Activity, BarChart3, ClipboardList, Database, Eye, Pencil, Phone, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Card, Badge } from "../ui";
+import { Card, healthTone, incidentTone, Badge } from "../ui";
 import { IncidentExportButton } from "../IncidentExportButton";
 import { Modal } from "../Modal";
 import { ActivityLogTable, type ActivityLogRow } from "../ActivityLogTable";
@@ -164,7 +164,7 @@ export function AdminView({ section }: { section: string }) {
   })).sort((a,b) => (Date.parse(b.recorded_at) || 0)-(Date.parse(a.recorded_at) || 0) || a.sensor_id.localeCompare(b.sensor_id));
 
   const activityStatus = overviewLoading ? "Loading" : overviewError || greenhouseError ? "Failed to fetch" : "Connected";
-  const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "slate" : "green";
+  const activityTone = activityStatus === "Failed to fetch" ? "red" : activityStatus === "Loading" ? "amber" : "green";
 
   const overviewInFlight = useRef(false);
   async function loadOverviewData() {
@@ -524,8 +524,8 @@ export function AdminView({ section }: { section: string }) {
   const controlClassName = "block w-full min-w-0 rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm text-[var(--foreground)] outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))] transition placeholder:text-[var(--muted-foreground)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_30%,var(--border))] disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <div className="dashboard-content space-y-6">
-      <MonitoringStatus />
+    <div className="dashboard-content space-y-4">
+      <MonitoringStatus compact />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-theme-text">{meta.title}</h1>
@@ -536,45 +536,45 @@ export function AdminView({ section }: { section: string }) {
 
       {section === "Overview" && (
         <div className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Card>
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <Card compact>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm text-theme-muted">Greenhouses</p>
-                  <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{greenhouseLoading ? "—" : greenhouses.length}</p>
+                  <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : greenhouses.length}</p>
                   <p className="mt-1 text-xs text-theme-subtle">{activeGreenhouses} currently active</p>
                 </div>
                 <Database size={17} className="text-theme-muted" />
               </div>
             </Card>
 
-            <Card>
+            <Card compact>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm text-theme-muted">Sensors</p>
-                  <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p>
+                  <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p>
                   <p className="mt-1 text-xs text-theme-subtle">Currently reporting</p>
                 </div>
                 <Activity size={17} className="text-theme-muted" />
               </div>
             </Card>
 
-            <Card>
+            <Card compact>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm text-theme-muted">Open incidents</p>
-                  <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{openIncidents}</p>
+                  <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p>
                   <p className="mt-1 text-xs text-theme-subtle">{openIncidents ? "Requires attention" : "No open incidents"}</p>
                 </div>
                 <ClipboardList size={17} className="text-theme-muted" />
               </div>
             </Card>
 
-            <Card>
+            <Card compact>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm text-theme-muted">Team members</p>
-                  <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{team ? team.length : "—"}</p>
+                  <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team ? team.length : "—"}</p>
                   <p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p>
                 </div>
                 <Users size={17} className="text-theme-muted" />
@@ -588,11 +588,11 @@ export function AdminView({ section }: { section: string }) {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <BarChart3 size={18} className="shrink-0 text-theme-accent" />
-                    <p className="text-base font-bold text-theme-text">System activity</p>
+                    <h2 className="text-base font-bold text-theme-text">System activity</h2>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-theme-muted">Recent sensor samples and user/system actions.</p>
                 </div>
-                <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-[11px] font-medium text-theme-muted">Supabase</span>
+                <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-xs font-medium text-theme-muted">Supabase</span>
               </div>
 
               <div className="chart-frame">
@@ -613,7 +613,7 @@ export function AdminView({ section }: { section: string }) {
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--theme-border)" />
                       <XAxis dataKey="time" tick={{ fontSize: 12, fill: "var(--theme-text-muted)" }} tickMargin={8} interval="preserveStartEnd" />
                       <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "var(--theme-text-muted)" }} width={30} />
-                      <Tooltip contentStyle={{ borderRadius: 12, background: "var(--background)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
+                      <Tooltip position={{ x: 12, y: 8 }} contentStyle={{ borderRadius: 12, background: "var(--background)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }} />
                       <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
                       <Area isAnimationActive={false} type="linear" dataKey="sensorUpdates" name="Sensor samples" stroke={LINE_COLORS[0]} fill="url(#admin-sensor)" strokeWidth={2} />
                       <Area isAnimationActive={false} strokeDasharray="8 4" type="linear" dataKey="systemActions" name="System actions" stroke={LINE_COLORS[1]} fill="url(#admin-actions)" strokeWidth={2} />
@@ -630,15 +630,15 @@ export function AdminView({ section }: { section: string }) {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <Activity size={18} className="shrink-0 text-theme-accent" />
-                    <p className="text-base font-bold text-theme-text">Sensor Status</p>
+                    <h2 className="text-base font-bold text-theme-text">Sensor Status</h2>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-theme-muted">Current reporting state and greenhouse assignment.</p>
                 </div>
-                <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-[11px] font-medium text-theme-muted">{allSensorIds.length} sensors</span>
+                <span className="shrink-0 rounded-full border border-theme-accent/25 bg-theme-surface-secondary px-2.5 py-1 text-xs font-medium text-theme-muted">{allSensorIds.length} sensors</span>
               </div>
 
               <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-                <table className="w-full min-w-[520px] border-collapse text-sm">
+                <table role="table" className="responsive-table w-full min-w-[520px] border-collapse text-sm">
                   <thead className="bg-theme-surface-secondary">
                     <tr className="border-b border-theme-accent/30">
                       <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-text">Sensor ID</th>
@@ -651,18 +651,17 @@ export function AdminView({ section }: { section: string }) {
                     {allSensorIds.length > 0 ? (
                       allSensorIds.map(id => {
                         const health = monitoring.sensorHealthById[id] ?? "Unknown";
-                        const reporting = health === "Online";
                         const greenhouse = monitoring.greenhouses.find(item => item.is_active === 1 && item.sensor_ids.includes(id));
 
                         return (
                           <tr key={id} className="border-b border-theme-border/80">
-                            <td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{id}</td>
-                            <td className="px-5 py-3.5 text-center">
-                              <span className={`inline-flex min-w-[88px] justify-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${reporting ? "bg-theme-accent-soft text-theme-accent" : "bg-theme-surface-secondary text-theme-muted"}`}>
+                            <td data-label="Sensor ID" className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{id}</td>
+                            <td data-label="Status" className="px-5 py-3.5 text-center">
+                              <Badge tone={healthTone(health)}>
                                 {health}
-                              </span>
+                              </Badge>
                             </td>
-                            <td className="px-5 py-3.5 text-center text-theme-secondary-text">{monitoring.configurationFetchedAt === null ? monitoring.configError ? "Assignment unavailable" : "Checking…" : greenhouse?.name ?? "Unassigned"}</td>
+                            <td data-label="Assigned" className="px-5 py-3.5 text-center text-theme-secondary-text">{monitoring.configurationFetchedAt === null ? monitoring.configError ? "Assignment unavailable" : "Checking…" : greenhouse?.name ?? "Unassigned"}</td>
                           </tr>
                         );
                       })
@@ -682,7 +681,7 @@ export function AdminView({ section }: { section: string }) {
               <div>
                 <div className="flex items-center gap-2">
                   <ClipboardList size={18} className="text-theme-accent" />
-                  <p className="text-base font-bold text-theme-text">Incident Report</p>
+                  <h2 className="text-base font-bold text-theme-text">Incident Report</h2>
                 </div>
                 <p className="mt-1 text-xs leading-5 text-theme-muted">Incidents recorded by the monitoring system.</p>
               </div>
@@ -690,7 +689,7 @@ export function AdminView({ section }: { section: string }) {
             </div>
 
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-              <table className="w-full min-w-[1080px] border-collapse text-sm">
+              <table role="table" className="responsive-table w-full min-w-[1080px] border-collapse text-sm">
                 <thead className="bg-theme-surface-secondary">
                   <tr className="border-b border-theme-border/80">
                     <th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Opened</th>
@@ -706,14 +705,14 @@ export function AdminView({ section }: { section: string }) {
                   {overviewIncidents.length > 0 ? (
                     overviewIncidents.map(incident => (
                       <tr key={incident.id} className="border-b border-theme-border/80">
-                        <td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(incident.opened_at).toLocaleString()}</td>
-                        <td className="px-5 py-3.5 text-center font-mono text-xs text-theme-text">{incident.sensor_id}</td>
-                        <td className="px-5 py-3.5 text-center text-theme-secondary-text">{greenhouses.find(item => item.id === incident.greenhouse_id)?.name ?? incident.greenhouse_id ?? "Unassigned"}</td>
-                        <td className="px-5 py-3.5 text-center capitalize text-theme-secondary-text">{incident.phase_type || "—"}</td>
-                        <td className="px-5 py-3.5 text-center">
-                          <span title={incidentOutcome(incident).detail ?? undefined} className="inline-flex min-w-[92px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold capitalize text-theme-accent">{incidentOutcome(incident).label}</span>
+                        <td data-label="Opened" className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{new Date(incident.opened_at).toLocaleString()}</td>
+                        <td data-label="Sensor ID" className="px-5 py-3.5 text-center font-mono text-xs text-theme-text">{incident.sensor_id}</td>
+                        <td data-label="Greenhouse" className="px-5 py-3.5 text-center text-theme-secondary-text">{greenhouses.find(item => item.id === incident.greenhouse_id)?.name ?? incident.greenhouse_id ?? "Unassigned"}</td>
+                        <td data-label="Phase" className="px-5 py-3.5 text-center capitalize text-theme-secondary-text">{incident.phase_type || "—"}</td>
+                        <td data-label="Status" className="px-5 py-3.5 text-center">
+                          <span title={incidentOutcome(incident).detail ?? undefined}><Badge tone={incidentTone(incident)}>{incidentOutcome(incident).label}</Badge></span>
                         </td>
-                        <td className="px-5 py-3.5 text-center text-theme-secondary-text">{incident.reason || "—"}</td>
+                        <td data-label="Reason" className="px-5 py-3.5 text-center text-theme-secondary-text">{incident.reason || "—"}</td>
                       </tr>
                     ))
                   ) : (
@@ -729,10 +728,10 @@ export function AdminView({ section }: { section: string }) {
       )}
 
       {section === "Team" && (
-        <Card className="flex min-h-[calc(100vh-170px)] flex-col">
+        <Card className="flex min-w-0 flex-col">
           <div className="mb-5 flex shrink-0 flex-wrap items-center justify-between gap-4">
             <div>
-              <p className="text-base font-bold text-theme-text">All Accounts</p>
+              <h2 className="text-base font-bold text-theme-text">All Accounts</h2>
               <p className="mt-1 text-xs leading-5 text-theme-muted">Manage administrator and manager access.</p>
             </div>
 
@@ -758,7 +757,7 @@ export function AdminView({ section }: { section: string }) {
             <div className="grid min-h-[300px] flex-1 place-items-center rounded-xl border border-dashed border-theme-border text-sm text-theme-muted">Loading accounts…</div>
           ) : (
             <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-theme-border/70">
-              <table className="w-full min-w-[820px] border-collapse text-sm">
+              <table role="table" className="responsive-table w-full min-w-[820px] border-collapse text-sm">
                 <thead className="sticky top-0 z-10 bg-theme-surface-secondary">
                   <tr className="border-b border-theme-border/80">
                     <th className="w-[28%] px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Name</th>
@@ -775,7 +774,7 @@ export function AdminView({ section }: { section: string }) {
 
                       return (
                         <tr key={user.id} className="border-b border-theme-border/80">
-                          <td className="px-5 py-[18px] text-center">
+                          <td data-label="Name" className="px-5 py-[18px] text-center">
                             <div className="flex items-center justify-center gap-2.5">
                               <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-theme-accent-soft text-xs font-bold uppercase text-theme-accent">
                                 {(user.full_name || user.email || "U").charAt(0)}
@@ -783,18 +782,18 @@ export function AdminView({ section }: { section: string }) {
 
                               <div className="text-center">
                                 <p className="font-semibold text-theme-text">{user.full_name || "Unnamed"}</p>
-                                {isCurrentUser && <p className="mt-0.5 text-[11px] text-theme-accent">Current account</p>}
+                                {isCurrentUser && <p className="mt-0.5 text-xs text-theme-accent">Current account</p>}
                               </div>
                             </div>
                           </td>
 
-                          <td className="px-5 py-[18px] text-center text-theme-secondary-text">{user.email}</td>
+                          <td data-label="Email" className="px-5 py-[18px] text-center text-theme-secondary-text">{user.email}</td>
 
-                          <td className="px-5 py-[18px] text-center">
-                            <span className="inline-flex min-w-[88px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold capitalize text-theme-accent">{user.role}</span>
+                          <td data-label="Role" className="px-5 py-[18px] text-center">
+                            <span className="inline-flex rounded-full bg-theme-surface-secondary px-2.5 py-1 text-xs font-semibold capitalize text-theme-muted">{user.role}</span>
                           </td>
 
-                          <td className="px-5 py-[18px] text-center">
+                          <td data-label="Actions" className="px-5 py-[18px] text-center">
                             <div className="flex items-center justify-center gap-2">
                               <button
                                 type="button"
@@ -840,17 +839,17 @@ export function AdminView({ section }: { section: string }) {
       {section === "System settings" && (
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Card><p className="text-sm text-theme-muted">Greenhouses active</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p><p className="mt-1 text-xs text-theme-subtle">Currently active sites</p></Card>
-            <Card><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p></Card>
-            <Card><p className="text-sm text-theme-muted">Open incidents</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{openIncidents}</p><p className="mt-1 text-xs text-theme-subtle">Requires attention</p></Card>
-            <Card><p className="text-sm text-theme-muted">Users</p><p className="mt-2 font-mono text-3xl font-bold text-theme-text">{team?.length ?? "—"}</p><p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p></Card>
+            <Card><p className="text-sm text-theme-muted">Greenhouses active</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p><p className="mt-1 text-xs text-theme-subtle">Currently active sites</p></Card>
+            <Card><p className="text-sm text-theme-muted">Sensors online</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p><p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p></Card>
+            <Card><p className="text-sm text-theme-muted">Open incidents</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p><p className="mt-1 text-xs text-theme-subtle">Requires attention</p></Card>
+            <Card><p className="text-sm text-theme-muted">Users</p><p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team?.length ?? "—"}</p><p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p></Card>
           </div>
 
           <div className="grid items-stretch gap-5 xl:grid-cols-2">
             <Card className="min-w-0">
               <div className="mb-5 flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">Monitoring configuration</p></div>
+                  <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h2 className="text-base font-bold text-theme-text">Monitoring configuration</h2></div>
                   <p className="mt-1 text-xs leading-5 text-theme-muted">System monitoring rules applied to configured greenhouse schedules.</p>
                 </div>
                 <button type="button" onClick={() => setMonitoringEditOpen(true)} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Eye size={14} /> View</button>
@@ -874,8 +873,8 @@ export function AdminView({ section }: { section: string }) {
                 <span
                   className={
                     gatewayConfigured
-                      ? "rounded-full border border-theme-accent/40 bg-theme-accent-soft px-2.5 py-1 font-semibold text-theme-accent"
-                      : "rounded-full border border-theme-danger/30 bg-theme-danger/10 px-2.5 py-1 font-semibold text-theme-danger"
+                      ? "status-success rounded-full border px-2.5 py-1 font-semibold"
+                      : "status-warning rounded-full border px-2.5 py-1 font-semibold"
                   }
                 >
                   {savedSmsDispatchMode === "local" ? "Managed on Raspberry Pi" : gatewayConfigured
@@ -921,7 +920,7 @@ export function AdminView({ section }: { section: string }) {
           <Card>
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><p className="text-base font-bold text-theme-text">System configuration</p></div>
+                <div className="flex items-center gap-2"><Database size={18} className="shrink-0 text-theme-accent" /><h2 className="text-base font-bold text-theme-text">System configuration</h2></div>
                 <p className="mt-1 text-xs leading-5 text-theme-muted">Sender name, offline threshold and the phase schedule every greenhouse starts from. Lux thresholds themselves remain fixed, unaffected by this.</p>
               </div>
               <button type="button" onClick={() => { setDefaultsMessage(""); setDefaultsError(null); setDefaultsEditOpen(true); }} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-theme-accent px-3 py-2 text-xs font-semibold text-theme-accent transition hover:bg-theme-accent-soft"><Pencil size={14} /> Edit</button>
@@ -1044,8 +1043,8 @@ export function AdminView({ section }: { section: string }) {
             <div className="mb-5"><p className="font-bold text-theme-text">All sensors</p><p className="mt-1 text-sm text-theme-muted">Latest reading from every sensor, including unassigned sensors and readings outside monitoring hours. Refreshes every 10 seconds, most recent first.</p></div>
             {monitoring.sensorError && <p role="status" className="mb-4 text-sm text-theme-danger">Sensor readings could not be refreshed. Retained readings may be stale.</p>}
             <div className="min-w-0 overflow-x-auto rounded-xl border border-theme-border/70">
-              <table className="w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
-                <tbody>{allSensors.length ? allSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux === null ? "No reading yet" : `${reading.lux.toFixed(2)} lx`}</td><td className="px-5 py-3.5 text-center"><span className="inline-flex min-w-[82px] justify-center rounded-full bg-theme-accent-soft px-2.5 py-1 text-[11px] font-semibold text-theme-accent">{reading.health}</span></td><td className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{reading.recorded_at ? new Date(reading.recorded_at).toLocaleString() : "—"}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">{monitoring.loading ? "Loading sensors…" : monitoring.sensorError ? "Sensor readings unavailable." : "No sensors registered yet."}</td></tr>}</tbody>
+              <table role="table" className="responsive-table w-full min-w-[760px] border-collapse text-sm"><thead className="bg-theme-surface-secondary"><tr className="border-b border-theme-border/80"><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Sensor ID</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Latest lux</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Status</th><th className="px-5 py-3 text-center text-xs font-semibold uppercase tracking-wide text-theme-muted">Recorded</th></tr></thead>
+                <tbody>{allSensors.length ? allSensors.map(reading => <tr key={`${reading.sensor_id}-${reading.recorded_at}`} className="border-b border-theme-border last:border-0"><td data-label="Sensor ID" className="px-5 py-3.5 text-center font-mono text-xs font-medium text-theme-text">{reading.sensor_id}</td><td data-label="Latest lux" className="px-5 py-3.5 text-center font-mono font-semibold text-theme-text">{reading.lux === null ? "No reading yet" : `${reading.lux.toFixed(2)} lx`}</td><td data-label="Status" className="px-5 py-3.5 text-center"><Badge tone={healthTone(reading.health)}>{reading.health}</Badge></td><td data-label="Recorded" className="px-5 py-3.5 text-center whitespace-nowrap text-theme-secondary-text">{reading.recorded_at ? new Date(reading.recorded_at).toLocaleString() : "—"}</td></tr>) : <tr><td colSpan={4} className="px-5 py-10 text-center text-sm text-theme-muted">{monitoring.loading ? "Loading sensors…" : monitoring.sensorError ? "Sensor readings unavailable." : "No sensors registered yet."}</td></tr>}</tbody>
               </table>
             </div>
           </Card>
@@ -1062,25 +1061,25 @@ export function AdminView({ section }: { section: string }) {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Card>
               <p className="text-sm text-theme-muted">Greenhouses active</p>
-              <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{greenhouseLoading ? "—" : activeGreenhouses}</p>
               <p className="mt-1 text-xs text-theme-subtle">Currently active sites</p>
             </Card>
 
             <Card>
               <p className="text-sm text-theme-muted">Sensors online</p>
-              <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{reportingSensors}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{reportingSensors}</p>
               <p className="mt-1 text-xs text-theme-subtle">Within the configured offline threshold</p>
             </Card>
 
             <Card>
               <p className="text-sm text-theme-muted">Open incidents</p>
-              <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{openIncidents}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{openIncidents}</p>
               <p className="mt-1 text-xs text-theme-subtle">Requires attention</p>
             </Card>
 
             <Card>
               <p className="text-sm text-theme-muted">Users</p>
-              <p className="mt-2 font-mono text-3xl font-bold text-theme-text">{team ? team.length : "—"}</p>
+              <p className="mt-1 text-3xl font-bold tabular-nums text-theme-text">{team ? team.length : "—"}</p>
               <p className="mt-1 text-xs text-theme-subtle">Admin and manager accounts</p>
             </Card>
           </div>

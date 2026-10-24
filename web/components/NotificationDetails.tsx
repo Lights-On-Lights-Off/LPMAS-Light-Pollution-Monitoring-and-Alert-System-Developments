@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { Badge, deliveryTone } from "./ui";
 import { supabase } from "@/lib/supabase";
 export type NotificationJob = {
   id:string;source?:string;send_number?:number;greenhouse_alert_uid:string;event:string;channel:string;
@@ -55,10 +56,10 @@ export function NotificationDetails({episodeId,jobs}: {episodeId:string;jobs:Not
       const cooldown=latest ? Math.max(0,Math.ceil((Date.parse(latest.created_at)+30_000-now)/1000)) : 0;
       const eligible=job.status === "failed" && (!latest || latest.status === "failed");
       return <div key={`${source}-${job.id}`} className="border-b border-theme-border pb-4 text-sm">
-        <p className="font-semibold">{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: {currentStatus === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : currentStatus}</p>
+        <p className="font-semibold">{job.event === "closed" ? "Closure" : job.event === "recovered" ? "Recovery" : "Opening"} {source === "local" ? "local " : ""}{job.channel.toUpperCase()}{job.send_number ? ` #${job.send_number}` : ""}: <Badge tone={deliveryTone(currentStatus)}>{currentStatus === "accepted" ? "Accepted by provider; recipient delivery unconfirmed" : currentStatus}</Badge></p>
         <p className="mt-1 break-words">{latest ? `Original attempt: ${job.status} · ` : ""}{job.recipient || "Recipient unavailable"}{job.attempted_at ? ` · ${new Date(job.attempted_at).toLocaleString()}` : ""} · {job.attempts} sending attempt{job.attempts === 1 ? "" : "s"}</p>
         {job.detail && <p className="mt-1 text-theme-muted">{job.detail}</p>}
-        {history.length>0 && <div className="mt-3 space-y-2 border-l-2 border-theme-border pl-3"><p className="font-semibold">Manual resends</p>{history.map(r => <div key={r.id}><p className="capitalize">{r.status} · {new Date(r.created_at).toLocaleString()}</p><p className="break-words text-xs text-theme-muted">{r.recipient} · {r.detail}</p></div>)}</div>}
+        {history.length>0 && <div className="mt-3 space-y-2 border-l-2 border-theme-border pl-3"><p className="font-semibold">Manual resends</p>{history.map(r => <div key={r.id}><p className="capitalize"><Badge tone={deliveryTone(r.status)}>{r.status}</Badge> · {new Date(r.created_at).toLocaleString()}</p><p className="break-words text-xs text-theme-muted">{r.recipient} · {r.detail}</p></div>)}</div>}
         {eligible && <button type="button" disabled={busy !== null || !ready || cooldown>0} onClick={() => void retry(job)} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-theme-accent px-3 py-2 font-semibold text-theme-accent hover:bg-theme-accent-soft focus-visible:ring-2 focus-visible:ring-theme-accent disabled:opacity-50"><RefreshCw size={16} aria-hidden="true"/>{busy === job.id ? "Retrying…" : cooldown>0 ? `Retry in ${cooldown}s` : `Retry ${job.channel.toUpperCase()}`}</button>}
       </div>;
     })}

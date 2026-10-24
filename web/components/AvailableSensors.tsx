@@ -1,5 +1,5 @@
 "use client";
-import { Badge, Card } from "@/components/ui";
+import { healthTone, Badge, Card } from "@/components/ui";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { formatLastSeen,formatLux } from "@/lib/sensor-list";
 export function AvailableSensors({greenhouseId}: {greenhouseId: string; intervalMs?: number}) {
@@ -17,7 +17,7 @@ export function AvailableSensors({greenhouseId}: {greenhouseId: string; interval
         const status = sensorHealthById[id] ?? "Unknown";
         return <div key={id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-theme-border p-3">
           <div><p className="font-mono text-sm text-theme-text">{id}</p><p className="mt-1 text-xs text-theme-muted">{sensor ? `${formatLux(sensor.lux)} minute average · last reading ${formatLastSeen(sensor.last_reading_at,Date.now())}` : "No recorded measurement"}</p></div>
-          <Badge tone={status === "Online" ? "green" : status === "Offline" ? "red" : "slate"}>{status}</Badge>
+          <Badge tone={healthTone(status)}>{status}</Badge>
         </div>;
       })}
       {!ids.length && <p className="py-4 text-sm text-theme-muted">{loading ? "Checking sensors…" : "No sensors assigned to this greenhouse."}</p>}

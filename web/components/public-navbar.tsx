@@ -16,7 +16,7 @@ export function PublicNavbar() {
   }, [menuOpen]);
 
   return <header className="glass-navbar public-header sticky top-0 z-50 w-full border-b">
-    <nav aria-label="Main navigation" className="flex h-[72px] w-full items-center justify-between px-4 sm:px-6 lg:px-8">
+    <nav aria-label="Main navigation" className="flex h-16 lg:h-[72px] w-full items-center justify-between px-4 sm:px-6 lg:px-8">
       <Link href="/" className="flex min-w-0 items-center gap-3">
         <Image width={48} height={48} src="/Hayag-logo.png" alt="Hayag logo" className="h-9 w-9 shrink-0 rounded-xl object-contain" />
         <div className="min-w-0">
@@ -38,7 +38,7 @@ export function PublicNavbar() {
       </button>
     </nav>
 
-    {menuOpen && <div id="public-menu" className="glass-card-strong max-h-[calc(100dvh-72px)] overflow-y-auto space-y-1 border-t px-5 py-4 lg:hidden">
+    {menuOpen && <div id="public-menu" className="glass-card-strong max-h-[calc(100dvh-64px-env(safe-area-inset-top))] overflow-y-auto space-y-1 border-t px-5 py-4 lg:hidden">
       <Link href="/about" onClick={() => setMenuOpen(false)} className="block rounded-xl px-3 py-3 text-sm text-primary transition hover:bg-white/20">About</Link>
       <Link href="/about#features" onClick={() => setMenuOpen(false)} className="block rounded-xl px-3 py-3 text-sm text-primary transition hover:bg-white/20">Features</Link>
       <Link href="/about#how-it-works" onClick={() => setMenuOpen(false)} className="block rounded-xl px-3 py-3 text-sm text-primary transition hover:bg-white/20">How it works</Link>
