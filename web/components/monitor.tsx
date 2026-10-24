@@ -10,7 +10,7 @@ import { MonitoringStatus } from "@/components/MonitoringStatus";
 import { phaseForGreenhouse } from "@/lib/monitoring-state";
 
 const LINE_COLORS = ["var(--accent)", "var(--warning)", "var(--success)", "var(--danger)", "var(--text-secondary)"];
-const STATUS_COLORS = { safe: "var(--success)", warning: "var(--warning)", violation: "var(--danger)", unclassified: "var(--text-muted)" } as const;
+const STATUS_COLORS = { safe: "var(--success)", warning: "var(--warning)", violation: "var(--danger)", unclassified: "var(--warning)" } as const;
 
 // The two fixed lux thresholds that separate safe / warning / violation for
 // a given phase, drawn as reference lines on the chart. Matches the
@@ -163,14 +163,14 @@ export function Monitor() {
     <a href="#monitor-content" className="skip-link">Skip to monitoring data</a>
     <PublicNavbar />
 
-    <div id="monitor-content" tabIndex={-1} className="page-container">
-      <header className="mb-6">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-theme-muted">Greenhouse monitoring</p>
-        <h1 className="text-2xl font-bold text-theme-text sm:text-3xl">Light at a glance</h1>
-        <p className="mt-2 max-w-2xl text-sm text-theme-muted">Track light intensity, sensor health, and incidents across your greenhouses.</p>
-      </header>
-      <MonitoringStatus />
-      <div className="mb-5">{greenhouses.length > 0 && <div className="grid w-full min-w-0 gap-3 sm:w-auto sm:grid-cols-2">
+    <div id="monitor-content" tabIndex={-1} className="page-container public-monitor">
+      <header className="mb-3 grid items-end gap-3 lg:grid-cols-2">
+        <div className="min-w-0">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-theme-muted">Greenhouse monitoring</p>
+          <h1 className="text-2xl font-bold text-theme-text">Light at a glance</h1>
+          <p className="mt-1 max-w-2xl text-xs sm:text-sm text-theme-muted">Track light intensity, sensor health, and incidents across your greenhouses.</p>
+        </div>
+        <div className="min-w-0">{greenhouses.length > 0 && <div className="grid w-full min-w-0 grid-cols-2 gap-3">
               <label className="min-w-0 text-xs font-medium text-theme-muted">Greenhouse<select value={selectedGreenhouse} onChange={e => handleGreenhouseChange(e.target.value)} aria-label="Select greenhouse" className="mt-1 block w-full min-w-0 rounded-lg border border-metal-700 bg-metal-800 px-3 py-2 text-sm text-metal-50">
                 {greenhouses.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select></label>
@@ -180,6 +180,8 @@ export function Monitor() {
                 {configuredSensorIds.map(id => <option key={id} value={id}>{id}</option>)}
               </select></label>
             </div>}</div>
+      </header>
+      <div className="mb-3"><MonitoringStatus compact /></div>
       <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <Card className="h-full">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -188,13 +190,10 @@ export function Monitor() {
                 <h2 className="font-bold text-metal-50">Minute-average lux history</h2>
                 {asOf && <span className="text-xs text-metal-500">as of {new Date(asOf).toLocaleString()}</span>}
               </div>
-              <p className="mt-1 text-sm text-metal-400">{greenhouse ? `One point per minute from ${greenhouse.name}. The current minute updates as readings arrive.` : "System configuration required before monitoring begins"}</p>
             </div>
-
-
           </div>
 
-          <div className="chart-frame relative mt-6">
+          <div className="chart-frame relative mt-3">
             {!greenhouse ? <div className="grid h-full place-items-center text-center">
               <div>
                 <p className="text-sm text-metal-400">System not configured</p>
@@ -221,12 +220,13 @@ export function Monitor() {
                 <YAxis
                   tick={{ fontSize: 12, fill: "var(--text-muted)" }}
                   width={44}
+                  tickFormatter={value => Number(value).toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 })}
                   tickLine={false}
                   axisLine={false}
                   domain={[0, (dataMax: number) => Math.max(dataMax, ...thresholdLines.map(line => line.value)) + 20]}
                   allowDecimals={false}
                 />
-                <Tooltip
+                <Tooltip position={{ x: 12, y: 8 }}
                   contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }}
                   labelFormatter={value => new Date(value as number).toLocaleTimeString()}
                   formatter={(value: number, name: string) => [`${value.toFixed(1)} lux`, name]}
@@ -257,6 +257,7 @@ export function Monitor() {
               </LineChart>
             </ResponsiveContainer>}
           </div>
+          <p className="mt-3 text-xs text-metal-400">{greenhouse ? `One point per minute from ${greenhouse.name}. The current minute updates as readings arrive.` : "System configuration required before monitoring begins"}</p>
           <p className="mt-3 text-xs text-theme-muted">Intensity in lux · one-minute averages · dashed reference lines show phase thresholds.</p>
         </Card>
 
@@ -282,7 +283,7 @@ export function Monitor() {
                     <Pie isAnimationActive={false} data={distribution} dataKey="value" nameKey="label" innerRadius={34} outerRadius={56} paddingAngle={2}>
                       {distribution.map(d => <Cell key={d.name} fill={STATUS_COLORS[d.name as keyof typeof STATUS_COLORS]} />)}
                     </Pie>
-                    <Tooltip contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }} />
+                    <Tooltip position={{ x: 12, y: 8 }} contentStyle={{ borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--surface-border)", color: "var(--text-primary)" }} />
                   </PieChart>
                 </ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No phase status available</div>}
               </div>
@@ -322,7 +323,7 @@ export function Monitor() {
               {selectedReadings.length ? selectedReadings.map(reading => <tr key={reading.id} className="border-b border-metal-700 last:border-0">
                 <td className="p-3 text-metal-100">{greenhouse?.name ?? "—"}</td>
                 <td className="p-3 text-metal-400">{reading.sensor_id}</td>
-                <td className="p-3"><Badge tone={reading.classification === "unclassified" ? "slate" : reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge></td>
+                <td className="p-3"><Badge tone={reading.classification === "unclassified" ? "amber" : reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge></td>
                 <td className="p-3 font-mono text-metal-100">{reading.lux.toFixed(2)}</td>
                 <td className="p-3 text-metal-400">{reading.phase_type}</td>
                 <td className="p-3 text-metal-400">{new Date(reading.recorded_at).toLocaleString()}</td>
@@ -338,7 +339,7 @@ export function Monitor() {
           {selectedReadings.length ? selectedReadings.map(reading => <article key={reading.id} className="rounded-xl border border-theme-border p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="break-all text-sm font-semibold text-theme-text">{reading.sensor_id}</h3>
-              <Badge tone={reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : reading.classification === "unclassified" ? "slate" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge>
+              <Badge tone={reading.classification === "violation" ? "red" : reading.classification === "warning" ? "amber" : reading.classification === "unclassified" ? "amber" : "green"}>{reading.classification === "unclassified" ? "Outside configured phase" : reading.classification}</Badge>
             </div>
             <p className="mt-3 font-mono text-2xl text-theme-text">{reading.lux.toFixed(2)} <span className="text-sm text-theme-muted">lux</span></p>
             <div className="mt-3 space-y-2 text-xs">
@@ -356,7 +357,7 @@ export function Monitor() {
 function Kpi({ label, value, tone }: { label: string; value: number; tone?: "red" }) {
   return <div className="rounded-xl border border-metal-700 bg-white/[0.02] p-3">
     <p className="text-xs text-metal-400">{label}</p>
-    <p className={`mt-2 font-mono text-3xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
+    <p className={`mt-1 text-3xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
   </div>;
 }
 

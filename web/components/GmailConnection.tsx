@@ -47,7 +47,7 @@ export function GmailConnection({ recipientEmails }: { recipientEmails: string[]
   return <div className="mt-4 border-t border-theme-border/70 pt-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-sm font-semibold text-theme-text">Gmail alerts</p>
-      <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${status === "authorized" ? "border-theme-accent/40 bg-theme-accent-soft text-theme-accent" : "border-theme-border text-theme-muted"}`}>{label}</span>
+      <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${status === "authorized" ? "status-success" : "status-warning"}`}>{label}</span>
     </div>
     {sender && <p className="mt-2 break-all text-sm text-theme-text">Authorized sender: {sender}</p>}
     <p role="status" className="mt-2 text-xs text-theme-muted">{notice}</p>

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Badge, Card } from "./ui";
+import { incidentTone, Badge, Card } from "./ui";
 import { acknowledgeIncident, type Incident, type Reading } from "@/lib/api";
 import { useDashboardData } from "@/lib/useDashboardData";
 import { supabase } from "@/lib/supabase";
@@ -99,32 +99,32 @@ export function IncidentList({ greenhouseId }: { greenhouseId: string }) {
         <p role="alert" className="mt-3 text-sm text-theme-danger">{error}</p>
       )}
       <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[700px] text-left text-sm">
+        <table role="table" className="responsive-table w-full min-w-[700px] text-left text-sm">
           <thead className="border-b border-theme-border text-theme-muted"><tr>
             <th className="p-3">Greenhouse incident</th><th className="p-3">Opened</th><th className="p-3">Status</th><th className="p-3">Notifications</th>
           </tr></thead>
           <tbody>{episodes.map(episode => <tr key={episode.incident_uid} className="border-b border-theme-border">
-            <td className="p-3 font-mono text-xs">{episode.incident_uid.slice(0,12)}</td>
-            <td className="p-3">{new Date(episode.opened_at).toLocaleString()}</td>
-            <td className="p-3 capitalize">{episode.status}</td>
-            <td className="p-3"><button className="rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setNotificationEpisode(episode.incident_uid)}>View Details</button></td>
+            <td data-label="Greenhouse incident" className="p-3 font-mono text-xs">{episode.incident_uid.slice(0,12)}</td>
+            <td data-label="Opened" className="p-3">{new Date(episode.opened_at).toLocaleString()}</td>
+            <td data-label="Status" className="p-3 capitalize"><Badge tone={episode.status === "open" ? "red" : episode.status === "resolved" ? "green" : "amber"}>{episode.status}</Badge></td>
+            <td data-label="Notifications" className="p-3"><button className="rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setNotificationEpisode(episode.incident_uid)}>View Details</button></td>
           </tr>)}{!episodes.length && <tr><td colSpan={4} className="p-5 text-center text-theme-muted">No greenhouse alerts recorded.</td></tr>}</tbody>
         </table>
       </div>
       <p className="mt-3 text-xs text-theme-muted">SMS and email outcomes are recorded separately. Pending emails remain queued after closure. Failed notifications can be resent manually from View Details.</p>
       <h3 className="mt-5 font-semibold text-theme-text">Sensor incidents</h3>
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full min-w-[800px] text-left text-sm">
+        <table role="table" className="responsive-table w-full min-w-[800px] text-left text-sm">
           <thead className="border-b border-theme-border text-theme-muted"><tr>
             <th className="p-3">Sensor</th><th className="p-3">Phase</th><th className="p-3">Opened</th><th className="p-3">Closed / resolved</th><th className="p-3">Status</th><th className="p-3">Actions</th>
           </tr></thead>
           <tbody>{incidents.slice(0,30).map(i => {
             const outcome = incidentOutcome(i);
             return <tr key={i.incident_uid ?? i.id} className="border-b border-theme-border">
-              <td className="p-3 font-mono text-xs">{i.sensor_id}</td><td className="p-3 capitalize">{i.phase_type}</td>
-              <td className="p-3">{new Date(i.opened_at).toLocaleString()}</td><td className="p-3">{i.resolved_at ? new Date(i.resolved_at).toLocaleString() : "—"}</td>
-              <td className="p-3"><Badge tone={i.status === "resolved" ? "green" : "amber"}>{outcome.label}</Badge></td>
-              <td className="p-3"><div className="flex items-center gap-2">
+              <td data-label="Sensor" className="p-3 font-mono text-xs">{i.sensor_id}</td><td data-label="Phase" className="p-3 capitalize">{i.phase_type}</td>
+              <td data-label="Opened" className="p-3">{new Date(i.opened_at).toLocaleString()}</td><td data-label="Closed / resolved" className="p-3">{i.resolved_at ? new Date(i.resolved_at).toLocaleString() : "—"}</td>
+              <td data-label="Status" className="p-3"><Badge tone={incidentTone(i)}>{outcome.label}</Badge></td>
+              <td data-label="Actions" className="p-3"><div className="flex items-center gap-2">
                 <button className="whitespace-nowrap rounded-lg border border-theme-border px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-theme-accent" onClick={() => setDetails(i)}>View Details</button>
                 {i.status === "open" && <button disabled={busy !== null} onClick={() => { setAcknowledgeTarget(i); setDescription(""); setAcknowledgeError(null); }} className="rounded-lg border border-theme-border px-3 py-2 font-semibold disabled:opacity-50">{busy === i.id ? "Acknowledging…" : "Acknowledge"}</button>}
               </div></td>
