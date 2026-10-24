@@ -91,14 +91,14 @@ export default function ResetPasswordPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-leaf-900 p-5">
+    <main className="auth-page relative flex min-h-screen flex-col items-center justify-center gap-5 bg-leaf-900 px-4 py-5 sm:px-5">
       <div className="absolute inset-0 opacity-15 [background-image:radial-gradient(circle_at_20%_25%,#d9a441_0,transparent_30%),radial-gradient(circle_at_85%_80%,#8f631f_0,transparent_22%)]" />
 
-      <Link href="/" className="absolute left-5 top-5 z-10 flex items-center gap-2 text-sm text-metal-300 hover:text-metal-50">
+      <Link href="/" className="z-10 flex min-h-11 w-full max-w-md items-center gap-2 text-sm text-metal-300 hover:text-metal-50">
         <ArrowLeft size={17} /> Back to home
       </Link>
 
-      <div className="metal-panel relative w-full max-w-md rounded-3xl border border-metal-600 p-8 shadow-soft">
+      <div className="metal-panel relative w-full max-w-md rounded-3xl border border-metal-600 p-5 shadow-soft sm:p-8">
         <img src="/Hayag-logo.png" alt="LPMAS" className="mx-auto h-14 w-14 object-contain" />
         <h1 className="mt-5 text-center text-2xl font-bold text-metal-50">Choose a new password</h1>
 
@@ -106,10 +106,10 @@ export default function ResetPasswordPage() {
           <p className="mt-6 text-center text-sm text-metal-400">Checking your reset link…</p>
         ) : status === "error" ? (
           <>
-            <p className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{message}</p>
+            <p className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-theme-danger">{message}</p>
             <Link
               href="/forgot-password"
-              className="mt-6 block w-full rounded-xl bg-leaf-500 py-3 text-center font-semibold text-ink hover:bg-leaf-100"
+              className="mt-6 block w-full rounded-xl bg-leaf-500 py-3 text-center font-semibold text-theme-accent-foreground hover:bg-leaf-600"
             >
               Request a new link
             </Link>
@@ -152,11 +152,11 @@ export default function ResetPasswordPage() {
               />
             </div>
 
-            {message && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{message}</p>}
+            {message && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-theme-danger">{message}</p>}
 
             <button
               disabled={status === "submitting"}
-              className="mt-6 w-full rounded-xl bg-leaf-500 py-3 font-semibold text-ink hover:bg-leaf-100 disabled:opacity-60"
+              className="mt-6 w-full rounded-xl bg-leaf-500 py-3 font-semibold text-theme-accent-foreground hover:bg-leaf-600 disabled:opacity-60"
             >
               {status === "submitting" ? "Updating…" : "Update password"}
             </button>

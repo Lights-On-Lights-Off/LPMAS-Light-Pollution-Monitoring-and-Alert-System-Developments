@@ -20,7 +20,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Badge, Card, EmptyRow } from "../ui";
+import { Badge, healthTone, Card, EmptyRow } from "../ui";
 import { MonitoringStatus } from "../MonitoringStatus";
 import { IncidentList } from "../IncidentList";
 import { useDashboardData } from "@/lib/useDashboardData";
@@ -205,8 +205,8 @@ export function ManagerOverview(
   }
 
   return (
-    <div className="dashboard-content space-y-6">
-      <MonitoringStatus />
+    <div className="dashboard-content space-y-4">
+      <MonitoringStatus compact />
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">
@@ -235,7 +235,7 @@ export function ManagerOverview(
         </select>
       </label>
 
-      <div className="grid gap-5 md:grid-cols-3">
+      <div className="manager-kpis grid grid-cols-3 gap-3 sm:grid-cols-3">
         <SummaryCard
           icon={<Radio size={18} />}
           label="Sensors Reporting"
@@ -268,9 +268,7 @@ export function ManagerOverview(
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                Current or latest monitoring window only. One point per minute, refreshed every 10 seconds.
-              </p>
+
               <p className="mt-1 text-xs text-theme-muted">{chartWindow ? `${chartWindow.active ? "Current" : "Latest"} ${chartWindow.phase} window: ${displayTime(chartWindow.start)} – ${displayTime(chartWindow.end - 60_000)} (Asia/Manila)` : "No monitoring window available for the active phase."}</p>
             </div>
             <label className="flex items-center gap-2 text-sm text-theme-text">
@@ -286,7 +284,7 @@ export function ManagerOverview(
               History unavailable; retained points may be stale.
             </p>
           )}
-          <div className="chart-frame mt-6">
+          <div className="chart-frame mt-3">
             {chartData.length
               ? (
                 <ResponsiveContainer width="100%" height="100%">
@@ -340,9 +338,9 @@ export function ManagerOverview(
                       ticks={logarithmic ? logTicks : undefined}
                       domain={[logarithmic ? 1 : 0, (max: number) => Math.max(max, (selectedPhase === "dark" ? 30 : 50) + (logarithmic ? 1 : 0)) + 10]}
                       allowDecimals={false}
-                      tickFormatter={value => (logarithmic ? Number(value) - 1 : Number(value)).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                      tickFormatter={value => (logarithmic ? Number(value) - 1 : Number(value)).toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 })}
                     />
-                    <Tooltip
+                    <Tooltip position={{ x: 12, y: 8 }}
                       labelFormatter={value => new Date(Number(value)).toLocaleString()}
                       formatter={(value: number, name: string) => [`${(logarithmic ? value - 1 : value).toFixed(2)} lux`, name]}
                       contentStyle={{
@@ -398,6 +396,7 @@ export function ManagerOverview(
                 </div>
               )}
           </div>
+          <p className="mt-3 text-xs text-theme-muted">Current or latest monitoring window only. One point per minute, refreshed every 10 seconds.</p>
           <p className="mt-3 text-xs text-theme-muted">Actual intensity in lux · dashed lines show safe and violation boundaries. {logarithmic ? "Logarithmic spacing keeps low readings visible alongside spikes, including zero-lux readings." : "Linear spacing shows absolute lux differences."}</p>
         </Card>
 
@@ -517,7 +516,7 @@ export function ManagerOverview(
                       </td>
                       <td className="p-3">
                         <Badge
-                          tone={monitoring.sensorHealthById[r.sensor_id] === "Online" ? "green" : monitoring.sensorHealthById[r.sensor_id] === "Offline" ? "red" : "slate"}
+                          tone={healthTone(monitoring.sensorHealthById[r.sensor_id] ?? "Unknown")}
                         >
                           {monitoring.sensorHealthById[r.sensor_id] ?? "Unknown"}
                         </Badge>
@@ -588,16 +587,16 @@ function SummaryCard(
   },
 ) {
   return (
-    <Card className="min-h-0">
-      <div className="flex items-center gap-3">
-        <span className="rounded-xl bg-white/[0.04] p-2 text-[var(--muted-foreground)]">
+    <Card compact className="min-h-0">
+      <div className="flex items-center gap-2 sm:gap-3">
+        <span className="hidden rounded-xl bg-white/[0.04] p-2 sm:inline-flex text-[var(--muted-foreground)]">
           {icon}
         </span>
         <div>
           <p className="text-sm text-[var(--muted-foreground)]">{label}</p>
           <p
-            className={`mt-1 font-mono text-2xl font-bold ${
-              danger ? "text-red-400" : "text-[var(--foreground)]"
+            className={`mt-0.5 text-2xl font-bold tabular-nums ${
+              danger ? "text-theme-danger" : "text-[var(--foreground)]"
             }`}
           >
             {value}
@@ -620,7 +619,7 @@ function ReportRow(
       <span className="text-sm text-[var(--muted-foreground)]">{label}</span>
       <span
         className={`max-w-[65%] text-right font-mono text-sm font-semibold ${
-          danger ? "text-red-400" : "text-[var(--foreground)]"
+          danger ? "text-theme-danger" : "text-[var(--foreground)]"
         }`}
       >
         {value}

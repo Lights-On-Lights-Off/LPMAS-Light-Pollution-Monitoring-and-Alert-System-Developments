@@ -263,7 +263,7 @@ function GreenhousesView() {
   }
 
   return (
-    <div className="dashboard-content space-y-6">
+    <div className="dashboard-content space-y-4">
       {dialog}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
@@ -298,7 +298,7 @@ function GreenhousesView() {
                   <button onClick={() => openEditModal(g)} type="button" className="px-4 py-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-white/[0.04]">
                     EDIT
                   </button>
-                  <button onClick={() => handleDeleteGreenhouse(g.id)} type="button" disabled={deletingId === g.id} className="border-l border-white/[0.07] px-4 py-3 text-sm font-semibold text-red-400 transition hover:bg-red-500/[0.05] disabled:opacity-50">
+                  <button onClick={() => handleDeleteGreenhouse(g.id)} type="button" disabled={deletingId === g.id} className="border-l border-white/[0.07] px-4 py-3 text-sm font-semibold text-theme-danger transition hover:bg-red-500/[0.05] disabled:opacity-50">
                     {deletingId === g.id ? "DELETING..." : "DELETE"}
                   </button>
                 </div>
@@ -312,9 +312,9 @@ function GreenhousesView() {
 
       {modalOpen && (
         <DialogFrame title="Greenhouse configuration" onClose={closeModal} className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm">
-          <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
-            <div className="relative flex shrink-0 flex-wrap items-start justify-between gap-3">
-              <div>
+          <div className="relative flex max-h-[85dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-[var(--surface-solid)] p-4 sm:p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
+            <div className="relative flex shrink-0 items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-bold">{editingId ? "EDIT CONFIGURATION" : "CONFIGURE GREENHOUSE"}</h2>
                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">Set dates, monitoring time and assign real detected sensors.</p>
               </div>
@@ -343,7 +343,7 @@ function GreenhousesView() {
                     <input type="date" value={phaseEnd} min={phaseStart || undefined} aria-invalid={!phaseRange.ok} aria-describedby={!phaseRange.ok ? "greenhouse-phase-range-error" : undefined} onChange={e => setPhaseEnd(e.target.value)} className="w-full rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-3 text-sm outline-none ring-1 ring-[color-mix(in_srgb,var(--accent)_14%,var(--border))]" />
                   </label>
                 </div>
-                {!phaseRange.ok && <p id="greenhouse-phase-range-error" role="alert" className="mt-2 text-sm text-red-400">{phaseRange.error}</p>}
+                {!phaseRange.ok && <p id="greenhouse-phase-range-error" role="alert" className="mt-2 text-sm text-theme-danger">{phaseRange.error}</p>}
               </div>
 
               <div>
@@ -388,7 +388,7 @@ function GreenhousesView() {
                     <span>{selectedSensors.length ? `${selectedSensors.length} sensor${selectedSensors.length > 1 ? "s" : ""} selected` : "See Available Sensors"}</span>
                     <span className="text-[var(--accent)]">{sensorPickerOpen ? "▲" : "▼"}</span>
                   </button>
-                  <div className={`absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-xl bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_18%,transparent)] ${sensorPickerOpen ? "visible opacity-100" : "invisible opacity-0"}`}>
+                  <div className={`relative z-20 mt-2 overflow-hidden rounded-xl bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_18%,transparent)] ${sensorPickerOpen ? "block" : "hidden"}`}>
                     <div className="max-h-44 overflow-y-auto p-2">
                       {loading && !detectedSensors.length ? (
                         <div className="px-3 py-4 text-sm text-[var(--muted-foreground)]">Checking detected sensors...</div>
@@ -407,7 +407,7 @@ function GreenhousesView() {
                 </div>
               </div>
 
-              {saveError && <p className="text-sm text-red-400">{saveError}</p>}
+              {saveError && <p className="text-sm text-theme-danger">{saveError}</p>}
             </div>
             <div className="relative mt-7 flex shrink-0 flex-wrap justify-end gap-3">
               <button onClick={closeModal} disabled={saving} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)] disabled:opacity-50">Cancel</button>
@@ -582,7 +582,7 @@ function ActivityLogsView() {
   }
 
   return (
-    <div className="dashboard-content space-y-6">
+    <div className="dashboard-content space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Activity logs</h1>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review real hardware readings and manager-level system activity.</p>
@@ -614,7 +614,7 @@ function ActivityLogsView() {
           </div>
         </div>
 
-        {rawError && <p role="alert" className="mb-3 text-sm text-red-400">Unable to load hardware logs. {rawError}</p>}
+        {rawError && <p role="alert" className="mb-3 text-sm text-theme-danger">Unable to load hardware logs. {rawError}</p>}
 
         <div className="hidden max-h-[360px] overflow-y-auto overflow-x-auto md:block">
           <table className="w-full table-fixed text-sm leading-5">
@@ -637,7 +637,7 @@ function ActivityLogsView() {
                   <td className="px-4 py-3.5 text-center align-middle font-mono text-sm font-semibold text-metal-100">{r.lux.toFixed(2)}</td>
                   <td className="px-4 py-3.5 text-center align-middle text-sm text-metal-400">{r.phase_type}</td>
                   <td className="px-4 py-3.5 text-center align-middle">
-                    <Badge tone={r.classification === "unclassified" ? "slate" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
+                    <Badge tone={r.classification === "unclassified" ? "amber" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
                   </td>
                 </tr>
               )) : (
@@ -652,7 +652,7 @@ function ActivityLogsView() {
             <div key={r.id} className="rounded-xl border border-white/[0.07] bg-black/[0.08] p-4">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 break-all font-mono text-sm font-semibold text-[var(--foreground)]">{r.sensor_id}</p>
-                <Badge tone={r.classification === "unclassified" ? "slate" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
+                <Badge tone={r.classification === "unclassified" ? "amber" : r.classification === "safe" ? "green" : r.classification === "warning" ? "amber" : "red"}>{r.classification === "unclassified" ? "Outside configured phase" : r.classification}</Badge>
               </div>
               <div className="mt-3 space-y-1.5">
                 <CardField label="Greenhouse" value={greenhouseLabel(r.greenhouse_id)} />
@@ -683,9 +683,9 @@ function ActivityLogsView() {
 
       {exportModalOpen && (
         <DialogFrame title="Export hardware logs" onClose={closeExportModal} className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-sm">
-          <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
+          <div className="relative flex max-h-[85dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-[var(--surface-solid)] p-4 sm:p-6 text-[var(--foreground)] shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--accent)_12%,transparent)] backdrop-blur-3xl">
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-              <div>
+              <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-bold">EXPORT HARDWARE LOGS</h2>
                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">Pulls raw readings from SQLite on the Raspberry Pi for the chosen date and time range.</p>
               </div>
@@ -723,7 +723,7 @@ function ActivityLogsView() {
                   <option value="pdf">PDF</option>
                 </select>
               </label>
-              {exportError && <p className="text-sm text-red-400">{exportError}</p>}
+              {exportError && <p className="text-sm text-theme-danger">{exportError}</p>}
             </div>
             <div className="mt-7 flex shrink-0 flex-wrap justify-end gap-3">
               <button onClick={closeExportModal} className="rounded-xl bg-[color-mix(in_srgb,var(--surface)_55%,transparent)] px-4 py-2.5 text-sm font-medium text-[var(--muted-foreground)]">Cancel</button>
@@ -949,7 +949,7 @@ function RecycleBinView() {
   }
 
   return (
-    <div className="dashboard-content space-y-6">
+    <div className="dashboard-content space-y-4">
       {dialog}
       <div>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Recycle bin</h1>
@@ -961,7 +961,7 @@ function RecycleBinView() {
             onClick={handleEmptyTrash}
             type="button"
             disabled={emptying || restoring !== null || !entries.length}
-            className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,#ef4444_14%,transparent)] px-3.5 py-2 text-sm font-medium text-red-400 transition hover:bg-[color-mix(in_srgb,#ef4444_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,#ef4444_14%,transparent)] px-3.5 py-2 text-sm font-medium text-theme-danger transition hover:bg-[color-mix(in_srgb,#ef4444_22%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Trash2 size={16} />
             {emptying ? "Emptying..." : "Empty Trash"}
@@ -970,7 +970,7 @@ function RecycleBinView() {
         {loading ? (
           <div className="grid min-h-56 place-items-center text-sm text-[var(--muted-foreground)]">Loading recycle bin...</div>
         ) : error ? (
-          <div className="grid min-h-56 place-items-center text-center text-sm text-red-400">Unable to load recycle bin.<br />{error}</div>
+          <div className="grid min-h-56 place-items-center text-center text-sm text-theme-danger">Unable to load recycle bin.<br />{error}</div>
         ) : entries.length ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {entries.map(entry => (
