@@ -17,7 +17,7 @@ export function Appearance() {
 
   return <div className="appearance-page dashboard-content">
     <div className="mx-auto max-w-5xl">
-      <div className="mb-5">
+      <div className="dashboard-heading mb-5">
         <p className="text-sm font-semibold text-[var(--accent)]">Appearance</p>
         <h1 className="mt-2 text-2xl sm:text-3xl font-bold tracking-tight text-primary">Customize your interface</h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-secondary">Choose how LPMAS looks across the system. Your selections are saved automatically.</p>

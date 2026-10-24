@@ -44,7 +44,7 @@ export function GmailConnection({ recipientEmails }: { recipientEmails: string[]
   }
 
   const label = { checking: "Checking…", authorized: "Authorized", unauthorized: "Not authorized", unavailable: "Status unavailable" }[status];
-  return <div className="mt-4 border-t border-theme-border/70 pt-4">
+  return <div className="min-w-0">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-sm font-semibold text-theme-text">Gmail alerts</p>
       <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${status === "authorized" ? "status-success" : "status-warning"}`}>{label}</span>
@@ -58,7 +58,7 @@ export function GmailConnection({ recipientEmails }: { recipientEmails: string[]
       </form>
       <button type="button" onClick={() => void sendTest()} disabled={busy || !configured || status !== "authorized" || !recipientEmails.length} className="rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">{busy ? "Sending…" : `Send test email${recipientEmails.length === 1 ? "" : "s"}`}</button>
     </div>
-    <p className="mt-2 break-all text-xs text-theme-muted">{recipientEmails.length ? `Test recipients: ${recipientEmails.join(", ")}` : "Save at least one verified email recipient to enable the email test."}</p>
+    <p className="mt-2 text-xs text-theme-muted">{recipientEmails.length ? `Test emails go to ${recipientEmails.length} assigned email recipient${recipientEmails.length === 1 ? "" : "s"}. See All Recipients for addresses.` : "Save at least one verified email recipient to enable the email test."}</p>
     <details className="mt-3 rounded-lg border border-theme-border p-3">
       <summary className="cursor-pointer text-sm font-semibold text-theme-text">Preview violation and resolved emails</summary>
       <p className="mt-2 text-xs text-theme-muted">Each assigned email recipient receives one email per event with incident details and next steps. Violation SMS is sent up to three times, at least 10 seconds apart; resolution SMS is sent once. Names and incident references below are examples.</p>

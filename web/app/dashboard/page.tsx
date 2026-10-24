@@ -22,7 +22,7 @@ function DashboardContent() {
   return <div className="flex min-h-screen bg-ink">
     <a href="#dashboard-main" className="skip-link">Skip to main content</a>
     <Sidebar active={section} onNavigate={next => router.push(`/dashboard?section=${slug(next)}`)} />
-    <main id="dashboard-main" tabIndex={-1} className="min-w-0 flex-1 pt-[calc(4.5rem+env(safe-area-inset-top))] lg:pt-0">
+    <main id="dashboard-main" tabIndex={-1} className="min-w-0 flex-1 pt-[env(safe-area-inset-top)] lg:pt-0">
       {section === "Appearance" ? <Appearance /> : profile.role === "manager" ? <ManagerView section={section as "Overview"|"Greenhouses"|"Activity Logs"|"Recycle bin"} /> : <AdminView section={section} />}
     </main>
   </div>;

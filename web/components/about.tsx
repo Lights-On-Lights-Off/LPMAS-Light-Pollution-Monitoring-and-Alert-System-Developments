@@ -72,7 +72,7 @@ export function About() {
   return <main className="theme-transition w-full max-w-full overflow-x-clip bg-ink font-sans text-metal-100 antialiased">
     <PublicNavbar />
 
-    <section className="relative px-5 pb-12 pt-10 md:pb-24 md:pt-20">
+    <section className="relative px-5 pb-10 pt-8 md:pb-16 md:pt-14">
       <div className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_15%_25%,var(--theme-accent-soft),transparent_40%)]" />
 
       <div className="relative mx-auto grid max-w-6xl items-center gap-8 lg:gap-14 lg:grid-cols-[1.05fr_.95fr]">
@@ -92,16 +92,16 @@ export function About() {
       </div>
     </section>
 
-    <section id="features" className="mx-auto max-w-6xl px-5 py-12 md:py-24">
+    <section id="features" className="mx-auto max-w-6xl px-5 py-10 md:py-14">
       <h2 className="max-w-xl text-3xl font-bold tracking-tight md:text-4xl">Everything in one system</h2>
       <p className="mt-4 max-w-lg leading-7 text-metal-400">Crop phases, live sensor data, alerts and incident history in one place.</p>
 
-      <div className="mt-12 grid gap-4 md:grid-cols-2">
-        {features.map(f => <motion.article key={f.title} {...fade} whileHover={reduce ? undefined : { y: -3 }} className={`rounded-2xl border border-metal-700 bg-metal-800/60 p-6 ${f.wide ? "md:col-span-2" : ""}`}>
-          <div className={f.wide ? "flex items-start gap-6" : ""}>
-            <span className="inline-flex rounded-xl bg-leaf-500/10 p-3 text-leaf-500">{f.icon}</span>
-            <div className={f.wide ? "flex-1" : ""}>
-              <h3 className="mt-6 text-lg font-bold sm:mt-0">{f.title}</h3>
+      <div className="mt-6 grid gap-4 md:grid-cols-2">
+        {features.map(f => <motion.article key={f.title} {...fade} whileHover={reduce ? undefined : { y: -3 }} className={`rounded-2xl border border-metal-700 bg-metal-800/60 p-4 sm:p-5 ${f.wide ? "md:col-span-2" : ""}`}>
+          <div className="flex items-start gap-3">
+            <span className="inline-flex shrink-0 rounded-xl bg-leaf-500/10 p-2.5 text-leaf-500">{f.icon}</span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-lg font-semibold">{f.title}</h3>
               <p className="mt-2 leading-7 text-metal-400">{f.text}</p>
             </div>
           </div>
@@ -109,11 +109,11 @@ export function About() {
       </div>
     </section>
 
-    <section id="how-it-works" className="border-t border-metal-700 px-5 py-12 md:py-24">
+    <section id="how-it-works" className="border-t border-metal-700 px-5 py-10 md:py-14">
       <div className="mx-auto max-w-6xl">
         <h2 className="max-w-xl text-3xl font-bold tracking-tight md:text-4xl">From reading to response</h2>
 
-        <div className="mt-12 grid gap-8 md:grid-cols-3">
+        <div className="mt-6 grid gap-6 md:grid-cols-3">
           {pipeline.map((step, i) => <motion.div key={step.title} {...fade} transition={{ ...fade.transition, delay: i * 0.1 }}>
             <span className="font-mono text-sm text-leaf-500">{String(i + 1).padStart(2, "0")}</span>
             <h3 className="mt-3 text-xl font-bold">{step.title}</h3>
@@ -123,7 +123,7 @@ export function About() {
       </div>
     </section>
 
-    <section className="border-t border-metal-700 px-5 py-16">
+    <section className="border-t border-metal-700 px-5 py-10">
       <div className="mx-auto grid max-w-6xl grid-cols-2 gap-8 md:grid-cols-4">
         {stats.map(s => <div key={s.label}>
           <p className="font-mono text-3xl font-bold text-leaf-500 md:text-4xl">{s.value}</p>
@@ -132,7 +132,7 @@ export function About() {
       </div>
     </section>
 
-    <section id="about" className="border-t border-metal-700 px-5 py-12 md:py-24">
+    <section id="about" className="border-t border-metal-700 px-5 py-10 md:py-14">
       <div className="mx-auto max-w-6xl">
         <div className="max-w-3xl">
           <p className="font-mono text-sm uppercase tracking-widest text-leaf-500">About LPMAS</p>
@@ -142,20 +142,20 @@ export function About() {
           <p className="mt-5 leading-8 text-metal-400">The purpose of the system is simple: give greenhouse staff a continuous digital view of conditions that would otherwise require manual inspection, while keeping a reliable record of readings and incidents for review.</p>
         </div>
 
-        <div className="mt-12 grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-6">
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-4 sm:p-5">
             <p className="text-sm font-semibold text-leaf-500">Monitoring</p>
             <h3 className="mt-3 text-lg font-bold">Continuous sensor visibility</h3>
             <p className="mt-2 leading-7 text-metal-400">Light readings are collected from greenhouse sensor nodes and surfaced through the web monitor.</p>
           </div>
 
-          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-6">
+          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-4 sm:p-5">
             <p className="text-sm font-semibold text-leaf-500">Detection</p>
             <h3 className="mt-3 text-lg font-bold">Phase-aware evaluation</h3>
             <p className="mt-2 leading-7 text-metal-400">The monitoring rules change according to the active crop phase and its configured light requirements.</p>
           </div>
 
-          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-6">
+          <div className="rounded-2xl border border-metal-700 bg-metal-800/60 p-4 sm:p-5">
             <p className="text-sm font-semibold text-leaf-500">Response</p>
             <h3 className="mt-3 text-lg font-bold">Actionable incident history</h3>
             <p className="mt-2 leading-7 text-metal-400">Detected conditions can be logged and reviewed so staff can respond to problems and track what happened.</p>
