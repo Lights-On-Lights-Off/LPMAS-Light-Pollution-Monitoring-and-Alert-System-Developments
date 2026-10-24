@@ -652,3 +652,18 @@ select option { background: var(--background); color: var(--foreground); }
 
 
 .chart-frame { overflow: clip; }
+
+/* Content-sized cards and a consistent spacing rhythm across monitoring views. */
+.glass-card {
+  box-shadow: 0 6px 18px var(--theme-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+[data-theme="dark"] .glass-card {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+[data-surface="clay"] .glass-card {
+  box-shadow: 4px 4px 12px var(--clay-shadow-dark), -4px -4px 12px var(--clay-shadow-light);
+}
+@media (max-width: 1023px) {
+  #dashboard-main .dashboard-heading { min-height: 44px; padding-right: 3.5rem; }
+  #dashboard-main .dashboard-content { padding-top: 1rem; }
+}

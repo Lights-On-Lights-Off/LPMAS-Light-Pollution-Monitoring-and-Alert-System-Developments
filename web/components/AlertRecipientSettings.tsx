@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Phone, Plus, Trash2 } from "lucide-react";
 import { Modal } from "./Modal";
 import { GmailConnection } from "./GmailConnection";
@@ -8,7 +8,7 @@ import { MAX_ALERT_RECIPIENTS, parseAlertRecipients, type AlertRecipient } from 
 import { sanitizeLocalDigits, toLocalDigits, toInternationalNumber } from "@/lib/admin-notification-settings";
 import { logActivity } from "@/lib/activityLog";
 
-export function AlertRecipientSettings({ users, usersLoading, usersError }: { users: AdminUser[]; usersLoading: boolean; usersError: string | null }) {
+export function AlertRecipientSettings({ users, usersLoading, usersError, children }: { users: AdminUser[]; usersLoading: boolean; usersError: string | null; children?: ReactNode }) {
   const [saved, setSaved] = useState<AlertRecipient[]>([]);
   const [draft, setDraft] = useState<AlertRecipient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,6 +16,13 @@ export function AlertRecipientSettings({ users, usersLoading, usersError }: { us
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [open, setOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const viewTrigger = useRef<HTMLButtonElement>(null);
+  function closeManager() {
+    if (saving) return;
+    setOpen(false);
+    viewTrigger.current?.focus();
+  }
   const [saving, setSaving] = useState(false);
   const eligible = users.filter(user => user.email_verified && (user.role === "manager" || user.role === "admin"));
   useEffect(() => {
@@ -44,7 +51,7 @@ export function AlertRecipientSettings({ users, usersLoading, usersError }: { us
       const response = await fetch("/api/admin/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ alert_recipients: rows }), signal: AbortSignal.timeout(20_000) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Unable to save recipients.");
-      setSaved(parseAlertRecipients(body.alert_recipients)); setOpen(false);
+      setSaved(parseAlertRecipients(body.alert_recipients)); setOpen(false); viewTrigger.current?.focus();
       setNotice(rows.length ? `${rows.length} recipient${rows.length === 1 ? "" : "s"} saved. New alerts use these assignments.` : "All recipients removed. New SMS and email alerts have no assigned destinations.");
       void logActivity("UPDATE_SYSTEM_SETTING", "system_settings", "notification_recipients", { user_ids: rows.map(row => row.user_id) }).catch(() => {});
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to save recipients."); }
@@ -54,28 +61,40 @@ export function AlertRecipientSettings({ users, usersLoading, usersError }: { us
     const user = eligible.find(user => user.id === row.user_id); return user?.email ? [user.email] : [];
   }))];
   return <>
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+    <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0 flex-1"><h2 className="flex items-center gap-2 text-base font-bold text-theme-text"><Phone size={18} aria-hidden="true" className="shrink-0 text-theme-accent" />Alert Recipients — SMS &amp; Email</h2>
         <p className="mt-1 text-xs leading-5 text-theme-muted">Assign multiple verified administrators and managers. Choose email, SMS, or both for each account.</p></div>
-      <button type="button" disabled={loading || Boolean(loadError) || usersLoading || Boolean(usersError)} onClick={() => { setDraft(saved.map(row => ({ ...row }))); setError(null); setNotice(""); setOpen(true); }} className="min-h-11 rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">Manage recipients</button>
+      <button type="button" disabled={loading || Boolean(loadError) || usersLoading || Boolean(usersError)} ref={viewTrigger} onClick={() => setViewOpen(true)} className="min-h-11 rounded-lg border border-theme-accent px-3 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft disabled:opacity-50">View All Recepients</button>
     </div>
     {loadError && <p role="alert" className="mb-3 text-sm text-theme-danger">{loadError}</p>}
     {usersError && <p role="alert" className="mb-3 text-sm text-theme-danger">{usersError}</p>}
     {notice && <p role="status" className="mb-3 text-sm text-theme-success">{notice}</p>}
-    {loading ? <p className="text-sm text-theme-muted">Loading recipients…</p> : <ul className="space-y-3" aria-label="Assigned alert recipients">{saved.map(row => {
+    <p className="text-sm text-theme-text">{loading ? "Loading recipients…" : loadError ? "Recipient count unavailable" : `${saved.length} recipient${saved.length === 1 ? "" : "s"} assigned`}</p>
+    {!loading && !loadError && !saved.length && <p className="mt-1 text-sm text-theme-muted">No recipients assigned. Add accounts to receive alerts.</p>}
+    <p className="mt-1 text-xs text-theme-muted">Applies to new greenhouse alerts. Shared phone numbers receive one SMS per scheduled send.</p>
+    <div className="mt-4 grid items-start gap-4 border-t border-theme-border/70 pt-4 lg:grid-cols-2">
+      <GmailConnection recipientEmails={emails} />
+      {children && <div className="min-w-0 border-t border-theme-border/70 pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">{children}</div>}
+    </div>
+    <Modal open={viewOpen} onClose={() => setViewOpen(false)} title="All Recipients"
+      description={`${saved.length} assigned recipient${saved.length === 1 ? "" : "s"}. Email and SMS destinations are shown below.`}
+      footer={<>
+        <button type="button" onClick={() => { setDraft(saved.map(row => ({ ...row }))); setError(null); setNotice(""); setViewOpen(false); setOpen(true); }} className="min-h-11 rounded-lg border border-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent hover:bg-theme-accent-soft">Manage recipients</button>
+        <button type="button" onClick={() => setViewOpen(false)} className="min-h-11 rounded-lg border border-theme-border px-4 py-2 text-sm font-semibold text-theme-text">Close</button>
+      </>}>
+      <ul className="space-y-3" aria-label="Assigned alert recipients">{saved.map(row => {
       const user = eligible.find(user => user.id === row.user_id);
       return <li key={row.user_id} className="rounded-lg border border-theme-border p-3 text-sm">
         <p className="break-words font-semibold text-theme-text">{user?.full_name || user?.email || "Account unavailable"}</p>
         {!user && <p className="mt-1 text-xs text-theme-danger">This account cannot receive new alerts. Remove it or verify its account details.</p>}
         <div className="mt-2 space-y-1 break-all text-theme-muted">{row.email_enabled && <p>Email: {user?.email ?? "Unavailable"}</p>}{row.sms_enabled && <p>SMS: {row.phone}</p>}</div>
       </li>;
-    })}</ul>}
-    {!loading && !loadError && !saved.length && <p className="text-sm text-theme-muted">No recipients assigned. Add accounts to receive alerts.</p>}
-    <p className="mt-3 text-xs text-theme-muted">Applies to new greenhouse alerts. Shared phone numbers receive one SMS per scheduled send.</p>
-    <GmailConnection recipientEmails={emails} />
-    <Modal open={open} onClose={() => !saving && setOpen(false)} title="Manage alert recipients"
+      })}</ul>
+      {!saved.length && <p className="text-sm text-theme-muted">No recipients assigned. Use Manage recipients to add verified accounts.</p>}
+    </Modal>
+    <Modal open={open} onClose={closeManager} title="Manage alert recipients"
       description="Choose up to 20 verified accounts. Each recipient can receive email, SMS, or both. Removing every account stops new alert deliveries."
-      footer={<><button type="button" disabled={saving} onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-theme-border px-4 py-2 text-sm text-theme-text disabled:opacity-50">Cancel</button><button type="button" disabled={saving || usersLoading || Boolean(usersError)} onClick={() => void save()} className="min-h-11 rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{saving ? "Saving…" : "Save recipients"}</button></>}>
+      footer={<><button type="button" disabled={saving} onClick={closeManager} className="min-h-11 rounded-lg border border-theme-border px-4 py-2 text-sm text-theme-text disabled:opacity-50">Cancel</button><button type="button" disabled={saving || usersLoading || Boolean(usersError)} onClick={() => void save()} className="min-h-11 rounded-lg bg-theme-accent px-4 py-2 text-sm font-semibold text-theme-accent-foreground disabled:opacity-50">{saving ? "Saving…" : "Save recipients"}</button></>}>
       <div className="space-y-4">
         {error && <p role="alert" className="text-sm text-theme-danger">{error}</p>}
         {draft.map((row, index) => <fieldset key={index} disabled={saving} className="min-w-0 space-y-3 rounded-xl border border-theme-border p-3 disabled:opacity-60">

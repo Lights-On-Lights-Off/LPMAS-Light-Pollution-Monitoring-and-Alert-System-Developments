@@ -182,8 +182,8 @@ export function Monitor() {
             </div>}</div>
       </header>
       <div className="mb-3"><MonitoringStatus compact /></div>
-      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <Card className="h-full">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <Card>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
@@ -261,7 +261,7 @@ export function Monitor() {
           <p className="mt-3 text-xs text-theme-muted">Intensity in lux · one-minute averages · dashed reference lines show phase thresholds.</p>
         </Card>
 
-        <div className="grid h-full grid-rows-[auto_1fr] gap-5">
+        <div className="grid content-start gap-4">
           <Card>
             <h2 className="mb-3 font-bold text-metal-50">Sensor KPI</h2>
 
@@ -276,8 +276,8 @@ export function Monitor() {
           <Card className="min-h-0">
             <h2 className="font-bold text-metal-50">Status Distribution</h2>
 
-            <div className="mt-4 grid min-h-0 grid-cols-1 items-center gap-4 sm:grid-cols-[minmax(130px,0.8fr)_1fr]">
-              <div className="h-40 min-w-0">
+            <div className="mt-3 grid min-h-0 grid-cols-1 items-center gap-3 sm:grid-cols-[minmax(100px,0.65fr)_1fr]">
+              <div className="h-32 min-w-0">
                 {distribution.length ? <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie isAnimationActive={false} data={distribution} dataKey="value" nameKey="label" innerRadius={34} outerRadius={56} paddingAngle={2}>
@@ -288,7 +288,7 @@ export function Monitor() {
                 </ResponsiveContainer> : <div className="grid h-full place-items-center text-center text-xs text-metal-500">No phase status available</div>}
               </div>
 
-              <div className="space-y-3 text-sm">
+              <div className="space-y-2 text-sm">
                 <p className="text-xs text-metal-500">Status uses minute average lux for the recorded phase. Alerts follow the configured monitoring window.</p>
                 <InfoRow label="Phase" value={greenhouse ? phaseLabel : "—"} />
                 <InfoRow label="Target" value={greenhouse ? target : "—"} />
@@ -297,7 +297,7 @@ export function Monitor() {
               </div>
             </div>
 
-            <div className="mt-5 flex flex-wrap gap-3 border-t border-metal-700 pt-4 text-xs text-metal-400">
+            <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 border-t border-metal-700 pt-3 text-xs text-metal-400">
               {(["safe", "warning", "violation", "unclassified"] as const).map(key => <span key={key} className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLORS[key] }} />
                 {key === "unclassified" ? "Outside configured phase" : key} · {distribution.find(d => d.name === key)?.value ?? 0}
@@ -307,7 +307,7 @@ export function Monitor() {
         </div>
       </div>
 
-      <Card className="mt-5">
+      <Card className="mt-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-bold text-metal-50">Minute-average log</h2>
           <span className="text-xs text-metal-500">Latest 3 minute averages</span>
@@ -355,14 +355,14 @@ export function Monitor() {
 }
 
 function Kpi({ label, value, tone }: { label: string; value: number; tone?: "red" }) {
-  return <div className="rounded-xl border border-metal-700 bg-white/[0.02] p-3">
+  return <div className="rounded-xl border border-metal-700 bg-white/[0.02] px-3 py-2">
     <p className="text-xs text-metal-400">{label}</p>
     <p className={`mt-1 text-3xl font-semibold tabular-nums ${tone === "red" ? "text-theme-danger" : "text-metal-50"}`}>{value}</p>
   </div>;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
-  return <div className="flex items-start justify-between gap-3 border-b border-metal-700 pb-2 last:border-0">
+  return <div className="flex items-start justify-between gap-3 border-b border-metal-700 pb-1.5 last:border-0">
     <span className="shrink-0 text-metal-500">{label}</span>
     <span className="min-w-0 break-words text-right font-medium text-metal-50">{value}</span>
   </div>;
