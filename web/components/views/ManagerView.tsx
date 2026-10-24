@@ -265,7 +265,7 @@ function GreenhousesView() {
   return (
     <div className="dashboard-content space-y-4">
       {dialog}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="dashboard-heading flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">Greenhouse management</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage greenhouses, real sensors and monitoring windows for both phases.</p>
@@ -583,7 +583,7 @@ function ActivityLogsView() {
 
   return (
     <div className="dashboard-content space-y-4">
-      <div>
+      <div className="dashboard-heading">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Activity logs</h1>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review real hardware readings and manager-level system activity.</p>
       </div>
@@ -951,7 +951,7 @@ function RecycleBinView() {
   return (
     <div className="dashboard-content space-y-4">
       {dialog}
-      <div>
+      <div className="dashboard-heading">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Recycle bin</h1>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">Recently deleted greenhouse records.</p>
       </div>

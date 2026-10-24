@@ -206,8 +206,7 @@ export function ManagerOverview(
 
   return (
     <div className="dashboard-content space-y-4">
-      <MonitoringStatus compact />
-      <div className="flex items-center justify-between gap-4">
+      <header className="dashboard-heading flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">
             Monitor Overview
@@ -216,7 +215,8 @@ export function ManagerOverview(
             Real-time greenhouse monitoring and system status.
           </p>
         </div>
-      </div>
+      </header>
+      <MonitoringStatus compact />
 
       <label className="flex flex-wrap items-center gap-3 text-sm text-theme-text">
         Greenhouse
@@ -254,8 +254,8 @@ export function ManagerOverview(
         />
       </div>
 
-      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <Card className="min-h-[340px]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <Card>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex flex-wrap items-baseline gap-2">
@@ -400,7 +400,7 @@ export function ManagerOverview(
           <p className="mt-3 text-xs text-theme-muted">Actual intensity in lux · dashed lines show safe and violation boundaries. {logarithmic ? "Logarithmic spacing keeps low readings visible alongside spikes, including zero-lux readings." : "Linear spacing shows absolute lux differences."}</p>
         </Card>
 
-        <Card className="min-h-[340px]">
+        <Card>
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="font-bold text-[var(--foreground)]">
@@ -423,7 +423,7 @@ export function ManagerOverview(
               />
             </button>
           </div>
-          <div className="mt-6 space-y-5">
+          <div className="mt-4 space-y-3">
             <ReportRow
               label="Sensors Detected"
               value={latestBySensor.size.toString()}
@@ -446,7 +446,7 @@ export function ManagerOverview(
         </Card>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-3">
+      <div className="grid items-start gap-4 xl:grid-cols-3">
         <Card>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-bold text-[var(--foreground)]">

@@ -17,7 +17,7 @@ export function deliveryTone(status: string): BadgeTone {
 }
 
 export function Card({ children, className = "", compact = false }: { children: ReactNode; className?: string; compact?: boolean }) {
-  return <section className={`glass-card min-w-0 rounded-2xl text-primary ${compact ? "kpi-card p-3 sm:p-4" : "p-4 sm:p-5 lg:p-6"} ${className}`}>{children}</section>;
+  return <section className={`glass-card min-w-0 rounded-2xl text-primary ${compact ? "kpi-card p-3 sm:p-4" : "p-4 sm:p-5"} ${className}`}>{children}</section>;
 }
 
 export function Badge({ children, tone = "green" }: { children: ReactNode; tone?: BadgeTone }) {
