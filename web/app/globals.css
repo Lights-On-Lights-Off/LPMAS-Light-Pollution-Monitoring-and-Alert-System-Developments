@@ -667,3 +667,7 @@ select option { background: var(--background); color: var(--foreground); }
   #dashboard-main .dashboard-heading { min-height: 44px; padding-right: 3.5rem; }
   #dashboard-main .dashboard-content { padding-top: 1rem; }
 }
+
+@media (min-width: 1280px) {
+  .public-lux-frame { flex: 1; min-height: 340px; }
+}

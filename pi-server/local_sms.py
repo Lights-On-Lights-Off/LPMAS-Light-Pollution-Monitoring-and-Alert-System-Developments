@@ -104,6 +104,11 @@ def initialize(conn):
             next_poll_at REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL,
             UNIQUE(episode_uid,event,send_number,recipient));
     """)
+    conn.execute("""CREATE TABLE IF NOT EXISTS local_sms_manual_retries (
+        id TEXT PRIMARY KEY, original_job_id TEXT NOT NULL,
+        status TEXT NOT NULL, detail TEXT NOT NULL, created_at REAL NOT NULL)""")
+    if 'finished_at' not in [r['name'] for r in conn.execute('PRAGMA table_info(local_sms_manual_retries)')]:
+        conn.execute('ALTER TABLE local_sms_manual_retries ADD COLUMN finished_at REAL')
     # SQLite cannot drop an inline unique constraint. Rebuild only the old
     # three-column index, preserving job IDs, consumed attempts and reports.
     for index in conn.execute("PRAGMA index_list(local_sms_jobs)").fetchall():
@@ -317,13 +322,9 @@ def status(conn, config):
         'jobs': {r['status']: r['n'] for r in conn.execute('SELECT status,count(*) AS n FROM local_sms_jobs GROUP BY status')}}
 
 
-def manual_retry(conn, config, job_id, request_id, gateway=None, now=None):
+def manual_retry(conn, config, job_id, request_id, gateway=None, now=None, deliberate=False):
     """One deliberate resend, with its own durable id; original jobs stay intact."""
     now = time.time() if now is None else now
-    conn.execute("""CREATE TABLE IF NOT EXISTS local_sms_manual_retries (
-        id TEXT PRIMARY KEY, original_job_id TEXT NOT NULL,
-        status TEXT NOT NULL, detail TEXT NOT NULL, created_at REAL NOT NULL)""")
-    conn.commit()
     conn.execute('BEGIN IMMEDIATE')
     previous = conn.execute('SELECT * FROM local_sms_manual_retries WHERE id=?', (request_id,)).fetchone()
     if previous:
@@ -333,16 +334,19 @@ def manual_retry(conn, config, job_id, request_id, gateway=None, now=None):
         return {'outcome': previous['status'], 'detail': previous['detail']}
     original = conn.execute('SELECT * FROM local_sms_jobs WHERE id=?', (job_id,)).fetchone()
     latest = conn.execute('SELECT * FROM local_sms_manual_retries WHERE original_job_id=? ORDER BY created_at DESC LIMIT 1', (job_id,)).fetchone()
-    if not original or original['status'] != 'failed':
+    if not original or (not deliberate and original['status'] != 'failed'):
         conn.rollback()
-        return {'outcome': 'failed', 'detail': 'Only failed local SMS notifications can be retried.'}
-    if latest and (latest['status'] != 'failed' or now-latest['created_at'] < 30):
+        return {'outcome': 'failed', 'detail': 'Original local SMS notification not found.' if deliberate else 'Only failed local SMS notifications can be retried.'}
+    if latest and ((not deliberate and (now-latest['created_at'] < 30 or latest['status'] != 'failed')) or (deliberate and latest['finished_at'] is None and now-latest['created_at'] < 60)):
         conn.rollback()
         return {'outcome': 'unknown', 'detail': 'A resend was already submitted or is still unconfirmed.'}
+    if deliberate and normalize_phone(original['recipient']) not in saved_config(conn).get('recipients', []):
+        conn.rollback()
+        return {'outcome': 'failed', 'detail': 'Original SMS recipient is no longer assigned.'}
     if not armed(conn, config) or not clock_ready(config, now):
         conn.rollback()
         return {'outcome': 'failed', 'detail': 'Local SMS is disabled or the Pi clock is not ready. No resend was submitted.'}
-    conn.execute('INSERT INTO local_sms_manual_retries VALUES (?,?,?,?,?)', (request_id, job_id, 'unknown', 'Manual SMS submission unconfirmed.', now))
+    conn.execute('INSERT INTO local_sms_manual_retries (id,original_job_id,status,detail,created_at) VALUES (?,?,?,?,?)', (request_id, job_id, 'unknown', 'Manual SMS submission unconfirmed.', now))
     conn.commit()
     job = {**dict(original), 'id': request_id, 'gateway_id': request_id, 'expires_at': now+FRESHNESS_SECONDS}
     try:
@@ -352,6 +356,6 @@ def manual_retry(conn, config, job_id, request_id, gateway=None, now=None):
         outcome, detail = ('failed', 'Gateway rejected manual SMS submission.') if error.code in (400,401,403,422,429) else ('unknown', 'Manual SMS submission outcome unconfirmed.')
     except Exception:
         outcome, detail = 'unknown', 'Manual SMS submission outcome unconfirmed; automatic resend disabled.'
-    conn.execute('UPDATE local_sms_manual_retries SET status=?,detail=? WHERE id=?', (outcome,detail,request_id))
+    conn.execute('UPDATE local_sms_manual_retries SET status=?,detail=?,finished_at=? WHERE id=?', (outcome,detail,now,request_id))
     conn.commit()
     return {'outcome': outcome, 'detail': detail}
