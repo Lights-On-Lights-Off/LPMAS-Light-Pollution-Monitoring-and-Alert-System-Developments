@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
   const credentials = authorization.credentials;
   const results = await Promise.all(recipients.map(async email => ({ email, ...await sendGmailDetailed(credentials,
     credentials.client_id ?? "", credentials.client_secret ?? "", email, testEmailMessage(),
-    (url, init) => fetch(url, init), "LPMAS test email") })));
+    (url, init) => fetch(url, init), "LPMAS test email", process.env.LPMAS_WEB_ORIGIN) })));
   const accepted = results.filter(result => result.outcome === "accepted").length;
   return NextResponse.json({
     failed: accepted !== results.length,
