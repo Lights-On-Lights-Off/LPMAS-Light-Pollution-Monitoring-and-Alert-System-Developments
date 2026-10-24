@@ -1,4 +1,4 @@
-import { notificationSubject, notificationSubjectHeader } from "./notification-content.ts";
+import { notificationSubject, notificationSubjectHeader, renderNotificationEmail } from "./notification-content.ts";
 export interface GmailCredentials {
   sender_email: string;
   refresh_token: string;
@@ -34,13 +34,17 @@ export async function refreshGmail(credentials: GmailCredentials, clientId: stri
     return {accessToken:token.access_token};
   } catch { return {detail:"Gmail authorization refresh was unavailable. No email was submitted; try again later."}; }
 }
-export async function sendGmailDetailed(credentials: GmailCredentials, clientId: string, clientSecret: string, recipient: string, message: string, fetchImpl: Fetcher, subjectOverride?: string): Promise<DeliveryResult> {
+export async function sendGmailDetailed(credentials: GmailCredentials, clientId: string, clientSecret: string, recipient: string, message: string, fetchImpl: Fetcher, subjectOverride?: string, dashboardOrigin?: string): Promise<DeliveryResult> {
   if (!validEmail(recipient)) return {outcome:"failed",detail:"The notification recipient email is missing or invalid. Save a verified manager recipient in administrator settings."};
   const authorization = await refreshGmail(credentials,clientId,clientSecret,fetchImpl);
   if (!("accessToken" in authorization)) return {outcome:"failed",detail:authorization.detail};
-  const body=btoa(String.fromCharCode(...new TextEncoder().encode(message)));
+  const content=renderNotificationEmail(message,dashboardOrigin);
+  const encode=(value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).match(/.{1,76}/g)?.join("\r\n") ?? "";
+  const boundary=`lpmas_${crypto.randomUUID()}`;
   const subjectHeader=notificationSubjectHeader(subjectOverride ?? notificationSubject(message));
-  const mime=`From: ${credentials.sender_email}\r\nTo: ${recipient}\r\nSubject: ${subjectHeader}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${body}`;
+  const mime=`From: ${credentials.sender_email}\r\nTo: ${recipient}\r\nSubject: ${subjectHeader}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="${boundary}"\r\n\r\n`+
+    `--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encode(content.text)}\r\n`+
+    `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encode(content.html)}\r\n--${boundary}--\r\n`;
   const raw=btoa(mime).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
   try {
     const response=await fetchImpl("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {

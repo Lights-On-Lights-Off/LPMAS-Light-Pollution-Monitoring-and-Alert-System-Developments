@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
   try {
     if(job.channel === "email") {
       const authorization=await gmailAuthorization(admin);
-      result=authorization.credentials ? await sendGmailDetailed(authorization.credentials,authorization.credentials.client_id ?? "",authorization.credentials.client_secret ?? "",job.recipient,job.message,(url,init) => fetch(url,init))
+      result=authorization.credentials ? await sendGmailDetailed(authorization.credentials,authorization.credentials.client_id ?? "",authorization.credentials.client_secret ?? "",job.recipient,job.message,(url,init) => fetch(url,init),undefined,process.env.LPMAS_WEB_ORIGIN)
         : {outcome:"failed",detail:authorization.error ?? "Gmail is not connected. Connect Gmail in administrator settings."};
     } else if(job.source === "local") {
       const setting=await admin.from("system_settings").select("value").eq("key","pi_api_url").maybeSingle();

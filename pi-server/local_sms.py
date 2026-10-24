@@ -8,6 +8,7 @@ import uuid
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.parse import urlsplit, quote
 
@@ -160,6 +161,17 @@ def armed(conn, config):
     return config.get('enabled') is True and settings.get('mode') == 'local' and settings.get('enabled') is True and bool(settings.get('recipients', [settings['recipient']] if settings.get('recipient') else []))
 
 
+def sms_message(event, greenhouse_name, incident_uid, stamp):
+    name = re.sub(r'[^A-Za-z0-9 .,_()/:-]', '?', greenhouse_name)[:24]
+    heading, instruction = {
+        'opened': ('LPMAS ALERT: ', 'Light violation confirmed.\nInspect lighting; acknowledge in dashboard.'),
+        'recovered': ('LPMAS RESOLVED: ', 'Safe light levels restored.\nReview incident history.'),
+        'closed': ('LPMAS CLOSED: ', 'Monitoring ended or changed.\nSafe recovery unconfirmed. Check dashboard.'),
+    }[event]
+    event_time = datetime.fromtimestamp(stamp, ZoneInfo('Asia/Manila')).strftime('%Y-%m-%d %H:%M')
+    return heading + name + '\n' + instruction + '\n' + event_time + ' PHT\nRef ' + incident_uid[:12]
+
+
 def sync_events(conn, config, now=None):
     now = now if now is not None else time.time()
     settings = saved_config(conn)
@@ -173,9 +185,9 @@ def sync_events(conn, config, now=None):
         stamp = datetime.fromisoformat(episode['opened_at'] if event == 'opened' else episode['resolved_at']).timestamp()
         if not -0.001 <= now - stamp <= FRESHNESS_SECONDS:
             continue
-        name = re.sub(r'[^ -~]', '?', episode['greenhouse_id'])[:24]
-        text = ('LPMAS ALERT: Greenhouse ' + name + ' has a confirmed light violation.' if event == 'opened' else
-            'LPMAS RESOLVED: Greenhouse ' + name + ' has returned to safe light levels.') + ' Incident ' + episode['incident_uid'][:12] + '.'
+        greenhouse = conn.execute('SELECT name FROM greenhouses WHERE id=?', (episode['greenhouse_id'],)).fetchone()
+        name = greenhouse['name'] if greenhouse else episode['greenhouse_id']
+        text = sms_message(event, name, episode['incident_uid'], stamp)
         for recipient in settings.get('recipients', [settings['recipient']]):
             enqueue(conn, episode['incident_uid'], event, 1, recipient, text, min(stamp, now), now)
 

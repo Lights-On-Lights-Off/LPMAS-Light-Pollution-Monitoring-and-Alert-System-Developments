@@ -93,7 +93,7 @@ if (import.meta.main) {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   const client = createClient(Deno.env.get("SUPABASE_URL") ?? "", serviceRoleKey, {auth:{persistSession:false}});
   const ingest = createIngestHandler({
-    client, serviceRoleKey, sendEmail:gmailSender(client),
+    client, serviceRoleKey, sendEmail:gmailSender(client, Deno.env.get("LPMAS_WEB_ORIGIN")),
     async readSettings() {
       const {data,error} = await client.from("system_settings").select("key,value").in("key",SMS_SETTING_KEYS);
       if (error) throw error;
