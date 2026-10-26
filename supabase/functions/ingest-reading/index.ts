@@ -90,7 +90,7 @@ export function classifyReading(lux: number, phase: PhaseType): Classification {
   if (phase === "dark") {
     return lux <= 15 ? "safe" : lux <= 29 ? "warning" : "violation";
   }
-  return lux <= 30 ? "violation" : lux < 50 ? "warning" : "safe";
+  return lux <= 25 ? "violation" : lux < 41 ? "warning" : "safe";
 }
 export function validateDelivery(
   body: unknown,

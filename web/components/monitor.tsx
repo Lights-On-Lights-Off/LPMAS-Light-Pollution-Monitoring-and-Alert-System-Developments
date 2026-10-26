@@ -17,8 +17,8 @@ const STATUS_COLORS = { safe: "var(--success)", warning: "var(--warning)", viola
 // classification rules from the README — not manager-configurable.
 function getThresholdLines(phase: string | null): { value: number; color: string; label: string }[] {
   if (phase === "illumination") return [
-    { value: 50, color: STATUS_COLORS.safe, label: "Safe ≥ 50" },
-    { value: 30, color: STATUS_COLORS.violation, label: "Violation ≤ 30" }
+    { value: 41, color: STATUS_COLORS.safe, label: "Safe ≥ 41" },
+    { value: 25, color: STATUS_COLORS.violation, label: "Violation ≤ 25" }
   ];
   if (phase === "dark") return [
     { value: 15, color: STATUS_COLORS.safe, label: "Safe ≤ 15" },
@@ -125,7 +125,7 @@ export function Monitor() {
   const phase = phaseForGreenhouse(greenhouse ?? undefined,policy.dark_phase_days);
   const phaseLabel = phase === "illumination" ? "Illumination" : phase === "dark" ? "Dark" : phase ?? "—";
   const phaseWindow = greenhouse ? `${greenhouse.phase_start} - ${greenhouse.phase_end}` : "—";
-  const target = phase === "illumination" ? "≥ 50 safe · > 30 and < 50 warning · ≤ 30 violation" : phase === "dark" ? "0–15 safe · > 15 to 29 warning · > 29 violation" : "—";
+  const target = phase === "illumination" ? "≥ 41 safe · > 25 and < 41 warning · ≤ 25 violation" : phase === "dark" ? "0–15 safe · > 15 to 29 warning · > 29 violation" : "—";
 
   const thresholdLines = useMemo(() => getThresholdLines(phase), [phase]);
 

@@ -29,10 +29,8 @@ app.config['MAX_CONTENT_LENGTH'] = 32_768
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "lpmas.db"
 ENV_PATH = BASE_DIR / ".env"
-ILLUMINATION_SAFE_MIN = 50
-ILLUMINATION_WARNING_MIN = 30
-ILLUMINATION_WARNING_MAX = 50
-ILLUMINATION_VIOLATION_MAX = 30
+ILLUMINATION_SAFE_MIN = 41
+ILLUMINATION_VIOLATION_MAX = 25
 DARK_SAFE_MAX = 15
 DARK_WARNING_MAX = 29
 DARK_VIOLATION_MIN = 30
@@ -451,7 +449,7 @@ def classify_reading(lux, phase, at=None):
         if lux <= DARK_WARNING_MAX: return "warning"
         return "violation"
     if lux <= ILLUMINATION_VIOLATION_MAX: return "violation"
-    if lux < ILLUMINATION_WARNING_MAX: return "warning"
+    if lux < ILLUMINATION_SAFE_MIN: return "warning"
     return "safe"
 
 

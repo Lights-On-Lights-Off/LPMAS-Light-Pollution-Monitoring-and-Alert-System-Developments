@@ -111,7 +111,7 @@ export function freshestReadings(
 
 /** Display status describes average intensity; alert windows remain server-owned. */
 export function averageLuxStatus(lux: number, phase: string): Reading["classification"] {
-  if (phase === "illumination") return lux <= 30 ? "violation" : lux < 50 ? "warning" : "safe";
+  if (phase === "illumination") return lux <= 25 ? "violation" : lux < 41 ? "warning" : "safe";
   if (phase === "dark") return lux <= 15 ? "safe" : lux <= 29 ? "warning" : "violation";
   return "unclassified";
 }
